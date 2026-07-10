@@ -1,0 +1,21 @@
+{
+  "name": "guideanything",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.27.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "dev": "pnpm -r --parallel --if-present dev",
+    "lint": "pnpm -r --if-present lint",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

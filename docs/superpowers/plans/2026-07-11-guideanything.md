@@ -30,7 +30,7 @@
 **Interfaces:**
 - Produces: `CanvasDocumentSchema`, `GuideSummarySchema`, `expandSubguide(document, referenceNode, snapshot)`, `setSubguideExpanded(document, referenceNodeId, expanded)`, `HistoryStack<T>`.
 
-- [ ] **Step 1: Write contract and expansion tests**
+- [x] **Step 1: Write contract and expansion tests**
 
 ```ts
 expect(CanvasDocumentSchema.safeParse(validDocument).success).toBe(true);
@@ -40,16 +40,16 @@ expect(expandSubguide(expanded, reference, snapshot)).toEqual(expanded);
 expect(setSubguideExpanded(expanded, 'ref-1', false).nodes.find(isDerived)?.hidden).toBe(true);
 ```
 
-- [ ] **Step 2: Run the tests and verify module-not-found failures**
+- [x] **Step 2: Run the tests and verify module-not-found failures**
 
 Run: `pnpm --filter @guideanything/canvas-core test`
 Expected: FAIL because the source modules do not exist.
 
-- [ ] **Step 3: Implement discriminated node schemas and pure transformations**
+- [x] **Step 3: Implement discriminated node schemas and pure transformations**
 
 Use deterministic derived IDs `ref:${referenceNode.id}:${sourceId}` and rewrite edge endpoints, lesson node IDs, keypoint targets, and `SourceTrace`. Expansion must return the original document when derived elements already exist.
 
-- [ ] **Step 4: Run tests and typecheck**
+- [x] **Step 4: Run tests and typecheck**
 
 Run: `pnpm test && pnpm typecheck`
 Expected: all Task 1 tests PASS and TypeScript exits 0.
@@ -260,4 +260,3 @@ Expected: every command exits 0.
 - [ ] **Step 4: Update acceptance evidence and progress**
 
 Mark only observed checks complete and record commands, result counts, local URLs, and browser journey evidence in `docs/PROGRESS.md`.
-
