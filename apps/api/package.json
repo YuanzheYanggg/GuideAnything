@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
+    "db:migrate": "tsx src/db/cli.ts migrate",
+    "db:reset": "tsx src/db/cli.ts reset",
+    "db:seed": "tsx src/db/cli.ts seed",
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "test": "vitest run",

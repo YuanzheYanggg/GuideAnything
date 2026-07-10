@@ -9,6 +9,9 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present build",
+    "db:migrate": "pnpm --filter @guideanything/api db:migrate",
+    "db:reset": "pnpm --filter @guideanything/api db:reset",
+    "db:seed": "pnpm --filter @guideanything/api db:seed",
     "dev": "pnpm -r --parallel --if-present dev",
     "lint": "pnpm -r --if-present lint",
     "test": "pnpm -r --if-present test",

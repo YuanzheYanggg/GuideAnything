@@ -4,6 +4,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { registerAuthRoutes } from './modules/auth/routes';
+import { registerGuideRoutes } from './modules/guides/routes';
+import { registerSearchRoutes } from './modules/search/routes';
 import { createAuthenticateRequest } from './plugins/auth';
 
 export interface BuildAppOptions {
@@ -44,6 +46,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   await registerAuthRoutes(app, options.database);
+  await registerGuideRoutes(app, options.database);
+  await registerSearchRoutes(app, options.database);
   await app.ready();
   return app;
 }

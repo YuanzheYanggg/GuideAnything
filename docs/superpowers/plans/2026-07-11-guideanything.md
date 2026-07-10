@@ -99,7 +99,7 @@ Expected: PASS.
 **Interfaces:**
 - Produces: `POST/GET/PATCH /api/guides`, `POST /api/guides/:id/publish`, `GET /api/versions/:id`, `GET /api/search?q=`, `POST /api/guides/:id/collaborators`.
 
-- [ ] **Step 1: Write the full API slice as failing Fastify injection tests**
+- [x] **Step 1: Write the full API slice as failing Fastify injection tests**
 
 ```ts
 const draft = await createGuide(authorToken, { title: 'ERP 销售订单创建' });
@@ -110,20 +110,20 @@ expect((await search(learnerToken, '销售订单')).items[0].guideId).toBe(draft
 expect((await saveGuide(learnerToken, draft.id, { revision: 1, document })).statusCode).toBe(403);
 ```
 
-- [ ] **Step 2: Run and verify route-not-found failures**
+- [x] **Step 2: Run and verify route-not-found failures**
 
 Run: `pnpm --filter @guideanything/api test -- guides.test.ts permissions.test.ts search.test.ts`
 Expected: FAIL with status 404 or missing repository exports.
 
-- [ ] **Step 3: Implement repository transactions and route schemas**
+- [x] **Step 3: Implement repository transactions and route schemas**
 
 Publication transaction validates the document, inserts the next immutable version, updates `published_version_id`, replaces FTS rows, and commits. Draft save executes `UPDATE ... WHERE id=? AND revision=?`; zero updated rows maps to HTTP 409.
 
-- [ ] **Step 4: Seed realistic ERP guides and three demo users**
+- [x] **Step 4: Seed realistic ERP guides and three demo users**
 
 Seed a published “物料主数据检查” subguide and a draft/published “ERP 销售订单创建” guide containing markdown, image metadata, video keypoints, a decision branch, lesson steps, and a pinned subguide node.
 
-- [ ] **Step 5: Run API tests and inspect seeded SQLite state**
+- [x] **Step 5: Run API tests and inspect seeded SQLite state**
 
 Run: `pnpm --filter @guideanything/api test && pnpm db:reset && pnpm db:seed`
 Expected: tests PASS; seed reports 3 users and 2 published guide versions.
