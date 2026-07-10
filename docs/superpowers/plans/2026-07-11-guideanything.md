@@ -65,7 +65,7 @@ Expected: all Task 1 tests PASS and TypeScript exits 0.
 - Produces: `buildApp(options)`, `authenticate(email,password)`, `requireRole(...roles)`, `canEditGuide(userId, guideId)`.
 - Consumes: shared login/request/response schemas.
 
-- [ ] **Step 1: Write injection tests for migration, login, and protected routes**
+- [x] **Step 1: Write injection tests for migration, login, and protected routes**
 
 ```ts
 const response = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'author@guide.local', password: 'Guide123!' } });
@@ -74,16 +74,16 @@ expect(response.json().user.role).toBe('AUTHOR');
 expect((await app.inject({ method: 'GET', url: '/api/guides' })).statusCode).toBe(401);
 ```
 
-- [ ] **Step 2: Verify the tests fail before implementation**
+- [x] **Step 2: Verify the tests fail before implementation**
 
 Run: `pnpm --filter @guideanything/api test -- auth.test.ts migrate.test.ts`
 Expected: FAIL due to missing `buildApp` and migration.
 
-- [ ] **Step 3: Implement migrations, password hashing, JWT, and auth hooks**
+- [x] **Step 3: Implement migrations, password hashing, JWT, and auth hooks**
 
 Use `crypto.scrypt` with a per-user random salt and `timingSafeEqual`; seed hashes during `db:seed`. JWT payload contains `sub`, `email`, and `role`; repository lookups, not payload role alone, authorize writes.
 
-- [ ] **Step 4: Run auth tests**
+- [x] **Step 4: Run auth tests**
 
 Run: `pnpm --filter @guideanything/api test -- auth.test.ts migrate.test.ts`
 Expected: PASS.
