@@ -1,0 +1,50 @@
+@import '@xyflow/react/dist/style.css';
+
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17211d; background: #f3f4ef; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+button:focus-visible, input:focus-visible { outline: 3px solid #e28c45; outline-offset: 2px; }
+.eyebrow { display: block; color: #a55620; font-size: .72rem; font-weight: 800; letter-spacing: .16em; }
+.muted { color: #6d756f; }
+.primary-button, .secondary-button { border-radius: 999px; padding: .76rem 1.15rem; font-weight: 750; border: 1px solid transparent; }
+.primary-button { color: white; background: #1e4a3a; box-shadow: 0 6px 20px #1e4a3a2e; }
+.primary-button:disabled { cursor: not-allowed; opacity: .55; }
+.secondary-button { color: #1e4a3a; background: white; border-color: #cad1cb; }
+.error-message { color: #9c2f24; background: #fff0ed; border: 1px solid #f1c0b8; border-radius: 10px; padding: .7rem .85rem; }
+.login-page { min-height: 100vh; display: grid; grid-template-columns: 1.15fr .85fr; background: #17211d; }
+.login-intro { padding: clamp(3rem, 8vw, 8rem); color: white; display: flex; flex-direction: column; justify-content: center; background: radial-gradient(circle at 10% 10%, #496b52 0, transparent 38%), linear-gradient(145deg, #17211d, #21372d); }
+.login-intro h1 { font-family: Georgia, serif; font-size: clamp(3.5rem, 8vw, 7rem); line-height: .94; margin: .8rem 0 1.5rem; letter-spacing: -.06em; }
+.login-intro p { max-width: 620px; color: #d7ded8; font-size: 1.1rem; line-height: 1.8; }
+.login-feature-grid { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 1px; margin-top: 2.5rem; background: #ffffff25; border: 1px solid #ffffff25; max-width: 520px; }
+.login-feature-grid span { padding: 1rem; background: #17211dcc; color: #e6a260; }
+.login-card { margin: auto; width: min(460px, calc(100% - 3rem)); padding: 2.25rem; border-radius: 24px; background: #fafbf7; box-shadow: 0 30px 80px #0005; }
+.login-card h2 { margin: .45rem 0; font-family: Georgia, serif; font-size: 2rem; }
+.login-card form { display: grid; gap: 1rem; margin: 1.8rem 0; }
+.login-card label { display: grid; gap: .45rem; font-weight: 700; }
+.login-card input, .search-form input { min-height: 48px; border: 1px solid #cbd1cc; border-radius: 10px; padding: 0 .9rem; background: white; }
+.demo-accounts { display: flex; flex-wrap: wrap; gap: .5rem; border-top: 1px solid #e0e3de; padding-top: 1.2rem; }
+.demo-accounts button, .user-chip button { border: 0; background: transparent; color: #366a56; text-decoration: underline; padding: .3rem; }
+.library-page { min-height: 100vh; }
+.app-header { height: 72px; padding: 0 clamp(1rem, 4vw, 4rem); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #d9ded8; background: #f8f9f5dd; position: sticky; top: 0; z-index: 10; backdrop-filter: blur(16px); }
+.brand { display: flex; gap: .7rem; align-items: center; color: inherit; text-decoration: none; font-weight: 850; }
+.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; color: white; background: #1e4a3a; border-radius: 10px 3px 10px 3px; font-family: Georgia, serif; }
+.user-chip { display: flex; align-items: center; gap: 1rem; }
+.user-chip span { display: grid; text-align: right; }.user-chip small { color: #6d756f; }
+.library-hero, .search-panel, .draft-section { width: min(1180px, calc(100% - 2rem)); margin-inline: auto; }
+.library-hero { padding: clamp(3rem, 8vw, 7rem) 0 3rem; display: flex; justify-content: space-between; align-items: end; gap: 2rem; }
+.library-hero h1 { max-width: 760px; margin: .7rem 0 1rem; font-family: Georgia, serif; font-size: clamp(2.5rem, 6vw, 5.4rem); line-height: .98; letter-spacing: -.045em; }
+.library-hero p { color: #6d756f; font-size: 1.08rem; }
+.search-panel { background: #e5e8df; border: 1px solid #d2d7cf; border-radius: 22px; padding: clamp(1.2rem, 4vw, 2.5rem); }
+.search-panel h2, .draft-section h2 { font-family: Georgia, serif; font-size: 2rem; margin: 0; }
+.search-form { display: grid; grid-template-columns: 1fr auto; gap: .7rem; margin-top: 1.5rem; }
+.guide-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 1rem; margin-top: 1.5rem; }
+.guide-card { padding: 1.35rem; border-radius: 16px; background: #fbfcf8; border: 1px solid #d5dad3; display: grid; align-content: start; gap: .8rem; }
+.guide-card h3, .draft-list h3 { font-size: 1.2rem; margin: 0; }.guide-card p, .draft-list p { color: #69716c; margin: 0; line-height: 1.55; }
+.guide-meta { display: flex; justify-content: space-between; color: #7b827d; font-size: .8rem; }.tag-row { display: flex; flex-wrap: wrap; gap: .4rem; }.tag-row span, .status-badge { border-radius: 999px; background: #e7efe9; color: #2b604a; padding: .25rem .55rem; font-size: .76rem; font-weight: 750; }
+.draft-section { padding: 4rem 0 6rem; }.section-heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 1.2rem; }.draft-list { display: grid; gap: .7rem; }.draft-list article { background: white; border: 1px solid #dde1dc; border-radius: 14px; padding: 1.1rem 1.2rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }.draft-list article > div { display: grid; gap: .45rem; }
+.empty-state { min-height: 130px; display: grid; place-content: center; text-align: center; gap: .4rem; color: #747b76; }.empty-state strong { color: #3f4842; }.status-line { color: #59645d; }
+.center-state { min-height: 100vh; display: grid; place-content: center; gap: 1rem; text-align: center; }.spinner { width: 32px; height: 32px; margin: auto; border: 3px solid #cfd6d0; border-top-color: #1e4a3a; border-radius: 50%; animation: spin 1s linear infinite; }@keyframes spin { to { transform: rotate(360deg); } }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+@media (max-width: 760px) { .login-page { grid-template-columns: 1fr; }.login-intro { min-height: 42vh; padding: 2.5rem 1.5rem; }.login-intro h1 { font-size: 3.4rem; }.login-card { margin-block: 2rem; }.library-hero { align-items: start; flex-direction: column; }.search-form { grid-template-columns: 1fr; }.user-chip span { display: none; } }

@@ -160,7 +160,7 @@ Expected: PASS and temporary uploads are removed after each test.
 **Interfaces:**
 - Produces: authenticated routes `/library`, `/guides/:id/edit`, `/learn/:versionId`; `api.request<T>()`; token/session store.
 
-- [ ] **Step 1: Write failing component tests for login errors, search loading/empty/results, and role-aware actions**
+- [x] **Step 1: Write failing component tests for login errors, search loading/empty/results, and role-aware actions**
 
 ```tsx
 expect(screen.getByRole('button', { name: '登录' })).toBeEnabled();
@@ -169,11 +169,11 @@ expect(await screen.findByText('ERP 销售订单创建')).toBeVisible();
 expect(screen.queryByRole('button', { name: '编辑指南' })).toBeNull(); // learner
 ```
 
-- [ ] **Step 2: Implement the shell and query states with accessible labels**
+- [x] **Step 2: Implement the shell and query states with accessible labels**
 
 Keep auth in memory plus localStorage token, validate `/api/auth/me` on reload, and clear invalid sessions. Search debounce is 250 ms and aborts the previous request.
 
-- [ ] **Step 3: Run web tests and production build**
+- [x] **Step 3: Run web tests and production build**
 
 Run: `pnpm --filter @guideanything/web test && pnpm --filter @guideanything/web build`
 Expected: PASS and Vite build exits 0.
