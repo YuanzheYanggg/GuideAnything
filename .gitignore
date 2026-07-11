@@ -8,5 +8,6 @@ data/uploads/*
 !data/uploads/.gitkeep
 test-results/
 playwright-report/
+.playwright-cli/
 .DS_Store
 *.log

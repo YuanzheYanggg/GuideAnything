@@ -7,6 +7,7 @@ import { apiClient } from './lib/api';
 
 type Page = { name: 'library' } | { name: 'editor'; guideId: string } | { name: 'lesson'; versionId: string };
 const GuideEditor = lazy(() => import('./features/editor/GuideEditor').then((module) => ({ default: module.GuideEditor })));
+const LessonPage = lazy(() => import('./features/lesson/LessonPage').then((module) => ({ default: module.LessonPage })));
 
 export function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -28,7 +29,7 @@ export function App() {
   if (restoring) return <main className="center-state"><span className="spinner" /><p>正在恢复工作台…</p></main>;
   if (!user) return <LoginPage onLogin={login} />;
   if (page.name === 'editor') return <Suspense fallback={<main className="center-state"><span className="spinner" /><p>正在载入画布编辑器…</p></main>}><GuideEditor guideId={page.guideId} api={editorApi} onBack={() => setPage({ name: 'library' })} /></Suspense>;
-  if (page.name === 'lesson') return <main className="center-state"><button onClick={() => setPage({ name: 'library' })}>返回资料库</button><p>教学模式正在载入：{page.versionId}</p></main>;
+  if (page.name === 'lesson') return <Suspense fallback={<main className="center-state"><span className="spinner" /><p>正在载入教学模式…</p></main>}><LessonPage versionId={page.versionId} api={{ getVersion: editorApi.getVersion }} onBack={() => setPage({ name: 'library' })} /></Suspense>;
   return <LibraryPage
     user={user}
     api={libraryApi}

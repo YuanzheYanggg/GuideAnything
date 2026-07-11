@@ -1,6 +1,6 @@
 import type { CanvasDocument, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
-import { duplicateSelection, expandSubguide, HistoryStack, setSubguideExpanded } from '@guideanything/canvas-core';
+import { duplicateSelection, expandSubguide, HistoryStack, layoutGrid, setSubguideExpanded } from '@guideanything/canvas-core';
 import {
   addEdge,
   applyEdgeChanges,
@@ -94,6 +94,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       setTitle(loaded.title);
       setSummary(loaded.summary);
       setTags(loaded.tags);
+      setSaveState('已保存');
       historyRef.current = new HistoryStack(validated, 80);
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '指南载入失败'));
     return () => { active = false; };
@@ -329,6 +330,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       <button type="button" onClick={copy} disabled={selectedIds.length === 0} aria-label="复制选中节点">复制</button>
       <button type="button" onClick={paste} disabled={clipboardRef.current.length === 0} aria-label="粘贴节点">粘贴</button>
       <button type="button" onClick={alignLeft} disabled={selectedIds.length < 2} aria-label="左对齐选中节点">左对齐</button>
+      <button type="button" onClick={() => commit(layoutGrid(document, 3))} disabled={document.nodes.length < 2} aria-label="自动布局全部节点">自动布局</button>
       <button type="button" onClick={() => moveLayer(true)} disabled={selectedIds.length === 0} aria-label="置于顶层">置顶</button>
       <button type="button" onClick={() => moveLayer(false)} disabled={selectedIds.length === 0} aria-label="置于底层">置底</button>
       <button type="button" onClick={removeSelected} disabled={selectedIds.length === 0} aria-label="删除选中项">删除</button>
@@ -387,7 +389,7 @@ function NodeInspector({ node, onChange, onToggleReference, onAddStep, api }: { 
 }
 
 function createNode(id: string, type: CanvasNode['type'], index: number): CanvasNode {
-  const position = { x: 100 + (index % 4) * 260, y: 100 + Math.floor(index / 4) * 220 };
+  const position = { x: 80 + (index % 3) * 380, y: 80 + Math.floor(index / 3) * 300 };
   const base = { id, type, position, zIndex: index + 1 };
   switch (type) {
     case 'start': return { ...base, type, data: { label: '开始', shape: 'start' } };

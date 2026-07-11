@@ -221,13 +221,13 @@ Expected: PASS.
 **Interfaces:**
 - Consumes: published version API and canvas focus/video keypoint bridge.
 
-- [ ] **Step 1: Write learner tests for ordered steps, next/previous, node focus, and keypoint seek**
+- [x] **Step 1: Write learner tests for ordered steps, next/previous, node focus, and keypoint seek**
 
-- [ ] **Step 2: Implement responsive read-only lesson mode**
+- [x] **Step 2: Implement responsive read-only lesson mode**
 
 Desktop shows canvas plus step rail; narrow screens show the current content first with an optional canvas drawer. `aria-live` announces the current step.
 
-- [ ] **Step 3: Write and run the real browser journey**
+- [x] **Step 3: Write and run the real browser journey**
 
 The Playwright test logs in as author, creates a guide, adds Markdown/image/video-keypoint/decision nodes, saves, publishes, searches, inserts into a host guide, expands, collapses, then logs in as learner and navigates steps.
 
@@ -244,19 +244,19 @@ Expected: the critical path passes against actual API, Web, and SQLite processes
 **Interfaces:**
 - Produces: reproducible local runbook and final evidence record.
 
-- [ ] **Step 1: Add and run a 1000-node expansion/collapse test**
+- [x] **Step 1: Add and run a 1000-node expansion/collapse test**
 
 Assert deterministic output, no duplicate IDs, and completion under 500 ms on the local test runner.
 
-- [ ] **Step 2: Write Chinese setup and operator documentation**
+- [x] **Step 2: Write Chinese setup and operator documentation**
 
 Document prerequisites, environment, install, migrate/seed, dev/start, demo accounts, tests, API boundaries, database inspection, upload storage, keyboard shortcuts, and pinned-reference behavior.
 
-- [ ] **Step 3: Run the complete verification matrix**
+- [x] **Step 3: Run the complete verification matrix**
 
 Run: `pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm e2e`
 Expected: every command exits 0.
 
-- [ ] **Step 4: Update acceptance evidence and progress**
+- [x] **Step 4: Update acceptance evidence and progress**
 
 Mark only observed checks complete and record commands, result counts, local URLs, and browser journey evidence in `docs/PROGRESS.md`.

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
@@ -21,6 +21,20 @@ const sourceVersion: GuideVersionSnapshot = {
 };
 
 describe('GuideEditor', () => {
+  it('does not autosave an untouched guide after loading', async () => {
+    vi.useFakeTimers();
+    try {
+      const api = createApi();
+      render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByDisplayValue('订单教学')).toBeVisible();
+      await act(async () => { vi.advanceTimersByTime(1_600); });
+      expect(api.saveGuide).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('adds, saves, undoes, and publishes a guide', async () => {
     const user = userEvent.setup();
     const api = createApi();
