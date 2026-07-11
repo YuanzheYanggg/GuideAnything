@@ -1,9 +1,10 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { NodeChange } from '@xyflow/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
 
-import { GuideEditor, type EditorApi } from './GuideEditor';
+import { GuideEditor, persistableNodeChanges, toFlowNodes, type EditorApi } from './GuideEditor';
 
 const emptyGuide = {
   id: 'guide-host', ownerId: 'author', authorName: '王作者', title: '订单教学', summary: '', tags: ['ERP'],
@@ -21,6 +22,25 @@ const sourceVersion: GuideVersionSnapshot = {
 };
 
 describe('GuideEditor', () => {
+  it('keeps in-progress drag positions out of the persistent change batch', () => {
+    const dragging: NodeChange = { id: 'sales-start', type: 'position', position: { x: 120, y: 80 }, dragging: true };
+    const finished: NodeChange = { id: 'sales-start', type: 'position', position: { x: 160, y: 80 }, dragging: false };
+    const selection: NodeChange = { id: 'sales-start', type: 'select', selected: true };
+    const dimensions: NodeChange = { id: 'sales-start', type: 'dimensions', dimensions: { width: 240, height: 104 }, resizing: false };
+
+    expect(persistableNodeChanges([dragging, selection, finished, dimensions])).toEqual([finished, dimensions]);
+  });
+
+  it('passes persisted node measurements back to React Flow after a controlled update', () => {
+    const [node] = toFlowNodes([{
+      id: 'sales-start', type: 'start', position: { x: 80, y: 80 }, zIndex: 1,
+      data: { label: '收到订单', shape: 'start' }, size: { width: 240, height: 104 },
+    }]);
+
+    expect(node).toBeDefined();
+    expect(node!.measured).toEqual({ width: 240, height: 104 });
+  });
+
   it('does not autosave an untouched guide after loading', async () => {
     vi.useFakeTimers();
     try {

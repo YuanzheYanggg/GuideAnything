@@ -71,6 +71,7 @@ const multiSelectionKeyCode = ['Meta', 'Control'];
 export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: EditorApi; onBack: () => void }) {
   const [guide, setGuide] = useState<GuideDraftDetail | null>(null);
   const [document, setDocument] = useState<CanvasDocument | null>(null);
+  const [flowNodes, setFlowNodes] = useState<Node[]>([]);
   const [title, setTitle] = useState('');
   const [summary, setSummary] = useState('');
   const [tags, setTags] = useState<string[]>([]);
@@ -91,6 +92,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       const validated = CanvasDocumentSchema.parse(loaded.document);
       setGuide(loaded);
       setDocument(validated);
+      setFlowNodes(toFlowNodes(validated.nodes));
       setTitle(loaded.title);
       setSummary(loaded.summary);
       setTags(loaded.tags);
@@ -104,17 +106,28 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     const validated = CanvasDocumentSchema.parse(next);
     historyRef.current?.push(validated);
     setDocument(validated);
+    setFlowNodes(toFlowNodes(validated.nodes));
     setSaveState('未保存');
   }, []);
 
-  const flowNodes = useMemo(() => document ? toFlowNodes(document.nodes, selectedIds) : [], [document?.nodes, selectedIds]);
   const flowEdges = useMemo(() => document ? document.edges as Edge[] : [], [document?.edges]);
 
+  useEffect(() => {
+    setFlowNodes((current) => {
+      let changed = false;
+      const next = current.map((node) => {
+        const selected = selectedIds.includes(node.id);
+        if (node.selected === selected) return node;
+        changed = true;
+        return { ...node, selected };
+      });
+      return changed ? next : current;
+    });
+  }, [selectedIds]);
+
   const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
-    const persistedChanges = changes.filter((change) =>
-      change.type === 'position' || change.type === 'remove' ||
-      (change.type === 'dimensions' && change.resizing === false && Boolean(change.dimensions)),
-    );
+    setFlowNodes((current) => applyNodeChanges(changes, current));
+    const persistedChanges = persistableNodeChanges(changes);
     if (persistedChanges.length === 0) return;
     setSaveState('未保存');
     setDocument((current) => {
@@ -201,12 +214,16 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
 
   const undo = useCallback(() => {
     if (!historyRef.current?.canUndo) return;
-    setDocument(historyRef.current.undo());
+    const previous = historyRef.current.undo();
+    setDocument(previous);
+    setFlowNodes(toFlowNodes(previous.nodes));
     setSaveState('未保存');
   }, []);
   const redo = useCallback(() => {
     if (!historyRef.current?.canRedo) return;
-    setDocument(historyRef.current.redo());
+    const next = historyRef.current.redo();
+    setDocument(next);
+    setFlowNodes(toFlowNodes(next.nodes));
     setSaveState('未保存');
   }, []);
 
@@ -404,7 +421,15 @@ function createNode(id: string, type: CanvasNode['type'], index: number): Canvas
   }
 }
 
-function toFlowNodes(nodes: CanvasDocument['nodes'], selectedIds: string[] = []): Node[] {
+export function persistableNodeChanges(changes: NodeChange<Node>[]): NodeChange<Node>[] {
+  return changes.filter((change) =>
+    change.type === 'remove' ||
+    (change.type === 'position' && change.dragging !== true) ||
+    (change.type === 'dimensions' && change.resizing === false && Boolean(change.dimensions)),
+  );
+}
+
+export function toFlowNodes(nodes: CanvasDocument['nodes'], selectedIds: string[] = []): Node[] {
   return nodes.map((node) => ({
     id: node.id,
     type: node.type,
@@ -413,7 +438,7 @@ function toFlowNodes(nodes: CanvasDocument['nodes'], selectedIds: string[] = [])
     ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
     zIndex: node.zIndex,
     selected: selectedIds.includes(node.id),
-    ...(node.size ? { initialWidth: node.size.width, initialHeight: node.size.height } : {}),
+    ...(node.size ? { measured: { width: node.size.width, height: node.size.height } } : {}),
   }));
 }
 
