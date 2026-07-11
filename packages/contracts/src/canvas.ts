@@ -34,6 +34,11 @@ const KeypointSchema = z.object({
   targetNodeId: IdSchema.optional(),
 });
 
+const ExpandedContinuationEdgeSchema = z.object({
+  id: IdSchema,
+  hidden: z.boolean(),
+});
+
 function isSafeMediaUrl(value: string): boolean {
   if (value.startsWith('/api/media/')) return true;
   try {
@@ -76,6 +81,7 @@ export const CanvasNodeSchema = z.discriminatedUnion('type', [
     expanded: z.boolean(),
     sourceEntryNodeId: IdSchema.optional(),
     sourceExitNodeIds: z.array(IdSchema).optional(),
+    expandedContinuationEdges: z.array(ExpandedContinuationEdgeSchema).max(1_000).optional(),
   })),
 ]);
 
@@ -157,4 +163,3 @@ export type CanvasNode<TType extends NodeKind = NodeKind> = Extract<AnyCanvasNod
 export type CanvasEdge = z.infer<typeof CanvasEdgeSchema>;
 export type LessonStep = z.infer<typeof LessonStepSchema>;
 export type CanvasDocument = z.infer<typeof CanvasDocumentSchema>;
-

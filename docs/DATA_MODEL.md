@@ -68,7 +68,7 @@ interface CanvasDocument {
 - Markdown：`{ markdown }`
 - 图片：`{ assetId, url, caption?, alt }`
 - 视频：`{ assetId?, url, caption?, keypoints: [{ id,title,timeSeconds,stepId?,targetNodeId? }] }`
-- 子指南：`{ guideId, guideVersionId, title, version, expanded, sourceEntryNodeId?, sourceExitNodeIds? }`
+- 子指南：`{ guideId, guideVersionId, title, version, expanded, sourceEntryNodeId?, sourceExitNodeIds?, expandedContinuationEdges?: [{ id, hidden }] }`。首次展开会固化快照入口/出口 ID；`expandedContinuationEdges` 记录展开前“引用 → 宿主下游”连线及原可见状态，供折叠可靠还原。
 
 `SourceTrace` 固定为 `{ referenceNodeId, sourceGuideId, sourceVersionId, sourceElementId }`。未知节点类型不进入数据库；未来扩展时提高 `schemaVersion` 并提供迁移函数。
 
@@ -79,4 +79,3 @@ interface CanvasDocument {
 - 固定版本引用只允许指向 `PUBLISHED` 产生的版本。
 - 媒体删除前检查草稿和已发布快照引用；首版不提供物理删除 API。
 - 工作副本更新条件必须包含客户端 `revision`；成功后原子自增。
-

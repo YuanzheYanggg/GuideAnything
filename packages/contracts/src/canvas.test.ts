@@ -56,4 +56,30 @@ describe('CanvasDocumentSchema', () => {
 
     expect(result.success).toBe(false);
   });
+
+  it('accepts persisted subguide continuation metadata', () => {
+    const result = CanvasDocumentSchema.safeParse({
+      schemaVersion: 1,
+      nodes: [{
+        id: 'reference',
+        type: 'subguide',
+        position: { x: 0, y: 0 },
+        zIndex: 0,
+        data: {
+          guideId: 'source-guide',
+          guideVersionId: 'source-version',
+          title: '物料主数据检查',
+          version: 1,
+          expanded: true,
+          expandedContinuationEdges: [{ id: 'continue-to-host', hidden: false }],
+        },
+      }],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      steps: [],
+      exitNodeIds: [],
+    });
+
+    expect(result.success).toBe(true);
+  });
 });

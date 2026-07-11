@@ -1,10 +1,10 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { NodeChange } from '@xyflow/react';
+import type { Edge, NodeChange } from '@xyflow/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasEdge, GuideVersionSnapshot } from '@guideanything/contracts';
 
-import { GuideEditor, persistableNodeChanges, toFlowNodes, type EditorApi } from './GuideEditor';
+import { GuideEditor, persistableNodeChanges, toCanvasEdge, toFlowNodes, type EditorApi } from './GuideEditor';
 
 const emptyGuide = {
   id: 'guide-host', ownerId: 'author', authorName: '王作者', title: '订单教学', summary: '', tags: ['ERP'],
@@ -43,6 +43,18 @@ describe('GuideEditor', () => {
 
     expect(node).toBeDefined();
     expect(node!.measured).toEqual({ width: 240, height: 104 });
+  });
+
+  it('preserves expanded-edge provenance when React Flow reports an edge update', () => {
+    const sourceTrace = {
+      referenceNodeId: 'subguide-version-source', sourceGuideId: 'guide-source', sourceVersionId: 'version-source', sourceElementId: 'source-edge',
+    };
+    const edge = {
+      id: 'ref:subguide-version-source:source-edge', source: 'ref:subguide-version-source:source-start', sourceHandle: 'out',
+      target: 'ref:subguide-version-source:source-end', targetHandle: 'in', sourceTrace,
+    } as Edge & CanvasEdge;
+
+    expect(toCanvasEdge(edge)).toEqual(expect.objectContaining({ sourceTrace }));
   });
 
   it('does not autosave an untouched guide after loading', async () => {

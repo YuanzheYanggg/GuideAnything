@@ -19,8 +19,8 @@ export function VideoNodeView({ data, onKeypoint }: { data: CanvasNode<'video'>[
   </div>;
 }
 
-export const VideoNode = memo(function VideoNode({ data, selected }: NodeProps) {
-  return <NodeChrome selected={selected} tone="video"><span className="node-kicker">VIDEO</span><VideoNodeView data={data as CanvasNode<'video'>['data']} /></NodeChrome>;
+export const VideoNode = memo(function VideoNode({ data, selected, width, height }: NodeProps) {
+  return <NodeChrome selected={selected} tone="video" width={width} height={height}><span className="node-kicker">VIDEO</span><VideoNodeView data={data as CanvasNode<'video'>['data']} /></NodeChrome>;
 });
 
 function formatTime(seconds: number): string {

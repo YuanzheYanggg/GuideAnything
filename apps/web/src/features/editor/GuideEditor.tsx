@@ -1,6 +1,6 @@
-import type { CanvasDocument, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
-import { duplicateSelection, expandSubguide, HistoryStack, layoutGrid, setSubguideExpanded } from '@guideanything/canvas-core';
+import { duplicateSelection, expandSubguide, HistoryStack, layoutGrid, reconcileSubguideEdges, setSubguideExpanded } from '@guideanything/canvas-core';
 import {
   addEdge,
   applyEdgeChanges,
@@ -96,20 +96,21 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     api.getGuide(guideId).then((loaded) => {
       if (!active) return;
       const validated = CanvasDocumentSchema.parse(loaded.document);
+      const normalized = reconcileSubguideEdges(validated);
       setGuide(loaded);
-      setDocument(validated);
-      setFlowNodes(toFlowNodes(validated.nodes));
+      setDocument(normalized);
+      setFlowNodes(toFlowNodes(normalized.nodes));
       setTitle(loaded.title);
       setSummary(loaded.summary);
       setTags(loaded.tags);
       setSaveState('已保存');
-      historyRef.current = new HistoryStack(validated, 80);
+      historyRef.current = new HistoryStack(normalized, 80);
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '指南载入失败'));
     return () => { active = false; };
   }, [api, guideId]);
 
   const commit = useCallback((next: CanvasDocument) => {
-    const validated = CanvasDocumentSchema.parse(next);
+    const validated = reconcileSubguideEdges(CanvasDocumentSchema.parse(next));
     historyRef.current?.push(validated);
     setDocument(validated);
     setFlowNodes(toFlowNodes(validated.nodes));
@@ -170,7 +171,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     setDocument((current) => {
       if (!current) return current;
       const changed = applyNodeChanges(persistedChanges, toFlowNodes(current.nodes));
-      const next = CanvasDocumentSchema.parse(fromFlowNodes(current, changed));
+      const next = reconcileSubguideEdges(CanvasDocumentSchema.parse(fromFlowNodes(current, changed)));
       historyRef.current?.push(next);
       return next;
     });
@@ -181,7 +182,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     setDocument((current) => {
       if (!current) return current;
       const edges = applyEdgeChanges(changes, current.edges as Edge[]);
-      const next = CanvasDocumentSchema.parse({ ...current, edges: edges.map(fromFlowEdge) });
+      const next = reconcileSubguideEdges(CanvasDocumentSchema.parse({ ...current, edges: edges.map(toCanvasEdge) }));
       historyRef.current?.push(next);
       return next;
     });
@@ -192,7 +193,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     setDocument((current) => {
       if (!current) return current;
       const edges = addEdge({ ...connection, id: uniqueId('edge'), ...defaultEdgeOptions }, current.edges as Edge[]);
-      const next = CanvasDocumentSchema.parse({ ...current, edges: edges.map(fromFlowEdge) });
+      const next = reconcileSubguideEdges(CanvasDocumentSchema.parse({ ...current, edges: edges.map(toCanvasEdge) }));
       historyRef.current?.push(next);
       return next;
     });
@@ -251,14 +252,14 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
 
   const undo = useCallback(() => {
     if (!historyRef.current?.canUndo) return;
-    const previous = historyRef.current.undo();
+    const previous = reconcileSubguideEdges(historyRef.current.undo());
     setDocument(previous);
     setFlowNodes(toFlowNodes(previous.nodes));
     setSaveState('未保存');
   }, []);
   const redo = useCallback(() => {
     if (!historyRef.current?.canRedo) return;
-    const next = historyRef.current.redo();
+    const next = reconcileSubguideEdges(historyRef.current.redo());
     setDocument(next);
     setFlowNodes(toFlowNodes(next.nodes));
     setSaveState('未保存');
@@ -490,7 +491,8 @@ function fromFlowNodes(document: CanvasDocument, nodes: Node[]): CanvasDocument 
   };
 }
 
-function fromFlowEdge(edge: Edge): CanvasDocument['edges'][number] {
+export function toCanvasEdge(edge: Edge): CanvasEdge {
+  const sourceTrace = (edge as Edge & Pick<CanvasEdge, 'sourceTrace'>).sourceTrace;
   return {
     id: edge.id,
     source: edge.source,
@@ -499,6 +501,7 @@ function fromFlowEdge(edge: Edge): CanvasDocument['edges'][number] {
     ...(edge.targetHandle ? { targetHandle: edge.targetHandle } : {}),
     ...(typeof edge.label === 'string' ? { label: edge.label } : {}),
     ...(edge.hidden === undefined ? {} : { hidden: edge.hidden }),
+    ...(sourceTrace ? { sourceTrace } : {}),
   };
 }
 
