@@ -189,7 +189,7 @@ Expected: PASS and Vite build exits 0.
 - Consumes: `CanvasDocument`, history/clipboard/subguide functions, guide save/media/search APIs.
 - Produces: controlled React Flow editor with save/publish/insert/expand/collapse actions.
 
-- [ ] **Step 1: Write failing tests for add/connect/edit, undo/redo, paste ID rewriting, sanitization, keypoint seek, save/restore, and subguide toggling**
+- [x] **Step 1: Write failing tests for add/connect/edit, undo/redo, paste ID rewriting, sanitization, keypoint seek, save/restore, and subguide toggling**
 
 ```tsx
 expect(container.querySelector('script')).toBeNull();
@@ -198,15 +198,15 @@ expect(video.currentTime).toBe(15);
 expect(onDocumentChange).toHaveBeenCalledWith(expect.objectContaining({ nodes: expect.any(Array) }));
 ```
 
-- [ ] **Step 2: Implement the controlled canvas and stable memoized node types**
+- [x] **Step 2: Implement the controlled canvas and stable memoized node types**
 
 Enable `Background`, `MiniMap`, `Controls`, `snapToGrid`, `selectionMode=Partial`, multi-select, delete keys, pan/zoom, fit view, ports, resize controls, z-index actions, alignment actions, and aria labels.
 
-- [ ] **Step 3: Implement inspectors, uploads, Markdown preview, video keypoints, save state, and reference expansion**
+- [x] **Step 3: Implement inspectors, uploads, Markdown preview, video keypoints, save state, and reference expansion**
 
 Use `react-markdown`, `remark-gfm`, and `rehype-sanitize`; image uses `loading="lazy"`; video uses `preload="metadata"`. Persist viewport from `onMoveEnd` and debounce draft saves while retaining explicit Save.
 
-- [ ] **Step 4: Run editor tests and build**
+- [x] **Step 4: Run editor tests and build**
 
 Run: `pnpm --filter @guideanything/web test && pnpm --filter @guideanything/web build`
 Expected: PASS.

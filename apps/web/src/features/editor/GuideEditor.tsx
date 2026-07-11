@@ -1,0 +1,455 @@
+import type { CanvasDocument, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
+import { CanvasDocumentSchema } from '@guideanything/contracts';
+import { duplicateSelection, expandSubguide, HistoryStack, setSubguideExpanded } from '@guideanything/canvas-core';
+import {
+  addEdge,
+  applyEdgeChanges,
+  applyNodeChanges,
+  Background,
+  BackgroundVariant,
+  Controls,
+  MarkerType,
+  MiniMap,
+  ReactFlow,
+  SelectionMode,
+  type Connection,
+  type Edge,
+  type EdgeChange,
+  type Node,
+  type NodeChange,
+  type NodeTypes,
+} from '@xyflow/react';
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import type { SearchItem } from '../library/LibraryPage';
+import { FlowNode } from '../nodes/FlowNode';
+import { ImageNode } from '../nodes/ImageNode';
+import { MarkdownNode } from '../nodes/MarkdownNode';
+import { SubguideNode } from '../nodes/SubguideNode';
+import { VideoNode } from '../nodes/VideoNode';
+
+export interface GuideDraftDetail {
+  id: string;
+  ownerId: string;
+  authorName: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  status: string;
+  revision: number;
+  document: CanvasDocument;
+  publishedVersionId: string | null;
+  publishedVersion: number | null;
+  updatedAt: string;
+}
+
+export interface EditorApi {
+  getGuide: (guideId: string) => Promise<GuideDraftDetail>;
+  saveGuide: (guideId: string, revision: number, changes: { title: string; summary: string; tags: string[]; document: CanvasDocument }) => Promise<GuideDraftDetail>;
+  publishGuide: (guideId: string) => Promise<GuideVersionSnapshot>;
+  search: (query: string) => Promise<SearchItem[]>;
+  getVersion: (versionId: string) => Promise<GuideVersionSnapshot>;
+  uploadMedia: (file: File) => Promise<{ id: string; url: string; kind: 'IMAGE' | 'VIDEO' }>;
+}
+
+const nodeTypes: NodeTypes = {
+  start: FlowNode,
+  end: FlowNode,
+  process: FlowNode,
+  decision: FlowNode,
+  data: FlowNode,
+  markdown: MarkdownNode,
+  image: ImageNode,
+  video: VideoNode,
+  subguide: SubguideNode,
+};
+
+const defaultEdgeOptions = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#52705f', strokeWidth: 2 } };
+const snapGrid: [number, number] = [20, 20];
+const multiSelectionKeyCode = ['Meta', 'Control'];
+
+export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: EditorApi; onBack: () => void }) {
+  const [guide, setGuide] = useState<GuideDraftDetail | null>(null);
+  const [document, setDocument] = useState<CanvasDocument | null>(null);
+  const [title, setTitle] = useState('');
+  const [summary, setSummary] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [saveState, setSaveState] = useState('未保存');
+  const [error, setError] = useState('');
+  const [referenceOpen, setReferenceOpen] = useState(false);
+  const [referenceQuery, setReferenceQuery] = useState('');
+  const [referenceResults, setReferenceResults] = useState<SearchItem[]>([]);
+  const [referenceSearching, setReferenceSearching] = useState(false);
+  const historyRef = useRef<HistoryStack<CanvasDocument> | null>(null);
+  const clipboardRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    api.getGuide(guideId).then((loaded) => {
+      if (!active) return;
+      const validated = CanvasDocumentSchema.parse(loaded.document);
+      setGuide(loaded);
+      setDocument(validated);
+      setTitle(loaded.title);
+      setSummary(loaded.summary);
+      setTags(loaded.tags);
+      historyRef.current = new HistoryStack(validated, 80);
+    }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '指南载入失败'));
+    return () => { active = false; };
+  }, [api, guideId]);
+
+  const commit = useCallback((next: CanvasDocument) => {
+    const validated = CanvasDocumentSchema.parse(next);
+    historyRef.current?.push(validated);
+    setDocument(validated);
+    setSaveState('未保存');
+  }, []);
+
+  const flowNodes = useMemo(() => document ? toFlowNodes(document.nodes, selectedIds) : [], [document?.nodes, selectedIds]);
+  const flowEdges = useMemo(() => document ? document.edges as Edge[] : [], [document?.edges]);
+
+  const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
+    const persistedChanges = changes.filter((change) =>
+      change.type === 'position' || change.type === 'remove' ||
+      (change.type === 'dimensions' && change.resizing === false && Boolean(change.dimensions)),
+    );
+    if (persistedChanges.length === 0) return;
+    setSaveState('未保存');
+    setDocument((current) => {
+      if (!current) return current;
+      const changed = applyNodeChanges(persistedChanges, toFlowNodes(current.nodes));
+      const next = CanvasDocumentSchema.parse(fromFlowNodes(current, changed));
+      historyRef.current?.push(next);
+      return next;
+    });
+  }, []);
+
+  const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
+    setSaveState('未保存');
+    setDocument((current) => {
+      if (!current) return current;
+      const edges = applyEdgeChanges(changes, current.edges as Edge[]);
+      const next = CanvasDocumentSchema.parse({ ...current, edges: edges.map(fromFlowEdge) });
+      historyRef.current?.push(next);
+      return next;
+    });
+  }, []);
+
+  const onConnect = useCallback((connection: Connection) => {
+    setSaveState('未保存');
+    setDocument((current) => {
+      if (!current) return current;
+      const edges = addEdge({ ...connection, id: uniqueId('edge'), ...defaultEdgeOptions }, current.edges as Edge[]);
+      const next = CanvasDocumentSchema.parse({ ...current, edges: edges.map(fromFlowEdge) });
+      historyRef.current?.push(next);
+      return next;
+    });
+  }, []);
+
+  const onSelectionChange = useCallback(({ nodes }: { nodes: Node[] }) => {
+    const next = nodes.map((node) => node.id);
+    setSelectedIds((current) => current.length === next.length && current.every((id, index) => id === next[index]) ? current : next);
+  }, []);
+
+  const onMoveEnd = useCallback((_event: MouseEvent | TouchEvent | null, viewport: CanvasDocument['viewport']) => {
+    setDocument((current) => {
+      if (!current || (current.viewport.x === viewport.x && current.viewport.y === viewport.y && current.viewport.zoom === viewport.zoom)) return current;
+      return { ...current, viewport };
+    });
+  }, []);
+
+  const addNode = (type: CanvasNode['type']) => {
+    if (!document) return;
+    const id = uniqueId(type);
+    const node = createNode(id, type, document.nodes.length);
+    commit({ ...document, nodes: [...document.nodes, node] });
+    setSelectedIds([id]);
+  };
+
+  const save = useCallback(async () => {
+    if (!guide || !document) return;
+    setSaveState('保存中…');
+    setError('');
+    try {
+      const clean = CanvasDocumentSchema.parse(document);
+      const updated = await api.saveGuide(guide.id, guide.revision, { title, summary, tags, document: clean });
+      setGuide((current) => current ? { ...current, revision: updated.revision, status: updated.status } : current);
+      setSaveState('已保存');
+    } catch (reason) {
+      setSaveState('保存失败');
+      setError(reason instanceof Error ? reason.message : '保存失败');
+      throw reason;
+    }
+  }, [api, document, guide, summary, tags, title]);
+
+  useEffect(() => {
+    if (!guide || !document || saveState !== '未保存') return;
+    const timer = window.setTimeout(() => { void save().catch(() => undefined); }, 1_500);
+    return () => window.clearTimeout(timer);
+  }, [document, guide, save, saveState, summary, tags, title]);
+
+  const publish = async () => {
+    try {
+      await save();
+      const version = await api.publishGuide(guideId);
+      setGuide((current) => current ? { ...current, status: 'PUBLISHED', publishedVersionId: version.id, publishedVersion: version.version } : current);
+      setSaveState(`已发布 v${version.version}`);
+    } catch { /* save surfaces the error */ }
+  };
+
+  const undo = useCallback(() => {
+    if (!historyRef.current?.canUndo) return;
+    setDocument(historyRef.current.undo());
+    setSaveState('未保存');
+  }, []);
+  const redo = useCallback(() => {
+    if (!historyRef.current?.canRedo) return;
+    setDocument(historyRef.current.redo());
+    setSaveState('未保存');
+  }, []);
+
+  const copy = useCallback(() => { clipboardRef.current = [...selectedIds]; }, [selectedIds]);
+  const paste = useCallback(() => {
+    if (!document || clipboardRef.current.length === 0) return;
+    const result = duplicateSelection(document, clipboardRef.current, uniqueId('paste'));
+    commit(result.document);
+    setSelectedIds(result.newNodeIds);
+  }, [commit, document]);
+
+  const removeSelected = useCallback(() => {
+    if (!document || selectedIds.length === 0) return;
+    const selected = new Set(selectedIds);
+    commit({
+      ...document,
+      nodes: document.nodes.filter((node) => !selected.has(node.id)),
+      edges: document.edges.filter((edge) => !selected.has(edge.source) && !selected.has(edge.target)),
+      steps: document.steps.filter((step) => !selected.has(step.nodeId)),
+      exitNodeIds: document.exitNodeIds.filter((id) => !selected.has(id)),
+      ...(document.entryNodeId && selected.has(document.entryNodeId) ? { entryNodeId: undefined } : {}),
+    } as CanvasDocument);
+    setSelectedIds([]);
+  }, [commit, document, selectedIds]);
+
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      const modifier = event.metaKey || event.ctrlKey;
+      if (modifier && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); }
+      else if (modifier && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
+      else if (modifier && event.key.toLowerCase() === 'c') copy();
+      else if (modifier && event.key.toLowerCase() === 'v') { event.preventDefault(); paste(); }
+      else if ((event.key === 'Delete' || event.key === 'Backspace') && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) removeSelected();
+    };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  }, [copy, paste, redo, removeSelected, save, undo]);
+
+  const searchReferences = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!referenceQuery.trim()) return;
+    setReferenceSearching(true);
+    try { setReferenceResults(await api.search(referenceQuery.trim())); }
+    finally { setReferenceSearching(false); }
+  };
+
+  const insertReference = (item: SearchItem) => {
+    if (!document) return;
+    const id = `subguide-${item.versionId}`;
+    const node: CanvasNode<'subguide'> = {
+      id,
+      type: 'subguide',
+      position: { x: 120 + document.nodes.length * 28, y: 120 + document.nodes.length * 18 },
+      zIndex: maxZIndex(document) + 1,
+      data: { guideId: item.guideId, guideVersionId: item.versionId, title: item.title, version: item.version, expanded: false },
+    };
+    commit({ ...document, nodes: [...document.nodes.filter((existing) => existing.id !== id), node] });
+    setSelectedIds([id]);
+    setReferenceOpen(false);
+  };
+
+  const toggleReference = async () => {
+    if (!document) return;
+    const selected = document.nodes.find((node) => node.id === selectedIds[0]);
+    if (!selected || selected.type !== 'subguide') return;
+    if (selected.data.expanded) {
+      commit(setSubguideExpanded(document, selected.id, false));
+      return;
+    }
+    const hasDerived = document.nodes.some((node) => node.source?.referenceNodeId === selected.id);
+    if (hasDerived) commit(setSubguideExpanded(document, selected.id, true));
+    else commit(expandSubguide(document, selected, await api.getVersion(selected.data.guideVersionId)));
+  };
+
+  const updateSelectedNode = (next: CanvasNode) => {
+    if (!document) return;
+    commit({ ...document, nodes: document.nodes.map((node) => node.id === next.id ? next : node) });
+  };
+
+  const addStep = () => {
+    if (!document || !selectedIds[0]) return;
+    const node = document.nodes.find((item) => item.id === selectedIds[0]);
+    if (!node) return;
+    const title = node.type === 'markdown' ? '阅读说明' : node.type === 'video' ? '观看操作演示' : node.type === 'image' ? '查看界面示意' : node.type === 'subguide' ? `完成子指南：${node.data.title}` : node.data.label;
+    commit({ ...document, steps: [...document.steps, { id: uniqueId('step'), order: document.steps.length, title, nodeId: node.id }] });
+  };
+
+  const alignLeft = () => {
+    if (!document || selectedIds.length < 2) return;
+    const selected = new Set(selectedIds);
+    const x = Math.min(...document.nodes.filter((node) => selected.has(node.id)).map((node) => node.position.x));
+    commit({ ...document, nodes: document.nodes.map((node) => selected.has(node.id) ? { ...node, position: { ...node.position, x } } : node) });
+  };
+
+  const moveLayer = (front: boolean) => {
+    if (!document || !selectedIds[0]) return;
+    const target = front ? maxZIndex(document) + 1 : Math.min(...document.nodes.map((node) => node.zIndex)) - 1;
+    commit({ ...document, nodes: document.nodes.map((node) => selectedIds.includes(node.id) ? { ...node, zIndex: target } : node) });
+  };
+
+  if (!guide || !document) return <main className="center-state">{error ? <p className="error-message" role="alert">{error}</p> : <><span className="spinner" /><p>正在载入画布…</p></>}</main>;
+  const selectedNode = document.nodes.find((node) => node.id === selectedIds[0]);
+
+  return <main className="editor-page">
+    <header className="editor-header">
+      <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库">←</button>
+      <div className="editor-title"><input aria-label="指南标题" value={title} onChange={(event) => { setTitle(event.target.value); setSaveState('未保存'); }} /><span aria-live="polite">{guide.status === 'PUBLISHED' ? `已发布 v${guide.publishedVersion ?? 1}` : '草稿'} · {saveState}</span></div>
+      <div className="editor-actions"><button className="secondary-button" type="button" onClick={() => void save()} aria-label="保存草稿">保存草稿</button><button className="primary-button" type="button" onClick={() => void publish()} aria-label="发布指南">发布指南</button></div>
+    </header>
+    <div className="editor-toolbar" aria-label="画布工具栏">
+      <button type="button" onClick={() => addNode('start')} aria-label="添加开始节点">开始</button>
+      <button type="button" onClick={() => addNode('process')} aria-label="添加流程节点">流程</button>
+      <button type="button" onClick={() => addNode('decision')} aria-label="添加判断节点">判断</button>
+      <button type="button" onClick={() => addNode('data')} aria-label="添加数据节点">数据</button>
+      <button type="button" onClick={() => addNode('markdown')} aria-label="添加 Markdown 节点">Markdown</button>
+      <button type="button" onClick={() => addNode('image')} aria-label="添加图片节点">图片</button>
+      <button type="button" onClick={() => addNode('video')} aria-label="添加视频节点">视频</button>
+      <span className="toolbar-divider" />
+      <button type="button" onClick={undo} disabled={!historyRef.current?.canUndo} aria-label="撤销">↶</button>
+      <button type="button" onClick={redo} disabled={!historyRef.current?.canRedo} aria-label="重做">↷</button>
+      <button type="button" onClick={copy} disabled={selectedIds.length === 0} aria-label="复制选中节点">复制</button>
+      <button type="button" onClick={paste} disabled={clipboardRef.current.length === 0} aria-label="粘贴节点">粘贴</button>
+      <button type="button" onClick={alignLeft} disabled={selectedIds.length < 2} aria-label="左对齐选中节点">左对齐</button>
+      <button type="button" onClick={() => moveLayer(true)} disabled={selectedIds.length === 0} aria-label="置于顶层">置顶</button>
+      <button type="button" onClick={() => moveLayer(false)} disabled={selectedIds.length === 0} aria-label="置于底层">置底</button>
+      <button type="button" onClick={removeSelected} disabled={selectedIds.length === 0} aria-label="删除选中项">删除</button>
+      <span className="toolbar-divider" />
+      <button type="button" className="reference-button" onClick={() => setReferenceOpen(true)} aria-label="插入子指南">＋ 插入子指南</button>
+    </div>
+    <div className="editor-workspace">
+      <section className="canvas-shell" aria-label="无限画布编辑区">
+        <ReactFlow
+          nodes={flowNodes}
+          edges={flowEdges}
+          nodeTypes={nodeTypes}
+          defaultEdgeOptions={defaultEdgeOptions}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onSelectionChange={onSelectionChange}
+          onMoveEnd={onMoveEnd}
+          defaultViewport={document.viewport}
+          fitView={document.nodes.length > 0}
+          snapToGrid
+          snapGrid={snapGrid}
+          selectionMode={SelectionMode.Partial}
+          multiSelectionKeyCode={multiSelectionKeyCode}
+          minZoom={0.1}
+          maxZoom={2.5}
+        >
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="#a8b3aa" />
+          <MiniMap pannable zoomable nodeStrokeWidth={3} />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      </section>
+      <aside className="inspector" aria-label="属性与教学步骤">
+        <div><span className="eyebrow">GUIDE DETAILS</span><label>摘要<textarea value={summary} onChange={(event) => { setSummary(event.target.value); setSaveState('未保存'); }} /></label><label>标签<input value={tags.join('，')} onChange={(event) => setTags(event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean))} /></label></div>
+        <hr />
+        {selectedNode ? <NodeInspector node={selectedNode} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} onAddStep={addStep} api={api} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
+        <hr />
+        <div className="step-summary"><div><span className="eyebrow">LESSON PATH</span><strong>{document.steps.length} 个教学步骤</strong></div>{[...document.steps].sort((a, b) => a.order - b.order).map((step, index) => <div className="step-row" key={step.id}><span>{index + 1}</span><p>{step.title}</p></div>)}</div>
+      </aside>
+    </div>
+    {error ? <div className="toast-error" role="alert">{error}</div> : null}
+    {referenceOpen ? <div className="modal-backdrop" role="presentation"><section className="reference-modal" role="dialog" aria-modal="true" aria-labelledby="reference-title"><button className="modal-close" onClick={() => setReferenceOpen(false)} aria-label="关闭子指南搜索">×</button><span className="eyebrow">REUSE PUBLISHED GUIDE</span><h2 id="reference-title">插入固定版本子指南</h2><p>引用会固定到当前发布版本，上游更新不会自动改变本画布。</p><form onSubmit={(event) => void searchReferences(event)}><input type="search" aria-label="搜索可复用指南" value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} /><button className="primary-button" type="submit" aria-label="搜索可复用指南" disabled={referenceSearching}>{referenceSearching ? '检索中…' : '搜索可复用指南'}</button></form><div className="reference-results">{referenceResults.map((item) => <article key={item.versionId}><div><strong>{item.title}</strong><span>v{item.version} · {item.authorName}</span></div><button className="secondary-button" type="button" onClick={() => insertReference(item)} aria-label={`插入 ${item.title}`}>插入</button></article>)}</div></section></div> : null}
+  </main>;
+}
+
+function NodeInspector({ node, onChange, onToggleReference, onAddStep, api }: { node: CanvasNode; onChange: (node: CanvasNode) => void; onToggleReference: () => void; onAddStep: () => void; api: EditorApi }) {
+  const updateData = (data: CanvasNode['data']) => onChange({ ...node, data } as CanvasNode);
+  return <div className="node-inspector"><div className="inspector-node-heading"><span>{node.type.toUpperCase()}</span><code>{node.id.slice(0, 18)}</code></div>
+    {['start', 'end', 'process', 'decision', 'data'].includes(node.type) ? <label>节点标题<input value={(node.data as CanvasNode<'process'>['data']).label} onChange={(event) => updateData({ ...node.data, label: event.target.value } as CanvasNode['data'])} /></label> : null}
+    {node.type === 'markdown' ? <label>Markdown<textarea rows={12} value={node.data.markdown} onChange={(event) => updateData({ markdown: event.target.value })} /></label> : null}
+    {node.type === 'image' ? <><label>图片地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>替代文字<input value={node.data.alt} onChange={(event) => updateData({ ...node.data, alt: event.target.value })} /></label><label>图片说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><label className="upload-label">上传图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
+    {node.type === 'video' ? <><label>视频地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>视频说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><div className="keypoint-editor">{node.data.keypoints.map((point, index) => <div key={point.id}><input aria-label={`关键点 ${index + 1} 标题`} value={point.title} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, title: event.target.value } : item) })} /><input type="number" min="0" aria-label={`关键点 ${index + 1} 秒数`} value={point.timeSeconds} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, timeSeconds: Number(event.target.value) } : item) })} /></div>)}<button type="button" onClick={() => updateData({ ...node.data, keypoints: [...node.data.keypoints, { id: uniqueId('keypoint'), title: '新关键点', timeSeconds: 0 }] })}>添加视频关键点</button></div><label className="upload-label">上传视频<input type="file" accept="video/mp4,video/webm" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
+    {node.type === 'subguide' ? <><div className="pinned-version"><strong>{node.data.title}</strong><span>固定版本 v{node.data.version}</span></div><button className="secondary-button" type="button" onClick={onToggleReference} aria-label={node.data.expanded ? '折叠子指南' : '展开子指南'}>{node.data.expanded ? '折叠子指南' : '展开子指南'}</button></> : null}
+    <button className="secondary-button" type="button" onClick={onAddStep}>加入教学步骤</button>
+  </div>;
+}
+
+function createNode(id: string, type: CanvasNode['type'], index: number): CanvasNode {
+  const position = { x: 100 + (index % 4) * 260, y: 100 + Math.floor(index / 4) * 220 };
+  const base = { id, type, position, zIndex: index + 1 };
+  switch (type) {
+    case 'start': return { ...base, type, data: { label: '开始', shape: 'start' } };
+    case 'end': return { ...base, type, data: { label: '结束', shape: 'end' } };
+    case 'process': return { ...base, type, data: { label: '操作步骤', shape: 'process' } };
+    case 'decision': return { ...base, type, data: { label: '条件成立？', shape: 'decision', branchLabels: ['是', '否'] } };
+    case 'data': return { ...base, type, data: { label: '业务数据', shape: 'data' } };
+    case 'markdown': return { ...base, type, data: { markdown: '## 操作说明\n\n在这里填写 ERP 操作步骤和字段规则。' } };
+    case 'image': return { ...base, type, data: { url: 'https://placehold.co/640x360/png?text=ERP+Screenshot', alt: 'ERP 操作界面截图', caption: '点击右侧属性面板上传真实截图。' } };
+    case 'video': return { ...base, type, data: { url: 'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4', caption: 'ERP 操作演示', keypoints: [] } };
+    case 'subguide': throw new Error('subguide nodes must be created from a published version');
+  }
+}
+
+function toFlowNodes(nodes: CanvasDocument['nodes'], selectedIds: string[] = []): Node[] {
+  return nodes.map((node) => ({
+    id: node.id,
+    type: node.type,
+    position: node.position,
+    data: node.data as unknown as Record<string, unknown>,
+    ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
+    zIndex: node.zIndex,
+    selected: selectedIds.includes(node.id),
+    ...(node.size ? { initialWidth: node.size.width, initialHeight: node.size.height } : {}),
+  }));
+}
+
+function fromFlowNodes(document: CanvasDocument, nodes: Node[]): CanvasDocument {
+  const existing = new Map(document.nodes.map((node) => [node.id, node]));
+  return {
+    ...document,
+    nodes: nodes.map((node) => {
+      const source = existing.get(node.id)!;
+      const width = node.width ?? node.measured?.width;
+      const height = node.height ?? node.measured?.height;
+      return {
+        ...source,
+        position: node.position,
+        zIndex: node.zIndex ?? source.zIndex,
+        ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
+        ...(width && height ? { size: { width, height } } : {}),
+      };
+    }),
+  };
+}
+
+function fromFlowEdge(edge: Edge): CanvasDocument['edges'][number] {
+  return {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    ...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : {}),
+    ...(edge.targetHandle ? { targetHandle: edge.targetHandle } : {}),
+    ...(typeof edge.label === 'string' ? { label: edge.label } : {}),
+    ...(edge.hidden === undefined ? {} : { hidden: edge.hidden }),
+  };
+}
+
+function maxZIndex(document: CanvasDocument): number {
+  return document.nodes.reduce((maximum, node) => Math.max(maximum, node.zIndex), 0);
+}
+
+function uniqueId(prefix: string): string {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
