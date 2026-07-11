@@ -32,12 +32,37 @@ describe('published guide search', () => {
     }
   });
 
-  it('rejects empty searches', async () => {
-    const response = await context.app.inject({
-      method: 'GET', url: '/api/search?q=%20', headers: authorization(context.tokens.learner),
+  it('lists published guides when the search query is empty', async () => {
+    const created = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { title: '可复用的物料检查', summary: '用于子指南列表', tags: ['物料'] },
     });
-    expect(response.statusCode).toBe(400);
-    expect(response.json().code).toBe('VALIDATION_ERROR');
+    const guideId = created.json().guide.id as string;
+    await context.app.inject({
+      method: 'POST', url: `/api/guides/${guideId}/publish`, headers: authorization(context.tokens.author),
+    });
+    const second = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { title: '可复用的订单检查', summary: '用于分页验证', tags: ['订单'] },
+    });
+    const secondGuideId = second.json().guide.id as string;
+    await context.app.inject({
+      method: 'POST', url: `/api/guides/${secondGuideId}/publish`, headers: authorization(context.tokens.author),
+    });
+
+    const response = await context.app.inject({
+      method: 'GET', url: '/api/search?q=&limit=1', headers: authorization(context.tokens.learner),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items).toHaveLength(1);
+    expect(response.json().nextOffset).toBe(1);
+
+    const next = await context.app.inject({
+      method: 'GET', url: '/api/search?q=&limit=1&offset=1', headers: authorization(context.tokens.learner),
+    });
+    expect(next.statusCode).toBe(200);
+    expect(next.json().nextOffset).toBeNull();
+    expect([response.json().items[0].guideId, next.json().items[0].guideId]).toEqual(expect.arrayContaining([guideId, secondGuideId]));
   });
 });
 

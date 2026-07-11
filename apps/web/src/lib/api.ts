@@ -1,6 +1,6 @@
 import type { AuthUser, Session } from '../features/auth/types';
 import type { DraftItem, LibraryApi, SearchItem } from '../features/library/LibraryPage';
-import type { EditorApi, GuideDraftDetail } from '../features/editor/GuideEditor';
+import type { EditorApi, GuideDraftDetail, SearchPage } from '../features/editor/GuideEditor';
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
 
 const tokenKey = 'guideanything-token';
@@ -53,7 +53,7 @@ export class ApiClient {
         body: JSON.stringify({ revision, ...changes }),
       })).guide,
       publishGuide: async (guideId) => (await this.request<{ version: GuideVersionSnapshot }>(`/guides/${guideId}/publish`, { method: 'POST' })).version,
-      search: async (query) => (await this.request<{ items: SearchItem[] }>(`/search?q=${encodeURIComponent(query)}`)).items,
+      search: async (query, offset = 0) => this.request<SearchPage>(`/search?q=${encodeURIComponent(query)}&limit=50&offset=${offset}`),
       getVersion: async (versionId) => (await this.request<{ version: GuideVersionSnapshot }>(`/versions/${versionId}`)).version,
       uploadMedia: async (file) => {
         const form = new FormData();

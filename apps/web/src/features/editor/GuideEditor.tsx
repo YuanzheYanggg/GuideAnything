@@ -19,7 +19,7 @@ import {
   type NodeChange,
   type NodeTypes,
 } from '@xyflow/react';
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { SearchItem } from '../library/LibraryPage';
 import { FlowNode } from '../nodes/FlowNode';
@@ -43,11 +43,16 @@ export interface GuideDraftDetail {
   updatedAt: string;
 }
 
+export interface SearchPage {
+  items: SearchItem[];
+  nextOffset: number | null;
+}
+
 export interface EditorApi {
   getGuide: (guideId: string) => Promise<GuideDraftDetail>;
   saveGuide: (guideId: string, revision: number, changes: { title: string; summary: string; tags: string[]; document: CanvasDocument }) => Promise<GuideDraftDetail>;
   publishGuide: (guideId: string) => Promise<GuideVersionSnapshot>;
-  search: (query: string) => Promise<SearchItem[]>;
+  search: (query: string, offset?: number) => Promise<SearchPage>;
   getVersion: (versionId: string) => Promise<GuideVersionSnapshot>;
   uploadMedia: (file: File) => Promise<{ id: string; url: string; kind: 'IMAGE' | 'VIDEO' }>;
 }
@@ -82,6 +87,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   const [referenceQuery, setReferenceQuery] = useState('');
   const [referenceResults, setReferenceResults] = useState<SearchItem[]>([]);
   const [referenceSearching, setReferenceSearching] = useState(false);
+  const [referenceError, setReferenceError] = useState('');
   const historyRef = useRef<HistoryStack<CanvasDocument> | null>(null);
   const clipboardRef = useRef<string[]>([]);
 
@@ -124,6 +130,37 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       return changed ? next : current;
     });
   }, [selectedIds]);
+
+  useEffect(() => {
+    if (!referenceOpen) return;
+    let active = true;
+    const query = referenceQuery.trim();
+    const timer = window.setTimeout(() => {
+      setReferenceSearching(true);
+      setReferenceError('');
+      setReferenceResults([]);
+      const loadAll = async () => {
+        let offset = 0;
+        const items: SearchItem[] = [];
+        try {
+          while (active) {
+            const page = await api.search(query, offset);
+            if (!active) return;
+            items.push(...page.items);
+            setReferenceResults([...items]);
+            if (page.nextOffset === null || page.nextOffset <= offset) return;
+            offset = page.nextOffset;
+          }
+        } catch (reason: unknown) {
+          if (active) setReferenceError(reason instanceof Error ? reason.message : '子指南列表载入失败');
+        } finally {
+          if (active) setReferenceSearching(false);
+        }
+      };
+      void loadAll();
+    }, query ? 180 : 0);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [api, referenceOpen, referenceQuery]);
 
   const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
     setFlowNodes((current) => applyNodeChanges(changes, current));
@@ -262,14 +299,6 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     return () => window.removeEventListener('keydown', keydown);
   }, [copy, paste, redo, removeSelected, save, undo]);
 
-  const searchReferences = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!referenceQuery.trim()) return;
-    setReferenceSearching(true);
-    try { setReferenceResults(await api.search(referenceQuery.trim())); }
-    finally { setReferenceSearching(false); }
-  };
-
   const insertReference = (item: SearchItem) => {
     if (!document) return;
     const id = `subguide-${item.versionId}`;
@@ -352,7 +381,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       <button type="button" onClick={() => moveLayer(false)} disabled={selectedIds.length === 0} aria-label="置于底层">置底</button>
       <button type="button" onClick={removeSelected} disabled={selectedIds.length === 0} aria-label="删除选中项">删除</button>
       <span className="toolbar-divider" />
-      <button type="button" className="reference-button" onClick={() => setReferenceOpen(true)} aria-label="插入子指南">＋ 插入子指南</button>
+      <button type="button" className="reference-button" onClick={() => { setReferenceQuery(''); setReferenceResults([]); setReferenceError(''); setReferenceSearching(true); setReferenceOpen(true); }} aria-label="插入子指南">＋ 插入子指南</button>
     </div>
     <div className="editor-workspace">
       <section className="canvas-shell" aria-label="无限画布编辑区">
@@ -389,7 +418,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       </aside>
     </div>
     {error ? <div className="toast-error" role="alert">{error}</div> : null}
-    {referenceOpen ? <div className="modal-backdrop" role="presentation"><section className="reference-modal" role="dialog" aria-modal="true" aria-labelledby="reference-title"><button className="modal-close" onClick={() => setReferenceOpen(false)} aria-label="关闭子指南搜索">×</button><span className="eyebrow">REUSE PUBLISHED GUIDE</span><h2 id="reference-title">插入固定版本子指南</h2><p>引用会固定到当前发布版本，上游更新不会自动改变本画布。</p><form onSubmit={(event) => void searchReferences(event)}><input type="search" aria-label="搜索可复用指南" value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} /><button className="primary-button" type="submit" aria-label="搜索可复用指南" disabled={referenceSearching}>{referenceSearching ? '检索中…' : '搜索可复用指南'}</button></form><div className="reference-results">{referenceResults.map((item) => <article key={item.versionId}><div><strong>{item.title}</strong><span>v{item.version} · {item.authorName}</span></div><button className="secondary-button" type="button" onClick={() => insertReference(item)} aria-label={`插入 ${item.title}`}>插入</button></article>)}</div></section></div> : null}
+    {referenceOpen ? <div className="modal-backdrop" role="presentation"><section className="reference-modal" role="dialog" aria-modal="true" aria-labelledby="reference-title"><button className="modal-close" onClick={() => { setReferenceOpen(false); setReferenceSearching(false); }} aria-label="关闭子指南搜索">×</button><span className="eyebrow">REUSE PUBLISHED GUIDE</span><h2 id="reference-title">插入固定版本子指南</h2><p>打开后会载入全部已发布指南；输入标题、标签或内容关键词即可即时筛选。</p><label className="sr-only" htmlFor="reference-search">搜索可复用指南</label><input id="reference-search" type="search" autoFocus placeholder="例如：物料、销售订单、VA01" aria-label="搜索可复用指南" value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} /><div className="reference-results" aria-live="polite">{referenceSearching ? <p className="status-line">正在载入可复用指南…</p> : null}{referenceError ? <p className="error-message" role="alert">{referenceError}</p> : null}{!referenceSearching && !referenceError && referenceResults.length === 0 ? <p className="muted">没有找到可引用的已发布指南。</p> : null}{referenceResults.map((item) => <article key={item.versionId}><div><strong>{item.title}</strong><span>v{item.version} · {item.authorName}</span></div><button className="secondary-button" type="button" onClick={() => insertReference(item)} aria-label={`插入 ${item.title}`}>插入</button></article>)}</div></section></div> : null}
   </main>;
 }
 
