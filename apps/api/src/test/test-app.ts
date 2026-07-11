@@ -22,7 +22,7 @@ const users: Array<{ key: keyof TestContext['tokens']; email: string; name: stri
   { key: 'otherAuthor', email: 'other@guide.local', name: '赵作者', role: 'AUTHOR' },
 ];
 
-export async function createTestContext(): Promise<TestContext> {
+export async function createTestContext(options: { uploadDir?: string } = {}): Promise<TestContext> {
   const database = createDatabase(':memory:');
   migrateDatabase(database);
   const passwordHash = await hashPassword('Guide123!');
@@ -37,7 +37,11 @@ export async function createTestContext(): Promise<TestContext> {
     insert.run(id, user.email, passwordHash, user.name, user.role, new Date().toISOString());
   }
 
-  const app = await buildApp({ database, jwtSecret: 'test-secret-that-is-long-enough-1234' });
+  const app = await buildApp({
+    database,
+    jwtSecret: 'test-secret-that-is-long-enough-1234',
+    ...(options.uploadDir ? { uploadDir: options.uploadDir } : {}),
+  });
   const tokens = {} as TestContext['tokens'];
   for (const user of users) {
     const response = await app.inject({
@@ -93,4 +97,3 @@ export function sampleDocument(markdown = '# 创建销售订单\n填写客户与
     exitNodeIds: ['instructions'],
   };
 }
-

@@ -14,6 +14,7 @@ const app = await buildApp({
   jwtSecret: config.jwtSecret,
   webOrigin: config.webOrigin,
   logger: true,
+  uploadDir: config.uploadDir,
 });
 
 const close = async () => {
@@ -24,4 +25,3 @@ process.once('SIGINT', () => void close());
 process.once('SIGTERM', () => void close());
 
 await app.listen({ host: '127.0.0.1', port: config.port });
-

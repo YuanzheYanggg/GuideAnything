@@ -1,10 +1,13 @@
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
+import multipart from '@fastify/multipart';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { registerAuthRoutes } from './modules/auth/routes';
 import { registerGuideRoutes } from './modules/guides/routes';
+import { registerMediaRoutes } from './modules/media/routes';
 import { registerSearchRoutes } from './modules/search/routes';
 import { createAuthenticateRequest } from './plugins/auth';
 
@@ -13,6 +16,7 @@ export interface BuildAppOptions {
   jwtSecret: string;
   webOrigin?: string;
   logger?: boolean;
+  uploadDir?: string;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -24,6 +28,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   });
   await app.register(jwt, { secret: options.jwtSecret });
+  await app.register(multipart, {
+    limits: { files: 1, parts: 2, fileSize: 201 * 1024 * 1024 },
+  });
 
   app.decorateRequest('authUser', undefined);
   app.decorate('authenticateRequest', createAuthenticateRequest(options.database));
@@ -47,6 +54,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.get('/api/health', async () => ({ status: 'ok' }));
   await registerAuthRoutes(app, options.database);
   await registerGuideRoutes(app, options.database);
+  await registerMediaRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
   await registerSearchRoutes(app, options.database);
   await app.ready();
   return app;

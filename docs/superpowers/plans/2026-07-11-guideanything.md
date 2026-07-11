@@ -137,15 +137,15 @@ Expected: tests PASS; seed reports 3 users and 2 published guide versions.
 **Interfaces:**
 - Produces: `POST /api/media`, `GET /api/media/:id`; consumes authenticated user and multipart stream.
 
-- [ ] **Step 1: Write failing upload tests for allowed image, bad MIME, oversize, and unauthenticated access**
+- [x] **Step 1: Write failing upload tests for allowed image, bad MIME, oversize, and unauthenticated access**
 
 Use Fastify injection multipart payloads; assert 201, 415, 413, and 401 respectively.
 
-- [ ] **Step 2: Implement stream limits, magic-byte checks, UUID filenames, and owner metadata**
+- [x] **Step 2: Implement stream limits, magic-byte checks, UUID filenames, and owner metadata**
 
 Never use the client filename as a storage path. Serve `nosniff`, explicit content type, private cache headers, and content disposition inline.
 
-- [ ] **Step 3: Run media tests**
+- [x] **Step 3: Run media tests**
 
 Run: `pnpm --filter @guideanything/api test -- media.test.ts`
 Expected: PASS and temporary uploads are removed after each test.
