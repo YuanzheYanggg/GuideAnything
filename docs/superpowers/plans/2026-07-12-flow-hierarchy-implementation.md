@@ -476,3 +476,56 @@ Expected: 所有命令退出 0。
     git status --short
 
 Expected: 仅存在本次功能提交；不提交 SQLite、上传媒体、测试报告或浏览器截图。
+
+---
+
+### Task 6: 收口总审发现的流程可解释性与定位缺口
+
+**Files:**
+- Modify: packages/canvas-core/src/hierarchy.ts
+- Modify: packages/canvas-core/src/hierarchy.test.ts
+- Modify: apps/web/src/features/editor/GuideEditor.tsx
+- Modify: apps/web/src/features/editor/GuideEditor.test.tsx
+- Modify: apps/web/src/features/editor/HierarchyPanel.tsx
+- Modify: apps/web/src/features/editor/HierarchyPanel.test.tsx
+- Modify: apps/web/src/features/lesson/LessonPage.tsx
+- Modify: apps/web/src/features/lesson/LessonPage.test.tsx
+- Modify: apps/web/src/styles.css
+- Modify: docs/ACCEPTANCE.md
+- Modify: docs/PROGRESS.md
+
+**Interfaces:**
+- Produces: `isDecisionBranch`-aware deterministic sibling ordering、可读的 `HierarchyLayoutReport` 预览摘要、`focusCanvasNode`、以及仅展示用途的引用子指南上下文。
+- Guarantees: 引用产物绝不成为宿主流程或自动布局输入；它们只在引用节点下以“子指南内容”呈现，并继承该引用节点的阶段上下文。
+
+- [ ] **Step 1: 写四组失败回归测试**
+
+1. 在 `hierarchy.test.ts` 构造一个判断节点，令初始 `否` 分支的 y 坐标在 `是` 之前，并给两条边 `label/sourceHandle` 为 `是/yes` 与 `否/no`；自动整理后必须稳定地令 `是` 分支位于 `否` 分支之前。若边没有显式 label，按判断节点 `branchLabels` 的顺序匹配 handle；未匹配的分支仍落回原有稳定排序。
+2. 在 `GuideEditor.test.tsx` 打开自动整理预览，断言状态区同时给出主流程数、阶段数、已挂靠/未挂靠资料数、孤立节点数、循环数，以及“入口→阶段泳道→资料”的规则说明；结构树点击离屏节点时，断言 `ReactFlowInstance.fitView` 被调用到该节点。
+3. 在 `HierarchyPanel.test.tsx` 加入展开子指南及其 `source.referenceNodeId` 产物，断言它们只在该引用节点下的“子指南内容”分组中出现，且不会作为阶段一级流程或“未挂靠资料”重复出现。
+4. 在 `LessonPage.test.tsx` 让展开产物成为一个教学步骤，断言它继承引用子指南的阶段标题；保留 source-free 主流程/资料规则与旧版本行为。
+
+- [ ] **Step 2: 最小实现**
+
+`hierarchy.ts` 在同 rank 的判断分支并列时，把边 label 优先匹配到来源判断节点的 `branchLabels`（并识别 `是/yes` 在 `否/no` 之前）；其余节点继续使用 y、x、id 的稳定回退。不得改变 rank、循环、孤立节点或引用产物隔离。
+
+编辑器把 `layoutPreview.report` 渲染为可扫描的摘要和一行规则说明。保存 `ReactFlow` 实例；结构树选择通过单一 `selectAndFocus` 回调更新选择，并用 `fitView({ nodes: [{ id }], ... })` 将该节点带到视野中。预览期间选择/聚焦可以发生，但任何画布编辑仍必须保持冻结。
+
+结构面板仍用 source-free 节点决定阶段和资料归属；对每一个可见展开子指南，将 `source.referenceNodeId === subguide.id` 的可见产物按原画布稳定顺序缩进到该引用节点下，使用“子指南内容”标题与独立可访问名称。它们不能进入宿主布局、阶段 bounds、自动布局 report 或“未挂靠资料”。
+
+学习模式中，source 节点将其阶段解析到 `source.referenceNodeId` 指向的 source-free 子指南；它仍不参与 `resourcesForStep` 的宿主挂靠聚合。显式 source 步骤继续按既有 steps.order 导航。
+
+补足对应样式，保持窄屏树与预览摘要可读。
+
+- [ ] **Step 3: 验证、文档证据与提交**
+
+Run:
+
+    pnpm --filter @guideanything/canvas-core test -- hierarchy.test.ts
+    pnpm --filter @guideanything/web test -- GuideEditor.test.tsx HierarchyPanel.test.tsx LessonPage.test.tsx
+    pnpm lint && pnpm typecheck && pnpm test && pnpm build
+
+浏览器复验：对销售订单流程的判断节点确认 `是` 位于 `否` 前；预览报告各计数可见；从结构树点选离屏节点画布聚焦；展开子指南后作者树与学习步骤均显示它继承的阶段上下文。将实际新测试总数与浏览器事实更新到 `ACCEPTANCE.md`/`PROGRESS.md`，不得声称没有开发态 React Flow warnings。
+
+    git add packages/canvas-core/src/hierarchy.ts packages/canvas-core/src/hierarchy.test.ts apps/web/src/features/editor/GuideEditor.tsx apps/web/src/features/editor/GuideEditor.test.tsx apps/web/src/features/editor/HierarchyPanel.tsx apps/web/src/features/editor/HierarchyPanel.test.tsx apps/web/src/features/lesson/LessonPage.tsx apps/web/src/features/lesson/LessonPage.test.tsx apps/web/src/styles.css docs/ACCEPTANCE.md docs/PROGRESS.md
+    git commit -m 'fix: complete hierarchy workflow clarity'
