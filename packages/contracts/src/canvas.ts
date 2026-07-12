@@ -130,6 +130,10 @@ export const CanvasDocumentSchema = z.object({
   exitNodeIds: z.array(IdSchema).max(1_000),
 }).superRefine((document, context) => {
   const nodeIds = new Set(document.nodes.map((item) => item.id));
+  const nodesById = new Map<string, typeof document.nodes[number]>();
+  document.nodes.forEach((node) => {
+    if (!nodesById.has(node.id)) nodesById.set(node.id, node);
+  });
   const edgeIds = new Set<string>();
   const seenNodeIds = new Set<string>();
   const seenStageIds = new Set<string>();
@@ -157,8 +161,14 @@ export const CanvasDocumentSchema = z.object({
       context.addIssue({ code: 'custom', path: ['nodes', index, 'stageId'], message: '阶段只能标记存在的一级主流程节点' });
     }
     if (!node.contentParentId) return;
-    const parent = document.nodes.find((candidate) => candidate.id === node.contentParentId);
-    if (!contentTypes.has(node.type) || !parent || !primaryTypes.has(parent.type) || parent.source) {
+    const parent = nodesById.get(node.contentParentId);
+    const sameReference = Boolean(
+      node.source
+      && parent?.source
+      && node.source.referenceNodeId === parent.source.referenceNodeId,
+    );
+    const sameAuthoredLayer = !node.source && !parent?.source;
+    if (!contentTypes.has(node.type) || !parent || !primaryTypes.has(parent.type) || (!sameAuthoredLayer && !sameReference)) {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'contentParentId'], message: '资料必须挂靠到一级主流程节点' });
     }
   });

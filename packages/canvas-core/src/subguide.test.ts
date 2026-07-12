@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CanvasDocument, CanvasEdge, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
+import { CanvasDocumentSchema, type CanvasDocument, type CanvasEdge, type CanvasNode, type GuideVersionSnapshot } from '@guideanything/contracts';
 
 import { expandSubguide, reconcileSubguideEdges, setSubguideExpanded } from './subguide';
 
@@ -60,6 +60,54 @@ const snapshot: GuideVersionSnapshot = {
   },
 };
 
+const hierarchySnapshot: GuideVersionSnapshot = {
+  ...snapshot,
+  id: 'hierarchy-version',
+  document: {
+    schemaVersion: 1,
+    stages: [{ id: 'prepare', title: '准备', order: 0 }],
+    nodes: [
+      {
+        id: 'source-process',
+        type: 'process',
+        position: { x: 0, y: 0 },
+        zIndex: 0,
+        stageId: 'prepare',
+        data: { label: '准备物料', shape: 'process' },
+      },
+      {
+        id: 'source-markdown',
+        type: 'markdown',
+        position: { x: 0, y: 160 },
+        zIndex: 1,
+        contentParentId: 'source-process',
+        data: { markdown: '核对前置条件' },
+      },
+      {
+        id: 'source-image',
+        type: 'image',
+        position: { x: 0, y: 320 },
+        zIndex: 2,
+        contentParentId: 'source-process',
+        data: { url: 'https://example.com/material.png', alt: '物料' },
+      },
+      {
+        id: 'source-video',
+        type: 'video',
+        position: { x: 0, y: 480 },
+        zIndex: 3,
+        contentParentId: 'source-process',
+        data: { url: 'https://example.com/material.mp4', keypoints: [] },
+      },
+    ],
+    edges: [],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    steps: [],
+    entryNodeId: 'source-process',
+    exitNodeIds: ['source-process'],
+  },
+};
+
 describe('expandSubguide', () => {
   it('namespaces source IDs, offsets coordinates, and records origin', () => {
     const reference = host.nodes[0] as CanvasNode<'subguide'>;
@@ -86,6 +134,18 @@ describe('expandSubguide', () => {
       expect.objectContaining({ source: 'ref-1', target: 'ref:ref-1:source-start' }),
     ]));
     expect(expanded.steps[0]?.nodeId).toBe('ref:ref-1:source-start');
+  });
+
+  it('remaps hierarchy resources and removes source stage metadata during expansion', () => {
+    const reference = host.nodes[0] as CanvasNode<'subguide'>;
+    const expanded = expandSubguide(host, reference, hierarchySnapshot);
+
+    expect(CanvasDocumentSchema.safeParse(expanded).success).toBe(true);
+    expect(expanded.nodes.filter(isDerived).every((node) => node.stageId === undefined)).toBe(true);
+    for (const id of ['source-markdown', 'source-image', 'source-video']) {
+      expect(expanded.nodes.find((node) => node.id === `ref:ref-1:${id}`)?.contentParentId)
+        .toBe('ref:ref-1:source-process');
+    }
   });
 
   it('is idempotent and can hide and reveal only derived elements', () => {

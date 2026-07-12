@@ -98,6 +98,62 @@ describe('CanvasDocumentSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts a resource attached to a primary flow node from the same reference', () => {
+    const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      nodes: [
+        {
+          id: 'derived-process',
+          type: 'process',
+          position: { x: 0, y: 0 },
+          zIndex: 0,
+          source: sourceTrace('reference-1', 'source-process'),
+          data: { label: '派生流程', shape: 'process' },
+        },
+        {
+          id: 'derived-note',
+          type: 'markdown',
+          position: { x: 0, y: 160 },
+          zIndex: 1,
+          contentParentId: 'derived-process',
+          source: sourceTrace('reference-1', 'source-note'),
+          data: { markdown: '派生资料' },
+        },
+      ],
+      entryNodeId: 'derived-process',
+      exitNodeIds: ['derived-process'],
+    }));
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a resource attached to a primary flow node from another reference', () => {
+    const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      nodes: [
+        {
+          id: 'derived-process',
+          type: 'process',
+          position: { x: 0, y: 0 },
+          zIndex: 0,
+          source: sourceTrace('reference-1', 'source-process'),
+          data: { label: '派生流程', shape: 'process' },
+        },
+        {
+          id: 'derived-note',
+          type: 'markdown',
+          position: { x: 0, y: 160 },
+          zIndex: 1,
+          contentParentId: 'derived-process',
+          source: sourceTrace('reference-2', 'source-note'),
+          data: { markdown: '跨引用资料' },
+        },
+      ],
+      entryNodeId: 'derived-process',
+      exitNodeIds: ['derived-process'],
+    }));
+
+    expect(result.success).toBe(false);
+  });
+
   it('accepts a valid multimodal canvas', () => {
     const result = CanvasDocumentSchema.safeParse({
       schemaVersion: 1,
@@ -178,3 +234,12 @@ describe('CanvasDocumentSchema', () => {
     expect(result.success).toBe(true);
   });
 });
+
+function sourceTrace(referenceNodeId: string, sourceElementId: string) {
+  return {
+    referenceNodeId,
+    sourceGuideId: 'source-guide',
+    sourceVersionId: 'source-version',
+    sourceElementId,
+  };
+}
