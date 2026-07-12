@@ -16,12 +16,15 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
+  type OnConnectEnd,
+  type OnConnectStart,
   type Node,
   type NodeChange,
   type NodeTypes,
   type ReactFlowInstance,
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 
 import type { SearchItem } from '../library/LibraryPage';
 import { FlowNode } from '../nodes/FlowNode';
@@ -30,6 +33,8 @@ import { MarkdownNode } from '../nodes/MarkdownNode';
 import { SubguideNode } from '../nodes/SubguideNode';
 import { VideoNode } from '../nodes/VideoNode';
 import { HierarchyPanel } from './HierarchyPanel';
+import { CanvasCreationMenu, type CanvasCreationKind } from './CanvasCreationMenu';
+import { EdgeLabelEditor } from './EdgeLabelEditor';
 
 export interface GuideDraftDetail {
   id: string;
@@ -93,8 +98,11 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   const [referenceError, setReferenceError] = useState('');
   const [layoutPreview, setLayoutPreview] = useState<HierarchyLayoutResult | null>(null);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
+  const [creationMenu, setCreationMenu] = useState<{ sourceId: string; sourceHandle?: string; position: { x: number; y: number } } | null>(null);
+  const [edgeLabelEditor, setEdgeLabelEditor] = useState<{ edgeId: string; label?: string; position: { x: number; y: number } } | null>(null);
   const historyRef = useRef<HistoryStack<CanvasDocument> | null>(null);
   const clipboardRef = useRef<string[]>([]);
+  const connectSourceRef = useRef<{ sourceId: string; sourceHandle?: string } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -205,6 +213,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   }, [layoutPreview]);
 
   const onConnect = useCallback((connection: Connection) => {
+    connectSourceRef.current = null;
     if (layoutPreview) return;
     setLayoutPreview(null);
     setSaveState('未保存');
@@ -216,6 +225,60 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       return next;
     });
   }, [layoutPreview]);
+
+  const onConnectStart = useCallback<OnConnectStart>((_event, { nodeId, handleId, handleType }) => {
+    connectSourceRef.current = nodeId && handleType === 'source' ? { sourceId: nodeId, ...(handleId ? { sourceHandle: handleId } : {}) } : null;
+  }, []);
+
+  const onConnectEnd = useCallback<OnConnectEnd>((event) => {
+    const source = connectSourceRef.current;
+    connectSourceRef.current = null;
+    if (layoutPreview || !document || !source || !flowInstance || !isCanvasPane(event.target)) return;
+    const sourceNode = document.nodes.find((node) => node.id === source.sourceId);
+    if (!sourceNode || !isPrimaryFlowNode(sourceNode)) return;
+    setCreationMenu({ ...source, position: flowInstance.screenToFlowPosition(clientPoint(event)) });
+  }, [document, flowInstance, layoutPreview]);
+
+  const createFromConnection = useCallback((kind: CanvasCreationKind) => {
+    if (!document || layoutPreview || !creationMenu) return;
+    const source = document.nodes.find((node) => node.id === creationMenu.sourceId);
+    if (!source || !isPrimaryFlowNode(source)) {
+      setCreationMenu(null);
+      return;
+    }
+    const id = uniqueId(kind);
+    const created = createNode(id, kind, document.nodes.length, creationMenu.position);
+    const node = isContentNode(created)
+      ? { ...created, contentParentId: source.id }
+      : { ...created, ...(source.stageId ? { stageId: source.stageId } : {}), ...(source.laneId ? { laneId: source.laneId } : {}) };
+    const edges = isContentNode(created) ? document.edges : [...document.edges, {
+      id: uniqueId('edge'), source: source.id, target: id,
+      ...(creationMenu.sourceHandle ? { sourceHandle: creationMenu.sourceHandle } : {}),
+    }];
+    commit({ ...document, nodes: [...document.nodes, node], edges });
+    setSelectedIds([id]);
+    setCreationMenu(null);
+  }, [commit, creationMenu, document, layoutPreview]);
+
+  const onEdgeDoubleClick = useCallback((event: ReactMouseEvent, edge: Edge) => {
+    if (layoutPreview || !document || edge.id.startsWith('hierarchy:') || (edge as Edge & Pick<CanvasEdge, 'sourceTrace'>).sourceTrace) return;
+    const persisted = document.edges.find((candidate) => candidate.id === edge.id);
+    if (!persisted || persisted.sourceTrace) return;
+    const nativeEvent = (event as ReactMouseEvent & { nativeEvent?: MouseEvent }).nativeEvent ?? event as unknown as MouseEvent;
+    setEdgeLabelEditor({ edgeId: persisted.id, ...(persisted.label ? { label: persisted.label } : {}), position: flowInstance?.screenToFlowPosition(clientPoint(nativeEvent)) ?? clientPoint(nativeEvent) });
+  }, [document, flowInstance, layoutPreview]);
+
+  const saveEdgeLabel = useCallback((label: string) => {
+    if (!document || layoutPreview || !edgeLabelEditor) return;
+    const edgeId = edgeLabelEditor.edgeId;
+    commit({ ...document, edges: document.edges.map((edge) => {
+      if (edge.id !== edgeId) return edge;
+      if (label) return { ...edge, label };
+      const { label: _label, ...unlabeled } = edge;
+      return unlabeled;
+    }) });
+    setEdgeLabelEditor(null);
+  }, [commit, document, edgeLabelEditor, layoutPreview]);
 
   const onSelectionChange = useCallback(({ nodes }: { nodes: Node[] }) => {
     const next = nodes.map((node) => node.id);
@@ -283,6 +346,8 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
 
   const previewLayout = () => {
     if (!document || layoutPreview) return;
+    setCreationMenu(null);
+    setEdgeLabelEditor(null);
     setLayoutPreview(layoutFlowHierarchy(document));
   };
 
@@ -476,6 +541,10 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onConnectStart={onConnectStart}
+          onConnectEnd={onConnectEnd}
+          onEdgeDoubleClick={onEdgeDoubleClick}
+          onPaneClick={() => setCreationMenu(null)}
           onSelectionChange={onSelectionChange}
           onMoveEnd={onMoveEnd}
           onInit={setFlowInstance}
@@ -495,6 +564,8 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
           <ViewportPortal>
             {swimlaneBounds.map((bound) => <div key={bound.laneId ?? 'unassigned'} className="swimlane-column" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><div><span>{bound.title}</span>{bound.kind ? <em>{bound.kind === 'ROLE' ? '角色' : '系统'}</em> : null}</div></div>)}
             {stageBounds.map((bound) => <div key={bound.stageId ?? 'none'} className="stage-lane" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><span>{bound.title}</span></div>)}
+            {creationMenu ? <CanvasCreationMenu position={creationMenu.position} allowResources onCreate={createFromConnection} onCancel={() => setCreationMenu(null)} /> : null}
+            {edgeLabelEditor ? <EdgeLabelEditor position={edgeLabelEditor.position} {...(edgeLabelEditor.label !== undefined ? { label: edgeLabelEditor.label } : {})} onSave={saveEdgeLabel} onCancel={() => setEdgeLabelEditor(null)} /> : null}
           </ViewportPortal>
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="#a8b3aa" />
           <MiniMap pannable zoomable nodeStrokeWidth={3} />
@@ -516,8 +587,9 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
 
 function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleReference, onAddStep, api, locked }: { node: CanvasNode; primaryNodes: CanvasNode[]; stages: FlowStage[]; lanes: FlowLane[]; onChange: (node: CanvasNode) => void; onToggleReference: () => void; onAddStep: () => void; api: EditorApi; locked: boolean }) {
   const updateData = (data: CanvasNode['data']) => onChange({ ...node, data } as CanvasNode);
+  const flowData = ['start', 'end', 'process', 'decision', 'data'].includes(node.type) ? node.data as CanvasNode<'process'>['data'] : null;
   return <fieldset className="node-inspector" disabled={locked}><div className="inspector-node-heading"><span>{node.type.toUpperCase()}</span><code>{node.id.slice(0, 18)}</code></div>
-    {['start', 'end', 'process', 'decision', 'data'].includes(node.type) ? <label>节点标题<input value={(node.data as CanvasNode<'process'>['data']).label} onChange={(event) => updateData({ ...node.data, label: event.target.value } as CanvasNode['data'])} /></label> : null}
+    {flowData ? <><label>节点标题<input value={flowData.label} onChange={(event) => updateData({ ...flowData, label: event.target.value } as CanvasNode['data'])} /></label><label>节点明细<textarea rows={4} value={flowData.description ?? ''} onChange={(event) => { const description = event.target.value.trim(); const { description: _previousDescription, ...withoutDescription } = flowData; updateData((description ? { ...withoutDescription, description: event.target.value } : withoutDescription) as CanvasNode['data']); }} /></label></> : null}
     {node.type === 'markdown' ? <label>Markdown<textarea rows={12} value={node.data.markdown} onChange={(event) => updateData({ markdown: event.target.value })} /></label> : null}
     {node.type === 'image' ? <><label>图片地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>替代文字<input value={node.data.alt} onChange={(event) => updateData({ ...node.data, alt: event.target.value })} /></label><label>图片说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><label className="upload-label">上传图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
     {node.type === 'video' ? <><label>视频地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>视频说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><div className="keypoint-editor">{node.data.keypoints.map((point, index) => <div key={point.id}><input aria-label={`关键点 ${index + 1} 标题`} value={point.title} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, title: event.target.value } : item) })} /><input type="number" min="0" aria-label={`关键点 ${index + 1} 秒数`} value={point.timeSeconds} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, timeSeconds: Number(event.target.value) } : item) })} /></div>)}<button type="button" onClick={() => updateData({ ...node.data, keypoints: [...node.data.keypoints, { id: uniqueId('keypoint'), title: '新关键点', timeSeconds: 0 }] })}>添加视频关键点</button></div><label className="upload-label">上传视频<input type="file" accept="video/mp4,video/webm" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
@@ -528,9 +600,9 @@ function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleRe
   </fieldset>;
 }
 
-function createNode(id: string, type: CanvasNode['type'], index: number): CanvasNode {
-  const position = { x: 80 + (index % 3) * 380, y: 80 + Math.floor(index / 3) * 300 };
-  const base = { id, type, position, zIndex: index + 1 };
+function createNode(id: string, type: CanvasNode['type'], index: number, position?: { x: number; y: number }): CanvasNode {
+  const createdPosition = position ?? { x: 80 + (index % 3) * 380, y: 80 + Math.floor(index / 3) * 300 };
+  const base = { id, type, position: createdPosition, zIndex: index + 1 };
   switch (type) {
     case 'start': return { ...base, type, data: { label: '开始', shape: 'start' } };
     case 'end': return { ...base, type, data: { label: '结束', shape: 'end' } };
@@ -636,6 +708,20 @@ function maxZIndex(document: CanvasDocument): number {
 
 function uniqueId(prefix: string): string {
   return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+function isCanvasPane(target: EventTarget | null): boolean {
+  return typeof target === 'object'
+    && target !== null
+    && 'classList' in target
+    && target.classList instanceof DOMTokenList
+    && target.classList.contains('react-flow__pane');
+}
+
+function clientPoint(event: MouseEvent | TouchEvent): { x: number; y: number } {
+  if ('touches' in event && event.touches.length > 0) return { x: event.touches[0]!.clientX, y: event.touches[0]!.clientY };
+  if ('changedTouches' in event && event.changedTouches.length > 0) return { x: event.changedTouches[0]!.clientX, y: event.changedTouches[0]!.clientY };
+  return 'clientX' in event ? { x: event.clientX, y: event.clientY } : { x: 0, y: 0 };
 }
 
 function moveOrderedItem<T extends { id: string; order: number }>(items: T[], id: string, direction: -1 | 1): T[] | null {
