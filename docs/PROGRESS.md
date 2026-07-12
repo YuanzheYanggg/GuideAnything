@@ -1,6 +1,6 @@
 # GuideAnything 进度
 
-> 最后更新：2026-07-12 00:00（Asia/Shanghai）
+> 最后更新：2026-07-12 09:48（Asia/Shanghai）
 
 ## 已完成
 
@@ -25,21 +25,28 @@
 - 修复图片/视频节点缩放只扩大外框的问题：节点内容现在随 React Flow 尺寸填满可用区域、保持等比，并限制极扁尺寸时的媒体溢出；端口可见且命中区域扩大。浏览器实际确认图片卡片和媒体宽度与外框同步。
 - 修复子指南展开的边恢复与接续语义：React Flow 往返保留 `sourceTrace`，首次展开固化快照入口/出口，旧草稿按 `expanded` 归一化派生节点/边；展开时隐藏原“引用 → 下游”边，创建“出口 → 原下游”代理，折叠后恢复原状态，不再产生入口回路。删除续接边会清理旧代理，嵌套子指南会随父级折叠隐藏；核心算法覆盖新展开、旧数据修复、手动跨边、折叠恢复和无环接续。
 - 对本地真实“ERP 销售订单创建”草稿的纯状态断言：展开 `sales-subguide` 后原 `s-e7` 为隐藏状态，`material-end → sales-decision` 代理边可见，不存在旧 `material-end → sales-subguide` 回边；Web `127.0.0.1:5174` 与 API `127.0.0.1:3001` 持续运行，未留下测试进程。
+- 完成以业务流程为一级结构的画布体验：阶段、一级主流程与 Markdown/图片/视频资料挂靠均保持旧文档和固定子指南快照兼容；自动整理采用可取消预览，应用后可撤销。
+- 完成作者结构树、资料改挂靠/脱离、阶段泳道与学习者阶段分组/步骤资料聚合；展开子指南产物不会进入宿主流程层或资料层。
+- 真实 Playwright 验收（种子“ERP 销售订单创建”）：作者创建 2 个业务阶段，将“收到客户下单需求”和“物料可销售？”分别归入阶段；选中前者新增 Markdown 后结构树显示“业务阶段 1 → 收到客户下单需求 → 操作说明”。资料脱离时“未挂靠资料”从 3 变为 4，重新挂靠后恢复；预览自动整理后取消仍为“已保存”，再次预览后应用并撤销成功。
+- 同一浏览器会话发布 v2；学习者搜索到 v2，步骤列表显示“业务阶段 2”和“业务阶段 1”，第 7 步展示“本步骤资料 / 操作说明”，第 3 步点击 `00:02` 视频关键点成功。浏览器控制台 error 为 0；开发态 React Flow warnings 存在，未作为无 warning 结论。
 
 ## 最终验证
 
 ```text
-pnpm lint       退出 0
-pnpm typecheck  4 个 workspace 包退出 0
-pnpm test       21 个测试文件、49 项测试通过
-pnpm build      API 类型构建与 Web Vite 生产构建退出 0
+pnpm --filter @guideanything/contracts test -- canvas.test.ts                         1 文件、8 项通过
+pnpm --filter @guideanything/canvas-core test -- hierarchy.test.ts performance.test.ts 6 文件、22 项通过
+pnpm --filter @guideanything/web test -- GuideEditor.test.tsx HierarchyPanel.test.tsx LessonPage.test.tsx 9 文件、24 项通过
+pnpm lint                                                                  退出 0
+pnpm typecheck                                                             4 个 workspace 包退出 0
+pnpm test                                                                  23 个测试文件、68 项通过
+pnpm build                                                                 API 类型构建与 Web Vite 生产构建退出 0
 ```
 
-测试分布：contracts 3、canvas-core 14、API 14、Web 18。
+测试分布：contracts 8、canvas-core 22、API 14、Web 24。
 
 ## 当前进行
 
-- 已完成全部 M0-M4 验收范围。
+- 已完成全部 M0-M4 验收范围，以及业务流程层级体验的最终验证。
 
 ## 下一步
 
