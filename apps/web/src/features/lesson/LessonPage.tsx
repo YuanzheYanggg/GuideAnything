@@ -1,4 +1,4 @@
-import type { CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasNode, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
 import {
   Background,
   BackgroundVariant,
@@ -20,6 +20,23 @@ import { useMediaSource } from '../nodes/useMediaSource';
 
 export interface LessonApi {
   getVersion: (versionId: string) => Promise<GuideVersionSnapshot>;
+}
+
+export function resolveStepStage(document: CanvasDocument, nodeId: string): FlowStage | null {
+  const node = document.nodes.find((item) => item.id === nodeId);
+  if (!node || node.source) return null;
+  const owner = document.nodes.find((item) => item.id === (node.contentParentId ?? nodeId));
+  if (!owner || owner.source) return null;
+  return document.stages?.find((stage) => stage.id === owner.stageId) ?? null;
+}
+
+export function resourcesForStep(document: CanvasDocument, nodeId: string): CanvasNode[] {
+  return document.nodes.filter((node) =>
+    !node.hidden
+    && !node.source
+    && node.contentParentId === nodeId
+    && (node.type === 'markdown' || node.type === 'image' || node.type === 'video'),
+  );
 }
 
 const LessonMapNode = memo(function LessonMapNode({ data, type }: NodeProps) {
@@ -45,9 +62,15 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
     return () => { active = false; };
   }, [api, versionId]);
 
-  const steps = useMemo(() => version ? [...version.document.steps].sort((a, b) => a.order - b.order) : [], [version]);
-  const currentStep = steps[currentIndex];
+  const lessonSteps = useMemo(() => version ? [...version.document.steps]
+    .sort((a, b) => a.order - b.order)
+    .map((step) => ({ step, stage: resolveStepStage(version.document, step.nodeId) })) : [], [version]);
+  const currentStep = lessonSteps[currentIndex]?.step;
   const currentNode = version?.document.nodes.find((node) => node.id === currentStep?.nodeId);
+  const currentResources = useMemo(
+    () => version && currentNode ? resourcesForStep(version.document, currentNode.id) : [],
+    [currentNode, version],
+  );
   const flowNodes = useMemo<Node[]>(() => version ? version.document.nodes.map((node) => ({
     id: node.id,
     type: node.type,
@@ -70,12 +93,15 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
     <header className="lesson-header">
       <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库">←</button>
       <div><span className="eyebrow">LEARNING MODE · v{version.version}</span><h1>{version.title}</h1></div>
-      <div className="lesson-progress"><span>{steps.length ? `步骤 ${currentIndex + 1} / ${steps.length}` : '尚未编排步骤'}</span><div><i style={{ width: `${steps.length ? ((currentIndex + 1) / steps.length) * 100 : 0}%` }} /></div></div>
+      <div className="lesson-progress"><span>{lessonSteps.length ? `步骤 ${currentIndex + 1} / ${lessonSteps.length}` : '尚未编排步骤'}</span><div><i style={{ width: `${lessonSteps.length ? ((currentIndex + 1) / lessonSteps.length) * 100 : 0}%` }} /></div></div>
     </header>
-    {steps.length === 0 ? <section className="lesson-empty"><strong>这个发布版本还没有编排教学步骤</strong><p>仍可在画布中查看流程结构；请联系作者补充学习路径。</p><button className="secondary-button" onClick={onBack}>返回资料库</button></section> : <div className="lesson-layout">
+    {lessonSteps.length === 0 ? <section className="lesson-empty"><strong>这个发布版本还没有编排教学步骤</strong><p>仍可在画布中查看流程结构；请联系作者补充学习路径。</p><button className="secondary-button" onClick={onBack}>返回资料库</button></section> : <div className="lesson-layout">
       <aside className="lesson-steps" aria-label="教学步骤">
         <span className="eyebrow">STEP BY STEP</span>
-        {steps.map((step, index) => <button key={step.id} type="button" className={index === currentIndex ? 'active' : ''} onClick={() => setCurrentIndex(index)}><span>{index + 1}</span><p>{step.title}</p></button>)}
+        {lessonSteps.map(({ step, stage }, index) => <div key={step.id}>
+          {stage && stage.id !== lessonSteps[index - 1]?.stage?.id ? <div className="lesson-stage-heading" role="heading" aria-level={2}>{stage.title}</div> : null}
+          <button type="button" className={index === currentIndex ? 'active' : ''} onClick={() => setCurrentIndex(index)}><span>{index + 1}</span><p>{step.title}</p></button>
+        </div>)}
       </aside>
       <section className="lesson-canvas" aria-label="只读流程画布">
         <ReactFlow
@@ -102,7 +128,12 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
         <h2>{currentStep?.title}</h2>
         {currentStep?.body ? <p className="lesson-body">{currentStep.body}</p> : null}
         {currentNode ? <CurrentNodeContent node={currentNode} /> : <p className="error-message">关联节点不存在</p>}
-        <div className="lesson-navigation"><button className="secondary-button" type="button" disabled={currentIndex === 0} onClick={() => setCurrentIndex((index) => Math.max(0, index - 1))}>上一步</button><button className="primary-button" type="button" disabled={currentIndex === steps.length - 1} onClick={() => setCurrentIndex((index) => Math.min(steps.length - 1, index + 1))}>下一步</button></div>
+        {currentResources.length > 0 ? <section className="lesson-resources" aria-labelledby="lesson-resources-title">
+          <span className="eyebrow">STEP RESOURCES</span>
+          <h3 id="lesson-resources-title">本步骤资料</h3>
+          {currentResources.map((node) => <CurrentNodeContent key={node.id} node={node} />)}
+        </section> : null}
+        <div className="lesson-navigation"><button className="secondary-button" type="button" disabled={currentIndex === 0} onClick={() => setCurrentIndex((index) => Math.max(0, index - 1))}>上一步</button><button className="primary-button" type="button" disabled={currentIndex === lessonSteps.length - 1} onClick={() => setCurrentIndex((index) => Math.min(lessonSteps.length - 1, index + 1))}>下一步</button></div>
       </aside>
     </div>}
   </main>;
@@ -133,4 +164,3 @@ function nodeSummary(type: string | undefined, data: Record<string, unknown>): s
   if (typeof data.alt === 'string') return data.alt;
   return typeLabel(type);
 }
-
