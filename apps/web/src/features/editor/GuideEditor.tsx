@@ -171,6 +171,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   }, [api, referenceOpen, referenceQuery]);
 
   const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
+    if (layoutPreview) return;
     setFlowNodes((current) => applyNodeChanges(changes, current));
     const persistedChanges = persistableNodeChanges(changes);
     if (persistedChanges.length === 0) return;
@@ -183,9 +184,10 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       historyRef.current?.push(next);
       return next;
     });
-  }, []);
+  }, [layoutPreview]);
 
   const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
+    if (layoutPreview) return;
     const persistedChanges = changes.filter((change) => !isHierarchyPresentationChange(change));
     if (persistedChanges.length === 0) return;
     setLayoutPreview(null);
@@ -197,9 +199,10 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       historyRef.current?.push(next);
       return next;
     });
-  }, []);
+  }, [layoutPreview]);
 
   const onConnect = useCallback((connection: Connection) => {
+    if (layoutPreview) return;
     setLayoutPreview(null);
     setSaveState('未保存');
     setDocument((current) => {
@@ -209,7 +212,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       historyRef.current?.push(next);
       return next;
     });
-  }, []);
+  }, [layoutPreview]);
 
   const onSelectionChange = useCallback(({ nodes }: { nodes: Node[] }) => {
     const next = nodes.map((node) => node.id);
@@ -309,7 +312,11 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     const selected = new Set(selectedIds);
     commit({
       ...document,
-      nodes: document.nodes.filter((node) => !selected.has(node.id)),
+      nodes: document.nodes.filter((node) => !selected.has(node.id)).map((node) =>
+        !node.source && isContentNode(node) && node.contentParentId && selected.has(node.contentParentId)
+          ? { ...node, contentParentId: undefined }
+          : node,
+      ),
       edges: document.edges.filter((edge) => !selected.has(edge.source) && !selected.has(edge.target)),
       steps: document.steps.filter((step) => !selected.has(step.nodeId)),
       exitNodeIds: document.exitNodeIds.filter((id) => !selected.has(id)),
@@ -439,6 +446,10 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
           multiSelectionKeyCode={multiSelectionKeyCode}
           minZoom={0.1}
           maxZoom={2.5}
+          nodesDraggable={!layoutPreview}
+          nodesConnectable={!layoutPreview}
+          edgesFocusable={!layoutPreview}
+          elementsSelectable={!layoutPreview}
         >
           <ViewportPortal>
             {stageBounds.map((bound) => <div key={bound.stageId ?? 'none'} className="stage-lane" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><span>{bound.title}</span></div>)}

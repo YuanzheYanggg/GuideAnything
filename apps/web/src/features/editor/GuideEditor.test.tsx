@@ -138,6 +138,48 @@ describe('GuideEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '撤销' }));
   });
 
+  it('keeps a layout preview intact when a canvas node drag is attempted', async () => {
+    const api = createApi();
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加 Markdown 节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    const savesBeforePreview = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
+    const processNode = document.querySelector<HTMLElement>('.react-flow__node[data-id^="process-"]');
+    expect(processNode).toBeTruthy();
+    expect(processNode).not.toHaveClass('draggable');
+    fireEvent.pointerDown(processNode!, { clientX: 80, clientY: 80, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(document, { clientX: 220, clientY: 80, pointerId: 1, buttons: 1 });
+    fireEvent.pointerUp(document, { clientX: 220, clientY: 80, pointerId: 1, button: 0 });
+
+    expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
+    expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
+  });
+
+  it('detaches attached resources when deleting their primary flow node', async () => {
+    const api = createApi();
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加 Markdown 节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除选中项' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ nodes: [expect.objectContaining({ type: 'markdown', contentParentId: undefined })] }),
+    }));
+  });
+
   it('inserts a pinned subguide and expands its immutable snapshot', async () => {
     const user = userEvent.setup();
     const api = createApi();
