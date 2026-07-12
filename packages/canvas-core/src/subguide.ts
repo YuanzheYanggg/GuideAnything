@@ -73,10 +73,8 @@ export function expandSubguide(
     };
     node.source = traceFor(sourceNode.id);
     node.hidden = false;
-    if (node.contentParentId) {
-      node.contentParentId = derivedId(referenceNode.id, node.contentParentId);
-    }
     delete node.stageId;
+    delete node.contentParentId;
     if (node.type === 'video') {
       node.data.keypoints = node.data.keypoints.map((point) => ({
         ...point,

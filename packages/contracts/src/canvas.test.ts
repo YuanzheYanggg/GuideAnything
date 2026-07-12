@@ -98,7 +98,7 @@ describe('CanvasDocumentSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('accepts a resource attached to a primary flow node from the same reference', () => {
+  it('rejects a resource attached to a primary flow node from the same reference', () => {
     const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
       nodes: [
         {
@@ -123,7 +123,7 @@ describe('CanvasDocumentSchema', () => {
       exitNodeIds: ['derived-process'],
     }));
 
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it('rejects a resource attached to a primary flow node from another reference', () => {

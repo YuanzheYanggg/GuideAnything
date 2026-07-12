@@ -162,13 +162,7 @@ export const CanvasDocumentSchema = z.object({
     }
     if (!node.contentParentId) return;
     const parent = nodesById.get(node.contentParentId);
-    const sameReference = Boolean(
-      node.source
-      && parent?.source
-      && node.source.referenceNodeId === parent.source.referenceNodeId,
-    );
-    const sameAuthoredLayer = !node.source && !parent?.source;
-    if (!contentTypes.has(node.type) || !parent || !primaryTypes.has(parent.type) || (!sameAuthoredLayer && !sameReference)) {
+    if (!contentTypes.has(node.type) || !parent || !primaryTypes.has(parent.type) || parent.source) {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'contentParentId'], message: '资料必须挂靠到一级主流程节点' });
     }
   });

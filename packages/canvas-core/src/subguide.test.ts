@@ -136,15 +136,16 @@ describe('expandSubguide', () => {
     expect(expanded.steps[0]?.nodeId).toBe('ref:ref-1:source-start');
   });
 
-  it('remaps hierarchy resources and removes source stage metadata during expansion', () => {
+  it('removes source hierarchy attachments from derived expansion resources', () => {
     const reference = host.nodes[0] as CanvasNode<'subguide'>;
     const expanded = expandSubguide(host, reference, hierarchySnapshot);
 
-    expect(CanvasDocumentSchema.safeParse(expanded).success).toBe(true);
+    expect(() => CanvasDocumentSchema.parse(expanded)).not.toThrow();
     expect(expanded.nodes.filter(isDerived).every((node) => node.stageId === undefined)).toBe(true);
     for (const id of ['source-markdown', 'source-image', 'source-video']) {
-      expect(expanded.nodes.find((node) => node.id === `ref:ref-1:${id}`)?.contentParentId)
-        .toBe('ref:ref-1:source-process');
+      const derived = expanded.nodes.find((node) => node.id === `ref:ref-1:${id}`);
+      expect(derived?.source).toEqual(expect.objectContaining({ referenceNodeId: 'ref-1' }));
+      expect(derived).not.toHaveProperty('contentParentId');
     }
   });
 
