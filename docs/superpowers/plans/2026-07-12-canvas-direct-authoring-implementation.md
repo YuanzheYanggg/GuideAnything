@@ -52,7 +52,7 @@ it('rejects duplicate, missing, resource, and derived lane assignments', () => {
   expect(CanvasDocumentSchema.safeParse(hierarchyDocument({ lanes: [lane], nodes: [{ ...hierarchyDocument().nodes[0], laneId: 'sales' }, { ...hierarchyDocument().nodes[1], laneId: 'sales' }] })).success).toBe(false);
   expect(CanvasDocumentSchema.safeParse(hierarchyDocument({
     lanes: [lane],
-    nodes: [{ ...hierarchyDocument().nodes[0], laneId: 'sales' }, { ...hierarchyDocument().nodes[0], id: 'derived', laneId: 'sales', source: sourceTrace('reference-1', 'derived-flow') }],
+    nodes: [{ ...hierarchyDocument().nodes[0], laneId: 'sales' }, { ...hierarchyDocument().nodes[0], id: 'derived', stageId: undefined, laneId: 'sales', source: sourceTrace('reference-1', 'derived-flow') }],
   })).success).toBe(false);
 });
 ```
