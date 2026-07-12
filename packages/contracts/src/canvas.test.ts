@@ -98,6 +98,25 @@ describe('CanvasDocumentSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects a derived resource attached to a host primary flow node', () => {
+    const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      nodes: [
+        hierarchyDocument().nodes[0],
+        {
+          id: 'derived-note',
+          type: 'markdown',
+          position: { x: 0, y: 160 },
+          zIndex: 1,
+          contentParentId: 'start',
+          source: sourceTrace('reference-1', 'source-note'),
+          data: { markdown: '派生资料不能挂靠宿主流程' },
+        },
+      ],
+    }));
+
+    expect(result.success).toBe(false);
+  });
+
   it('rejects a resource attached to a primary flow node from the same reference', () => {
     const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
       nodes: [

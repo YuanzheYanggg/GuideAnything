@@ -162,7 +162,7 @@ export const CanvasDocumentSchema = z.object({
     }
     if (!node.contentParentId) return;
     const parent = nodesById.get(node.contentParentId);
-    if (!contentTypes.has(node.type) || !parent || !primaryTypes.has(parent.type) || parent.source) {
+    if (!contentTypes.has(node.type) || node.source || !parent || !primaryTypes.has(parent.type) || parent.source) {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'contentParentId'], message: '资料必须挂靠到一级主流程节点' });
     }
   });
