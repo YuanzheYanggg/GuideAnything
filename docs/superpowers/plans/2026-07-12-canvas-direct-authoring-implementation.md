@@ -134,9 +134,9 @@ Add this exported interface and helper names in `hierarchy.ts`:
 
 ```ts
 export interface SwimlaneBounds {
-  laneId: string;
+  laneId: string | null;
   title: string;
-  kind: FlowLane['kind'];
+  kind: FlowLane['kind'] | null;
   x: number;
   y: number;
   width: number;
@@ -152,7 +152,7 @@ const positioned = lanes.length > 0
   : placePrimary(primary, ranked.rankById, rankX, document.stages ?? [], contentByParent, document.edges);
 ```
 
-`placePrimaryInGrid` groups source-free primary nodes by valid `stageId` and `laneId`, orders each cell using current rank plus `orderRankNodes`, stacks each primary node and attached content vertically, then calculates row heights and column widths from the largest cell. Stages order top-to-bottom by `order,id`; lanes order left-to-right by `order,id`. Add unassigned row/column only when needed. `getStageBounds` must span all configured lane columns in grid mode, including empty configured stages; `getSwimlaneBounds` must include empty configured lanes. Preserve the source-derived early return in all bounds/layout paths. Add `laneCount: lanes.length` to `HierarchyLayoutReport` and `reportFor`; export the new helper in `index.ts`.
+`placePrimaryInGrid` groups source-free primary nodes by valid `stageId` and `laneId`, orders each cell using current rank plus `orderRankNodes`, stacks each primary node and attached content vertically, then calculates row heights and column widths from the largest cell. Stages order top-to-bottom by `order,id`; lanes order left-to-right by `order,id`. Add unassigned row/column only when needed. The unassigned responsibility column is a virtual display-only bound with `{ laneId: null, kind: null, title: '未分配责任' }`; it must never be persisted or editable as a role/system lane. `getStageBounds` must span all configured lane columns in grid mode, including empty configured stages; `getSwimlaneBounds` must include empty configured lanes. Preserve the source-derived early return in all bounds/layout paths. Add `laneCount: lanes.length` to `HierarchyLayoutReport` and `reportFor`; export the new helper in `index.ts`.
 
 - [ ] **Step 4: Verify layout and performance green**
 
@@ -217,7 +217,7 @@ onUpdateLane: (laneId: string, title: string) => void;
 onMoveLane: (laneId: string, direction: -1 | 1) => void;
 ```
 
-Render a labelled `业务阶段` manager before the existing tree: text inputs, 上移/下移, and `添加阶段`. Render a `责任泳道` manager: text inputs, `角色`/`系统` badges, 上移/下移, `添加角色泳道`, and `添加系统泳道`. All mutations disable under `editingLocked`.
+Render a labelled `业务阶段` manager before the existing tree: text inputs, 上移/下移, and `添加阶段`. Render a `责任泳道` manager: text inputs, `角色`/`系统` badges, 上移/下移, `添加角色泳道`, and `添加系统泳道`. The virtual `laneId: null`/`kind: null` bound renders only as fixed “未分配责任”, with no input or management action. All mutations disable under `editingLocked`.
 
 In `GuideEditor`, each callback calls `commit` once; rename only changes `title`, moving reindexes all `order`, and adding creates `{ id: uniqueId('lane'), title: kind === 'ROLE' ? '新角色' : '新系统', kind, order: lanes.length }`. Extend `NodeInspector` with `责任泳道` for primary nodes.
 
