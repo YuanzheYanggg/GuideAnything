@@ -1,11 +1,11 @@
 import type { CanvasDocument, CanvasNode } from '@guideanything/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { isContentNode, isPrimaryFlowNode, layoutFlowHierarchy } from './hierarchy';
+import { getSwimlaneBounds, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy } from './hierarchy';
 
 const base = { position: { x: 0, y: 0 }, zIndex: 0 };
 const start = (id: string, stageId?: string) => ({ ...base, id, type: 'start' as const, ...(stageId ? { stageId } : {}), data: { label: '开始', shape: 'start' as const } });
-const process = (id: string, stageId?: string) => ({ ...base, id, type: 'process' as const, ...(stageId ? { stageId } : {}), data: { label: id, shape: 'process' as const } });
+const process = (id: string, stageId?: string, laneId?: string) => ({ ...base, id, type: 'process' as const, ...(stageId ? { stageId } : {}), ...(laneId ? { laneId } : {}), data: { label: id, shape: 'process' as const } });
 const end = (id: string, stageId?: string) => ({ ...base, id, type: 'end' as const, ...(stageId ? { stageId } : {}), data: { label: '结束', shape: 'end' as const } });
 const markdown = (id: string, contentParentId?: string) => ({ ...base, id, type: 'markdown' as const, ...(contentParentId ? { contentParentId } : {}), data: { markdown: id } });
 const image = (id: string, contentParentId?: string) => ({ ...base, id, type: 'image' as const, ...(contentParentId ? { contentParentId } : {}), data: { url: 'https://example.com/a.png', alt: id } });
@@ -14,6 +14,61 @@ const edge = (id: string, source: string, target: string) => ({ id, source, targ
 const makeDocument = (overrides: Partial<CanvasDocument>): CanvasDocument => ({ schemaVersion: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [], ...overrides });
 
 describe('flow hierarchy layout', () => {
+  it('places primary flow in deterministic stage and responsibility-lane grid', () => {
+    const derived: CanvasNode = {
+      ...process('derived'),
+      position: { x: 9_000, y: 8_000 },
+      source: { referenceNodeId: 'reference', sourceGuideId: 'source-guide', sourceVersionId: 'source-version', sourceElementId: 'source-process' },
+    };
+    const result = layoutFlowHierarchy(makeDocument({
+      stages: [{ id: 'prepare', title: '准备', order: 0 }, { id: 'entry', title: '录入', order: 1 }],
+      lanes: [
+        { id: 'sales', title: '销售人员', kind: 'ROLE', order: 0 },
+        { id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 1 },
+      ],
+      nodes: [
+        process('collect', 'prepare', 'sales'),
+        process('enter', 'entry', 'erp'),
+        process('save', 'entry', 'erp'),
+        markdown('attached-note', 'enter'),
+        derived,
+      ],
+      edges: [edge('collect-enter', 'collect', 'enter'), edge('enter-save', 'enter', 'save')],
+      entryNodeId: 'collect',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('collect')!.position.y).toBeLessThan(byId.get('enter')!.position.y);
+    expect(byId.get('collect')!.position.x).toBeLessThan(byId.get('enter')!.position.x);
+    expect(byId.get('save')!.position.x).toBe(byId.get('enter')!.position.x);
+    expect(byId.get('attached-note')!.position.x).toBe(byId.get('enter')!.position.x);
+    expect(byId.get('attached-note')!.position.y).toBeGreaterThan(byId.get('enter')!.position.y);
+    expect(result.report.laneCount).toBe(2);
+    expect(getSwimlaneBounds(result.document).map((lane) => lane.title)).toEqual(['销售人员', 'ERP']);
+    expect(result.stageBounds.map((stage) => stage.title)).toEqual(['准备', '录入']);
+    expect(byId.get('derived')!.position).toEqual({ x: 9_000, y: 8_000 });
+  });
+
+  it('keeps empty configured stages and lanes visible in grid bounds', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      stages: [{ id: 'prepare', title: '准备', order: 0 }, { id: 'archive', title: '归档', order: 1 }],
+      lanes: [
+        { id: 'sales', title: '销售人员', kind: 'ROLE', order: 0 },
+        { id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 1 },
+      ],
+      nodes: [process('collect', 'prepare', 'sales')],
+      edges: [],
+    }));
+    const [prepare, archive] = result.stageBounds;
+    const [sales, erp] = getSwimlaneBounds(result.document);
+
+    expect(result.stageBounds.map((stage) => stage.title)).toEqual(['准备', '归档']);
+    expect(archive!.y).toBeGreaterThan(prepare!.y);
+    expect(prepare!.width).toBe(archive!.width);
+    expect(erp!.x).toBeGreaterThan(sales!.x);
+    expect(erp!.width).toBeGreaterThan(0);
+  });
+
   it('places source-free main flow, attached content, and stages deterministically', () => {
     const result = layoutFlowHierarchy(makeDocument({
       stages: [{ id: 'prepare', title: '准备', order: 0 }, { id: 'entry', title: '录入', order: 1 }],

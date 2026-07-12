@@ -1,4 +1,4 @@
-import type { CanvasDocument, CanvasEdge, CanvasNode, FlowStage } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, FlowLane, FlowStage } from '@guideanything/contracts';
 
 const BASE_RANK_GAP = 72;
 const NODE_GAP_Y = 32;
@@ -6,6 +6,9 @@ const STAGE_GAP_Y = 96;
 const CONTENT_GAP_X = 32;
 const CONTENT_GAP_Y = 24;
 const STAGE_PADDING = 40;
+const GRID_COLUMN_GAP = 72;
+const EMPTY_GRID_CELL_WIDTH = 240;
+const EMPTY_GRID_CELL_HEIGHT = 104;
 
 interface NodeSize {
   width: number;
@@ -27,6 +30,27 @@ interface PrimaryPlacement {
   nodes: CanvasNode[];
   byId: Map<string, CanvasNode>;
   unassignedContentY: number;
+  contentPlacement: 'right' | 'below';
+}
+
+interface GridRow {
+  stage: FlowStage | null;
+  y: number;
+  height: number;
+}
+
+interface GridColumn {
+  lane: FlowLane | null;
+  x: number;
+  width: number;
+}
+
+interface GridGeometry {
+  rows: GridRow[];
+  columns: GridColumn[];
+  cells: Map<string, CanvasNode[]>;
+  totalWidth: number;
+  totalHeight: number;
 }
 
 interface DecisionBranchPlacement {
@@ -41,11 +65,22 @@ export interface HierarchyLayoutReport {
   unconnectedPrimaryIds: string[];
   cycleNodeIds: string[];
   stageCount: number;
+  laneCount: number;
 }
 
 export interface StageBounds {
   stageId: string | null;
   title: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface SwimlaneBounds {
+  laneId: string;
+  title: string;
+  kind: FlowLane['kind'];
   x: number;
   y: number;
   width: number;
@@ -74,20 +109,36 @@ export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutRe
   const graph = buildPrimaryGraph(document.edges, primaryIds);
   const ranked = rankFromEntry(document.entryNodeId, primary, graph);
   const contentByParent = attachedContentByParent(content, primaryIds);
-  const rankX = calculateRankX(primary, content, ranked.rankById, primaryIds);
-  const positioned = placePrimary(primary, ranked.rankById, rankX, document.stages ?? [], contentByParent, document.edges);
+  const stages = document.stages ?? [];
+  const lanes = orderedLanes(document.lanes ?? []);
+  const positioned = lanes.length > 0
+    ? placePrimaryInGrid(primary, ranked.rankById, stages, lanes, contentByParent, document.edges)
+    : placePrimary(primary, ranked.rankById, calculateRankX(primary, content, ranked.rankById, primaryIds), stages, contentByParent, document.edges);
   const withContent = placeContent(content, positioned, contentByParent);
   const byId = new Map(withContent.map((node) => [node.id, node]));
   const next = { ...document, nodes: document.nodes.map((node) => byId.get(node.id) ?? node) };
 
   return {
     document: next,
-    report: reportFor(primary, content, ranked, document.stages ?? [], primaryIds),
+    report: reportFor(primary, content, ranked, stages, lanes, primaryIds),
     stageBounds: getStageBounds(next),
   };
 }
 
 export function getStageBounds(document: CanvasDocument): StageBounds[] {
+  const lanes = orderedLanes(document.lanes ?? []);
+  if (lanes.length > 0) {
+    const geometry = getGridGeometryForDocument(document, lanes);
+    return geometry.rows.map((row) => ({
+      stageId: row.stage?.id ?? null,
+      title: row.stage?.title ?? '未分阶段',
+      x: -STAGE_PADDING,
+      y: row.y - STAGE_PADDING,
+      width: geometry.totalWidth + STAGE_PADDING * 2,
+      height: row.height + STAGE_PADDING * 2,
+    }));
+  }
+
   const stages = orderedStages(document.stages ?? []);
   const stagesById = new Map(stages.map((stage) => [stage.id, stage]));
   const nodesById = new Map(document.nodes.map((node) => [node.id, node]));
@@ -117,6 +168,102 @@ export function getStageBounds(document: CanvasDocument): StageBounds[] {
   const unassigned = boundsByStage.get(null);
   if (unassigned) result.push(toStageBounds(null, '未分阶段', unassigned));
   return result;
+}
+
+export function getSwimlaneBounds(document: CanvasDocument): SwimlaneBounds[] {
+  const lanes = orderedLanes(document.lanes ?? []);
+  if (lanes.length === 0) return [];
+  const geometry = getGridGeometryForDocument(document, lanes);
+  const height = Math.max(geometry.totalHeight, EMPTY_GRID_CELL_HEIGHT);
+  return geometry.columns.flatMap((column) => column.lane ? [{
+    laneId: column.lane.id,
+    title: column.lane.title,
+    kind: column.lane.kind,
+    x: column.x - STAGE_PADDING,
+    y: -STAGE_PADDING,
+    width: column.width + STAGE_PADDING * 2,
+    height: height + STAGE_PADDING * 2,
+  }] : []);
+}
+
+function getGridGeometryForDocument(document: CanvasDocument, lanes: FlowLane[]): GridGeometry {
+  const visible = document.nodes.filter((node) => !node.hidden);
+  const primary = visible.filter(isPrimaryFlowNode).sort(compareNodes);
+  const primaryIds = new Set(primary.map((node) => node.id));
+  const content = visible.filter(isContentNode).sort(compareNodes);
+  return gridGeometry(primary, document.stages ?? [], lanes, attachedContentByParent(content, primaryIds));
+}
+
+function gridGeometry(
+  primary: CanvasNode[],
+  stages: FlowStage[],
+  lanes: FlowLane[],
+  contentByParent: Map<string, CanvasNode[]>,
+): GridGeometry {
+  const orderedStageList = orderedStages(stages);
+  const stageIds = new Set(orderedStageList.map((stage) => stage.id));
+  const laneIds = new Set(lanes.map((lane) => lane.id));
+  const hasUnassignedStage = primary.some((node) => !node.stageId || !stageIds.has(node.stageId));
+  const hasUnassignedLane = primary.some((node) => !node.laneId || !laneIds.has(node.laneId));
+  const rowStages: Array<FlowStage | null> = [...orderedStageList, ...(hasUnassignedStage ? [null] : [])];
+  const columnLanes: Array<FlowLane | null> = [...lanes, ...(hasUnassignedLane ? [null] : [])];
+  const cells = new Map<string, CanvasNode[]>();
+
+  primary.forEach((node) => {
+    const stageId = node.stageId && stageIds.has(node.stageId) ? node.stageId : null;
+    const laneId = node.laneId && laneIds.has(node.laneId) ? node.laneId : null;
+    const key = gridCellKey(stageId, laneId);
+    const nodes = cells.get(key);
+    if (nodes) nodes.push(node);
+    else cells.set(key, [node]);
+  });
+
+  const rows: GridRow[] = [];
+  let nextY = 0;
+  rowStages.forEach((stage, index) => {
+    const stageId = stage?.id ?? null;
+    const height = Math.max(
+      EMPTY_GRID_CELL_HEIGHT,
+      ...columnLanes.map((lane) => gridCellHeight(cells.get(gridCellKey(stageId, lane?.id ?? null)) ?? [], contentByParent)),
+    );
+    rows.push({ stage, y: nextY, height });
+    nextY += height + (index < rowStages.length - 1 ? STAGE_GAP_Y : 0);
+  });
+
+  const columns: GridColumn[] = [];
+  let nextX = 0;
+  columnLanes.forEach((lane, index) => {
+    const laneId = lane?.id ?? null;
+    const width = Math.max(
+      EMPTY_GRID_CELL_WIDTH,
+      ...rowStages.map((stage) => gridCellWidth(cells.get(gridCellKey(stage?.id ?? null, laneId)) ?? [], contentByParent)),
+    );
+    columns.push({ lane, x: nextX, width });
+    nextX += width + (index < columnLanes.length - 1 ? GRID_COLUMN_GAP : 0);
+  });
+
+  return {
+    rows,
+    columns,
+    cells,
+    totalWidth: columns.length > 0 ? nextX : 0,
+    totalHeight: rows.length > 0 ? nextY : 0,
+  };
+}
+
+function gridCellKey(stageId: string | null, laneId: string | null): string {
+  return JSON.stringify([stageId, laneId]);
+}
+
+function gridCellWidth(nodes: CanvasNode[], contentByParent: Map<string, CanvasNode[]>): number {
+  return nodes.reduce((width, node) => {
+    const attachedWidth = (contentByParent.get(node.id) ?? []).reduce((current, content) => Math.max(current, nodeSize(content).width), 0);
+    return Math.max(width, nodeSize(node).width, attachedWidth);
+  }, 0);
+}
+
+function gridCellHeight(nodes: CanvasNode[], contentByParent: Map<string, CanvasNode[]>): number {
+  return nodes.reduce((height, node, index) => height + gridOccupiedHeight(node, contentByParent) + (index > 0 ? NODE_GAP_Y : 0), 0);
 }
 
 function compareNodes(left: CanvasNode, right: CanvasNode): number {
@@ -352,7 +499,58 @@ function placePrimary(
     if (stageId === null) unassignedContentY = laneY + (laneHeight > 0 ? laneHeight + STAGE_GAP_Y : 0);
     if (laneHeight > 0) laneY += laneHeight + STAGE_GAP_Y;
   });
-  return { nodes, byId, unassignedContentY };
+  return { nodes, byId, unassignedContentY, contentPlacement: 'right' };
+}
+
+function placePrimaryInGrid(
+  primary: CanvasNode[],
+  rankById: Map<string, number>,
+  stages: FlowStage[],
+  lanes: FlowLane[],
+  contentByParent: Map<string, CanvasNode[]>,
+  edges: CanvasEdge[],
+): PrimaryPlacement {
+  const geometry = gridGeometry(primary, stages, lanes, contentByParent);
+  const branchesByTarget = decisionBranchPlacements(primary, edges);
+  const nodes: CanvasNode[] = [];
+  const byId = new Map<string, CanvasNode>();
+
+  geometry.rows.forEach((row) => {
+    geometry.columns.forEach((column) => {
+      const cell = geometry.cells.get(gridCellKey(row.stage?.id ?? null, column.lane?.id ?? null)) ?? [];
+      let y = row.y;
+      orderGridCell(cell, rankById, branchesByTarget).forEach((node) => {
+        const positioned = { ...node, position: { x: column.x, y } };
+        nodes.push(positioned);
+        byId.set(node.id, positioned);
+        y += gridOccupiedHeight(node, contentByParent) + NODE_GAP_Y;
+      });
+    });
+  });
+
+  return {
+    nodes,
+    byId,
+    unassignedContentY: geometry.totalHeight + (geometry.rows.length > 0 ? STAGE_GAP_Y : 0),
+    contentPlacement: 'below',
+  };
+}
+
+function orderGridCell(
+  nodes: CanvasNode[],
+  rankById: Map<string, number>,
+  branchesByTarget: Map<string, DecisionBranchPlacement>,
+): CanvasNode[] {
+  const byRank = new Map<number, CanvasNode[]>();
+  nodes.forEach((node) => {
+    const rank = rankById.get(node.id) ?? Number.MAX_SAFE_INTEGER;
+    const ranked = byRank.get(rank);
+    if (ranked) ranked.push(node);
+    else byRank.set(rank, [node]);
+  });
+  return [...byRank.keys()]
+    .sort((left, right) => left - right)
+    .flatMap((rank) => orderRankNodes([...byRank.get(rank)!].sort(compareNodes), branchesByTarget));
 }
 
 function decisionBranchPlacements(primary: CanvasNode[], edges: CanvasEdge[]): Map<string, DecisionBranchPlacement> {
@@ -428,6 +626,13 @@ function occupiedHeight(node: CanvasNode, contentByParent: Map<string, CanvasNod
   return Math.max(nodeSize(node).height, contentHeight);
 }
 
+function gridOccupiedHeight(node: CanvasNode, contentByParent: Map<string, CanvasNode[]>): number {
+  const attached = contentByParent.get(node.id);
+  if (!attached || attached.length === 0) return nodeSize(node).height;
+  const contentHeight = attached.reduce((total, item, index) => total + nodeSize(item).height + (index > 0 ? CONTENT_GAP_Y : 0), 0);
+  return nodeSize(node).height + CONTENT_GAP_Y + contentHeight;
+}
+
 function placeContent(content: CanvasNode[], positioned: PrimaryPlacement, contentByParent: Map<string, CanvasNode[]>): CanvasNode[] {
   const nodes = [...positioned.nodes];
   const nextYByParent = new Map<string, number>();
@@ -440,11 +645,18 @@ function placeContent(content: CanvasNode[], positioned: PrimaryPlacement, conte
       return;
     }
     const y = nextYByParent.get(parent.id) ?? parent.position.y;
+    const below = positioned.contentPlacement === 'below';
+    const contentY = below && !nextYByParent.has(parent.id)
+      ? parent.position.y + nodeSize(parent).height + CONTENT_GAP_Y
+      : y;
     nodes.push({
       ...node,
-      position: { x: parent.position.x + nodeSize(parent).width + CONTENT_GAP_X, y },
+      position: {
+        x: below ? parent.position.x : parent.position.x + nodeSize(parent).width + CONTENT_GAP_X,
+        y: contentY,
+      },
     });
-    nextYByParent.set(parent.id, y + nodeSize(node).height + CONTENT_GAP_Y);
+    nextYByParent.set(parent.id, contentY + nodeSize(node).height + CONTENT_GAP_Y);
   });
   return nodes;
 }
@@ -454,6 +666,7 @@ function reportFor(
   content: CanvasNode[],
   ranked: RankedPrimaryNodes,
   stages: FlowStage[],
+  lanes: FlowLane[],
   primaryIds: Set<string>,
 ): HierarchyLayoutReport {
   const attached = content.filter((node) => node.contentParentId && primaryIds.has(node.contentParentId));
@@ -464,11 +677,16 @@ function reportFor(
     unconnectedPrimaryIds: ranked.unconnectedPrimaryIds,
     cycleNodeIds: ranked.cycleNodeIds,
     stageCount: stages.length,
+    laneCount: lanes.length,
   };
 }
 
 function orderedStages(stages: FlowStage[]): FlowStage[] {
   return [...stages].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+}
+
+function orderedLanes(lanes: FlowLane[]): FlowLane[] {
+  return [...lanes].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
 }
 
 function stageForNode(node: CanvasNode, nodesById: Map<string, CanvasNode>, stagesById: Map<string, FlowStage>): string | null {
