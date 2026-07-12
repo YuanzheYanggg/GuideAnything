@@ -89,7 +89,7 @@ export function getStageBounds(document: CanvasDocument): StageBounds[] {
   const boundsByStage = new Map<string | null, { minX: number; minY: number; maxX: number; maxY: number }>();
 
   document.nodes.forEach((node) => {
-    if (node.hidden) return;
+    if (node.hidden || node.source) return;
     const stageId = stageForNode(node, nodesById, stagesById);
     const size = nodeSize(node);
     const existing = boundsByStage.get(stageId);
@@ -158,7 +158,9 @@ function rankFromEntry(entryNodeId: string | undefined, primary: CanvasNode[], g
   });
 
   const rankById = new Map<string, number>();
+  const rootIds = new Set(roots);
   const queued = new Set<string>();
+  const dequeued = new Set<string>();
   const queue: string[] = [];
   roots.forEach((id) => {
     if (!queued.has(id)) {
@@ -169,10 +171,13 @@ function rankFromEntry(entryNodeId: string | undefined, primary: CanvasNode[], g
   });
   for (let index = 0; index < queue.length; index += 1) {
     const id = queue[index]!;
+    dequeued.add(id);
     const rank = rankById.get(id)!;
     graph.outgoing.get(id)!.forEach((target) => {
       if (!reachable.has(target)) return;
-      rankById.set(target, Math.max(rankById.get(target) ?? 0, rank + 1));
+      if (!rootIds.has(target) && !dequeued.has(target)) {
+        rankById.set(target, Math.max(rankById.get(target) ?? 0, rank + 1));
+      }
       const remaining = inDegree.get(target)! - 1;
       inDegree.set(target, remaining);
       if (remaining === 0 && !queued.has(target)) {

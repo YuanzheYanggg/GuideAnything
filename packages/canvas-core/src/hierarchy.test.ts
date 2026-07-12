@@ -77,4 +77,66 @@ describe('flow hierarchy layout', () => {
     expect(byId.get('derived-note')!.position).toEqual({ x: 1_240, y: 418 });
     expect(result.report.primaryNodeIds).toEqual(['authored', 'start']);
   });
+
+  it('ignores visible source-derived artifacts when calculating host stage bounds', () => {
+    const derived: CanvasNode = {
+      ...process('derived'),
+      position: { x: 9_000, y: 8_000 },
+      source: { referenceNodeId: 'reference', sourceGuideId: 'source-guide', sourceVersionId: 'source-version', sourceElementId: 'source-process' },
+    };
+    const derivedContent: CanvasNode = {
+      ...markdown('derived-note'),
+      position: { x: 12_000, y: 11_000 },
+      source: { referenceNodeId: 'reference', sourceGuideId: 'source-guide', sourceVersionId: 'source-version', sourceElementId: 'source-note' },
+    };
+    const result = layoutFlowHierarchy(makeDocument({
+      stages: [{ id: 'prepare', title: '准备', order: 0 }],
+      nodes: [start('start', 'prepare'), process('authored', 'prepare'), derived, derivedContent],
+      edges: [edge('e1', 'start', 'authored')],
+      entryNodeId: 'start',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+    const [prepare] = result.stageBounds;
+
+    expect(result.stageBounds.map((bound) => bound.title)).toEqual(['准备']);
+    expect(prepare!.x + prepare!.width).toBeLessThan(1_000);
+    expect(byId.get('derived')!.position).toEqual({ x: 9_000, y: 8_000 });
+    expect(byId.get('derived-note')!.position).toEqual({ x: 12_000, y: 11_000 });
+  });
+
+  it('keeps an entry root at rank zero across a feedback cycle', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      nodes: [
+        { ...start('start'), position: { x: 0, y: 0 } },
+        { ...process('a'), position: { x: 10, y: 0 } },
+        { ...process('b'), position: { x: 20, y: 0 } },
+      ],
+      edges: [edge('start-a', 'start', 'a'), edge('a-b', 'a', 'b'), edge('b-start', 'b', 'start')],
+      entryNodeId: 'start',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('start')!.position.x).toBeLessThan(byId.get('a')!.position.x);
+    expect(byId.get('a')!.position.x).toBeLessThan(byId.get('b')!.position.x);
+    expect(result.report.cycleNodeIds).toEqual(['start', 'a', 'b']);
+  });
+
+  it('keeps a normal DAG merge after both incoming ranks', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      nodes: [start('start'), process('left'), process('right'), process('merge')],
+      edges: [
+        edge('start-left', 'start', 'left'),
+        edge('start-right', 'start', 'right'),
+        edge('left-merge', 'left', 'merge'),
+        edge('right-merge', 'right', 'merge'),
+      ],
+      entryNodeId: 'start',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('start')!.position.x).toBeLessThan(byId.get('left')!.position.x);
+    expect(byId.get('start')!.position.x).toBeLessThan(byId.get('right')!.position.x);
+    expect(byId.get('left')!.position.x).toBeLessThan(byId.get('merge')!.position.x);
+    expect(byId.get('right')!.position.x).toBeLessThan(byId.get('merge')!.position.x);
+  });
 });
