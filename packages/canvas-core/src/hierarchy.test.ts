@@ -9,6 +9,7 @@ const process = (id: string, stageId?: string, laneId?: string) => ({ ...base, i
 const end = (id: string, stageId?: string) => ({ ...base, id, type: 'end' as const, ...(stageId ? { stageId } : {}), data: { label: '结束', shape: 'end' as const } });
 const markdown = (id: string, contentParentId?: string) => ({ ...base, id, type: 'markdown' as const, ...(contentParentId ? { contentParentId } : {}), data: { markdown: id } });
 const image = (id: string, contentParentId?: string) => ({ ...base, id, type: 'image' as const, ...(contentParentId ? { contentParentId } : {}), data: { url: 'https://example.com/a.png', alt: id } });
+const video = (id: string, contentParentId?: string) => ({ ...base, id, type: 'video' as const, ...(contentParentId ? { contentParentId } : {}), data: { url: 'https://example.com/a.mp4', keypoints: [] } });
 const decision = (id: string) => ({ ...base, id, type: 'decision' as const, data: { label: '是否继续？', shape: 'decision' as const, branchLabels: ['是', '否'] } });
 const edge = (id: string, source: string, target: string) => ({ id, source, target });
 const makeDocument = (overrides: Partial<CanvasDocument>): CanvasDocument => ({ schemaVersion: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [], ...overrides });
@@ -67,6 +68,44 @@ describe('flow hierarchy layout', () => {
     expect(prepare!.width).toBe(archive!.width);
     expect(erp!.x).toBeGreaterThan(sales!.x);
     expect(erp!.width).toBeGreaterThan(0);
+  });
+
+  it('reserves an explicit unassigned grid cell for loose authored resources', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      stages: [{ id: 'prepare', title: '准备', order: 0 }],
+      lanes: [
+        { id: 'sales', title: '销售人员', kind: 'ROLE', order: 0 },
+        { id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 1 },
+      ],
+      nodes: [
+        process('collect', 'prepare', 'sales'),
+        markdown('loose-markdown'),
+        image('loose-image'),
+        video('loose-video'),
+      ],
+      edges: [],
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+    const unassignedStage = result.stageBounds.find((stage) => stage.title === '未分阶段')!;
+    const unassignedLane = getSwimlaneBounds(result.document).find((lane) => lane.title === '未分配责任')!;
+    const loose = [
+      [byId.get('loose-markdown')!, { width: 300, height: 180 }],
+      [byId.get('loose-image')!, { width: 320, height: 260 }],
+      [byId.get('loose-video')!, { width: 320, height: 260 }],
+    ] as const;
+
+    expect(result.stageBounds.map((stage) => stage.title)).toEqual(['准备', '未分阶段']);
+    expect(getSwimlaneBounds(result.document).map((lane) => lane.title)).toEqual(['销售人员', 'ERP', '未分配责任']);
+    loose.forEach(([node, size]) => {
+      expect(node.position.x).toBeGreaterThanOrEqual(unassignedStage.x);
+      expect(node.position.y).toBeGreaterThanOrEqual(unassignedStage.y);
+      expect(node.position.x + size.width).toBeLessThanOrEqual(unassignedStage.x + unassignedStage.width);
+      expect(node.position.y + size.height).toBeLessThanOrEqual(unassignedStage.y + unassignedStage.height);
+      expect(node.position.x).toBeGreaterThanOrEqual(unassignedLane.x);
+      expect(node.position.y).toBeGreaterThanOrEqual(unassignedLane.y);
+      expect(node.position.x + size.width).toBeLessThanOrEqual(unassignedLane.x + unassignedLane.width);
+      expect(node.position.y + size.height).toBeLessThanOrEqual(unassignedLane.y + unassignedLane.height);
+    });
   });
 
   it('places source-free main flow, attached content, and stages deterministically', () => {
