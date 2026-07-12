@@ -1,6 +1,6 @@
-import type { CanvasDocument, CanvasEdge, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
-import { duplicateSelection, expandSubguide, HistoryStack, layoutGrid, reconcileSubguideEdges, setSubguideExpanded } from '@guideanything/canvas-core';
+import { duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, reconcileSubguideEdges, setSubguideExpanded, type HierarchyLayoutResult } from '@guideanything/canvas-core';
 import {
   addEdge,
   applyEdgeChanges,
@@ -12,6 +12,7 @@ import {
   MiniMap,
   ReactFlow,
   SelectionMode,
+  ViewportPortal,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -27,6 +28,7 @@ import { ImageNode } from '../nodes/ImageNode';
 import { MarkdownNode } from '../nodes/MarkdownNode';
 import { SubguideNode } from '../nodes/SubguideNode';
 import { VideoNode } from '../nodes/VideoNode';
+import { HierarchyPanel } from './HierarchyPanel';
 
 export interface GuideDraftDetail {
   id: string;
@@ -88,6 +90,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   const [referenceResults, setReferenceResults] = useState<SearchItem[]>([]);
   const [referenceSearching, setReferenceSearching] = useState(false);
   const [referenceError, setReferenceError] = useState('');
+  const [layoutPreview, setLayoutPreview] = useState<HierarchyLayoutResult | null>(null);
   const historyRef = useRef<HistoryStack<CanvasDocument> | null>(null);
   const clipboardRef = useRef<string[]>([]);
 
@@ -112,12 +115,16 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   const commit = useCallback((next: CanvasDocument) => {
     const validated = reconcileSubguideEdges(CanvasDocumentSchema.parse(next));
     historyRef.current?.push(validated);
+    setLayoutPreview(null);
     setDocument(validated);
-    setFlowNodes(toFlowNodes(validated.nodes));
+    setFlowNodes(toFlowNodes(validated.nodes, selectedIds));
     setSaveState('未保存');
-  }, []);
+  }, [selectedIds]);
 
-  const flowEdges = useMemo(() => document ? document.edges as Edge[] : [], [document?.edges]);
+  const renderedDocument = layoutPreview?.document ?? document;
+  const flowEdges = useMemo(() => renderedDocument ? [...renderedDocument.edges as Edge[], ...hierarchyPresentationEdges(renderedDocument)] : [], [renderedDocument]);
+  const renderedFlowNodes = useMemo(() => layoutPreview ? toFlowNodes(layoutPreview.document.nodes, selectedIds) : flowNodes, [flowNodes, layoutPreview, selectedIds]);
+  const stageBounds = useMemo(() => renderedDocument ? getStageBounds(renderedDocument) : [], [renderedDocument]);
 
   useEffect(() => {
     setFlowNodes((current) => {
@@ -167,6 +174,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     setFlowNodes((current) => applyNodeChanges(changes, current));
     const persistedChanges = persistableNodeChanges(changes);
     if (persistedChanges.length === 0) return;
+    setLayoutPreview(null);
     setSaveState('未保存');
     setDocument((current) => {
       if (!current) return current;
@@ -178,10 +186,13 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   }, []);
 
   const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
+    const persistedChanges = changes.filter((change) => !isHierarchyPresentationChange(change));
+    if (persistedChanges.length === 0) return;
+    setLayoutPreview(null);
     setSaveState('未保存');
     setDocument((current) => {
       if (!current) return current;
-      const edges = applyEdgeChanges(changes, current.edges as Edge[]);
+      const edges = applyEdgeChanges(persistedChanges, current.edges as Edge[]);
       const next = reconcileSubguideEdges(CanvasDocumentSchema.parse({ ...current, edges: edges.map(toCanvasEdge) }));
       historyRef.current?.push(next);
       return next;
@@ -189,6 +200,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   }, []);
 
   const onConnect = useCallback((connection: Connection) => {
+    setLayoutPreview(null);
     setSaveState('未保存');
     setDocument((current) => {
       if (!current) return current;
@@ -214,9 +226,28 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   const addNode = (type: CanvasNode['type']) => {
     if (!document) return;
     const id = uniqueId(type);
-    const node = createNode(id, type, document.nodes.length);
+    const created = createNode(id, type, document.nodes.length);
+    const selectedPrimary = document.nodes.find((node) => node.id === selectedIds[0] && isPrimaryFlowNode(node));
+    const node = isContentNode(created) && selectedPrimary ? { ...created, contentParentId: selectedPrimary.id } : created;
     commit({ ...document, nodes: [...document.nodes, node] });
     setSelectedIds([id]);
+  };
+
+  const addStage = () => {
+    if (!document) return;
+    const stages = document.stages ?? [];
+    const stage: FlowStage = { id: uniqueId('stage'), title: `业务阶段 ${stages.length + 1}`, order: stages.length };
+    commit({ ...document, stages: [...stages, stage] });
+  };
+
+  const previewLayout = () => {
+    if (!document) return;
+    setLayoutPreview(layoutFlowHierarchy(document));
+  };
+
+  const applyLayoutPreview = () => {
+    if (!layoutPreview) return;
+    commit(layoutPreview.document);
   };
 
   const save = useCallback(async () => {
@@ -356,6 +387,8 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
 
   if (!guide || !document) return <main className="center-state">{error ? <p className="error-message" role="alert">{error}</p> : <><span className="spinner" /><p>正在载入画布…</p></>}</main>;
   const selectedNode = document.nodes.find((node) => node.id === selectedIds[0]);
+  const primaryNodes = document.nodes.filter(isPrimaryFlowNode);
+  const stages = [...(document.stages ?? [])].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
 
   return <main className="editor-page">
     <header className="editor-header">
@@ -377,17 +410,19 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       <button type="button" onClick={copy} disabled={selectedIds.length === 0} aria-label="复制选中节点">复制</button>
       <button type="button" onClick={paste} disabled={clipboardRef.current.length === 0} aria-label="粘贴节点">粘贴</button>
       <button type="button" onClick={alignLeft} disabled={selectedIds.length < 2} aria-label="左对齐选中节点">左对齐</button>
-      <button type="button" onClick={() => commit(layoutGrid(document, 3))} disabled={document.nodes.length < 2} aria-label="自动布局全部节点">自动布局</button>
+      <button type="button" onClick={previewLayout} disabled={document.nodes.length < 2} aria-label="预览自动整理">自动整理</button>
       <button type="button" onClick={() => moveLayer(true)} disabled={selectedIds.length === 0} aria-label="置于顶层">置顶</button>
       <button type="button" onClick={() => moveLayer(false)} disabled={selectedIds.length === 0} aria-label="置于底层">置底</button>
       <button type="button" onClick={removeSelected} disabled={selectedIds.length === 0} aria-label="删除选中项">删除</button>
       <span className="toolbar-divider" />
       <button type="button" className="reference-button" onClick={() => { setReferenceQuery(''); setReferenceResults([]); setReferenceError(''); setReferenceSearching(true); setReferenceOpen(true); }} aria-label="插入子指南">＋ 插入子指南</button>
+      {layoutPreview ? <div className="layout-preview" role="status"><span>已按入口从左到右整理</span><button type="button" onClick={applyLayoutPreview} aria-label="应用自动整理">应用自动整理</button><button type="button" onClick={() => setLayoutPreview(null)} aria-label="取消自动整理">取消</button></div> : null}
     </div>
     <div className="editor-workspace">
+      <HierarchyPanel document={document} selectedIds={selectedIds} onSelect={setSelectedIds} onAddStage={addStage} />
       <section className="canvas-shell" aria-label="无限画布编辑区">
         <ReactFlow
-          nodes={flowNodes}
+          nodes={renderedFlowNodes}
           edges={flowEdges}
           nodeTypes={nodeTypes}
           defaultEdgeOptions={defaultEdgeOptions}
@@ -405,6 +440,9 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
           minZoom={0.1}
           maxZoom={2.5}
         >
+          <ViewportPortal>
+            {stageBounds.map((bound) => <div key={bound.stageId ?? 'none'} className="stage-lane" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><span>{bound.title}</span></div>)}
+          </ViewportPortal>
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="#a8b3aa" />
           <MiniMap pannable zoomable nodeStrokeWidth={3} />
           <Controls showInteractive={false} />
@@ -413,7 +451,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       <aside className="inspector" aria-label="属性与教学步骤">
         <div><span className="eyebrow">GUIDE DETAILS</span><label>摘要<textarea value={summary} onChange={(event) => { setSummary(event.target.value); setSaveState('未保存'); }} /></label><label>标签<input value={tags.join('，')} onChange={(event) => setTags(event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean))} /></label></div>
         <hr />
-        {selectedNode ? <NodeInspector node={selectedNode} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} onAddStep={addStep} api={api} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
+        {selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} onAddStep={addStep} api={api} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
         <hr />
         <div className="step-summary"><div><span className="eyebrow">LESSON PATH</span><strong>{document.steps.length} 个教学步骤</strong></div>{[...document.steps].sort((a, b) => a.order - b.order).map((step, index) => <div className="step-row" key={step.id}><span>{index + 1}</span><p>{step.title}</p></div>)}</div>
       </aside>
@@ -423,7 +461,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   </main>;
 }
 
-function NodeInspector({ node, onChange, onToggleReference, onAddStep, api }: { node: CanvasNode; onChange: (node: CanvasNode) => void; onToggleReference: () => void; onAddStep: () => void; api: EditorApi }) {
+function NodeInspector({ node, primaryNodes, stages, onChange, onToggleReference, onAddStep, api }: { node: CanvasNode; primaryNodes: CanvasNode[]; stages: FlowStage[]; onChange: (node: CanvasNode) => void; onToggleReference: () => void; onAddStep: () => void; api: EditorApi }) {
   const updateData = (data: CanvasNode['data']) => onChange({ ...node, data } as CanvasNode);
   return <div className="node-inspector"><div className="inspector-node-heading"><span>{node.type.toUpperCase()}</span><code>{node.id.slice(0, 18)}</code></div>
     {['start', 'end', 'process', 'decision', 'data'].includes(node.type) ? <label>节点标题<input value={(node.data as CanvasNode<'process'>['data']).label} onChange={(event) => updateData({ ...node.data, label: event.target.value } as CanvasNode['data'])} /></label> : null}
@@ -431,6 +469,8 @@ function NodeInspector({ node, onChange, onToggleReference, onAddStep, api }: { 
     {node.type === 'image' ? <><label>图片地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>替代文字<input value={node.data.alt} onChange={(event) => updateData({ ...node.data, alt: event.target.value })} /></label><label>图片说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><label className="upload-label">上传图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
     {node.type === 'video' ? <><label>视频地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>视频说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><div className="keypoint-editor">{node.data.keypoints.map((point, index) => <div key={point.id}><input aria-label={`关键点 ${index + 1} 标题`} value={point.title} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, title: event.target.value } : item) })} /><input type="number" min="0" aria-label={`关键点 ${index + 1} 秒数`} value={point.timeSeconds} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, timeSeconds: Number(event.target.value) } : item) })} /></div>)}<button type="button" onClick={() => updateData({ ...node.data, keypoints: [...node.data.keypoints, { id: uniqueId('keypoint'), title: '新关键点', timeSeconds: 0 }] })}>添加视频关键点</button></div><label className="upload-label">上传视频<input type="file" accept="video/mp4,video/webm" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
     {node.type === 'subguide' ? <><div className="pinned-version"><strong>{node.data.title}</strong><span>固定版本 v{node.data.version}</span></div><button className="secondary-button" type="button" onClick={onToggleReference} aria-label={node.data.expanded ? '折叠子指南' : '展开子指南'}>{node.data.expanded ? '折叠子指南' : '展开子指南'}</button></> : null}
+    {isPrimaryFlowNode(node) ? <label>所属业务阶段<select value={node.stageId ?? ''} onChange={(event) => onChange({ ...node, stageId: event.target.value || undefined })}><option value="">未分阶段</option>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.title}</option>)}</select></label> : null}
+    {isContentNode(node) ? <label>挂靠到流程节点<select value={node.contentParentId ?? ''} onChange={(event) => onChange({ ...node, contentParentId: event.target.value || undefined })}><option value="">未挂靠</option>{primaryNodes.map((primary) => <option key={primary.id} value={primary.id}>{nodeLabel(primary)}</option>)}</select></label> : null}
     <button className="secondary-button" type="button" onClick={onAddStep}>加入教学步骤</button>
   </div>;
 }
@@ -467,9 +507,26 @@ export function toFlowNodes(nodes: CanvasDocument['nodes'], selectedIds: string[
     data: node.data as unknown as Record<string, unknown>,
     ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
     zIndex: node.zIndex,
+    className: node.contentParentId ? 'context-node' : 'primary-node',
     selected: selectedIds.includes(node.id),
     ...(node.size ? { measured: { width: node.size.width, height: node.size.height } } : {}),
   }));
+}
+
+export function hierarchyPresentationEdges(document: CanvasDocument): Edge[] {
+  return document.nodes.filter((node) => isContentNode(node) && node.contentParentId && !node.hidden).map((node) => ({
+    id: `hierarchy:${node.id}`,
+    source: node.contentParentId!,
+    target: node.id,
+    type: 'smoothstep',
+    selectable: false,
+    style: { stroke: '#9a6a42', strokeDasharray: '5 5', strokeWidth: 1.5 },
+  }));
+}
+
+function isHierarchyPresentationChange(change: EdgeChange<Edge>): boolean {
+  return ('id' in change && change.id.startsWith('hierarchy:'))
+    || ('item' in change && change.item.id.startsWith('hierarchy:'));
 }
 
 function fromFlowNodes(document: CanvasDocument, nodes: Node[]): CanvasDocument {
@@ -511,4 +568,12 @@ function maxZIndex(document: CanvasDocument): number {
 
 function uniqueId(prefix: string): string {
   return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+function nodeLabel(node: CanvasNode): string {
+  if (node.type === 'subguide') return node.data.title;
+  if (node.type === 'markdown') return node.data.markdown.split('\n').find(Boolean)?.replace(/^#+\s*/, '').slice(0, 80) || 'Markdown 说明';
+  if (node.type === 'image') return node.data.caption || node.data.alt;
+  if (node.type === 'video') return node.data.caption || '视频资料';
+  return node.data.label;
 }

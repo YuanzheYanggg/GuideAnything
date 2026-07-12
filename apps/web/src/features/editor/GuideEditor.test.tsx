@@ -1,8 +1,8 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Edge, NodeChange } from '@xyflow/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { CanvasEdge, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, GuideVersionSnapshot } from '@guideanything/contracts';
 
 import { GuideEditor, persistableNodeChanges, toCanvasEdge, toFlowNodes, type EditorApi } from './GuideEditor';
 
@@ -111,6 +111,33 @@ describe('GuideEditor', () => {
     expect(api.publishGuide).toHaveBeenCalledWith('guide-host');
   });
 
+  it('attaches new resources to the selected flow, previews hierarchy, and applies it as one undoable change', async () => {
+    const api = createApi();
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加阶段' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
+    const stageId = (screen.getByRole('option', { name: '业务阶段 1' }) as HTMLOptionElement).value;
+    fireEvent.change(screen.getByLabelText('所属业务阶段'), { target: { value: stageId } });
+    fireEvent.click(screen.getByRole('button', { name: '添加 Markdown 节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ nodes: expect.arrayContaining([
+        expect.objectContaining({ type: 'markdown', contentParentId: expect.any(String) }),
+      ]) }),
+    }));
+
+    const savesBeforePreview = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
+    expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
+    expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
+    fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }));
+  });
+
   it('inserts a pinned subguide and expands its immutable snapshot', async () => {
     const user = userEvent.setup();
     const api = createApi();
@@ -130,10 +157,11 @@ describe('GuideEditor', () => {
   });
 });
 
-function createApi(): EditorApi & Record<string, ReturnType<typeof vi.fn>> {
+function createApi(overrides: { document?: CanvasDocument } = {}): EditorApi & Record<string, ReturnType<typeof vi.fn>> {
+  const guide = { ...structuredClone(emptyGuide), document: overrides.document ?? structuredClone(emptyGuide.document) };
   return {
-    getGuide: vi.fn().mockResolvedValue(structuredClone(emptyGuide)),
-    saveGuide: vi.fn().mockResolvedValue({ ...structuredClone(emptyGuide), revision: 1 }),
+    getGuide: vi.fn().mockResolvedValue(guide),
+    saveGuide: vi.fn().mockResolvedValue({ ...guide, revision: 1 }),
     publishGuide: vi.fn().mockResolvedValue(sourceVersion),
     search: vi.fn().mockResolvedValue({ items: [{ versionId: 'version-source', guideId: 'guide-source', title: '物料主数据检查', summary: '', tags: ['物料'], version: 1, authorName: '王作者' }], nextOffset: null }),
     getVersion: vi.fn().mockResolvedValue(sourceVersion),
