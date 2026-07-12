@@ -2,6 +2,7 @@ import type { CanvasDocument, GuideVersionSnapshot } from '@guideanything/contra
 import { describe, expect, it } from 'vitest';
 
 import { expandSubguide, setSubguideExpanded } from './subguide';
+import { layoutFlowHierarchy } from './hierarchy';
 
 describe('large guide transformations', () => {
   it('expands and collapses a 1000-node pinned snapshot within 500ms', () => {
@@ -37,5 +38,25 @@ describe('large guide transformations', () => {
     expect(new Set(expanded.nodes.map((node) => node.id)).size).toBe(1_001);
     expect(collapsed.nodes.filter((node) => node.source).every((node) => node.hidden)).toBe(true);
     expect(elapsed).toBeLessThan(500);
+  });
+
+  it('lays out a 1000-node hierarchy within the local budget', () => {
+    const hierarchyNodes: CanvasDocument['nodes'] = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `node-${index}`, type: 'process' as const, position: { x: index * 20, y: 0 }, zIndex: index,
+      data: { label: `步骤 ${index}`, shape: 'process' as const },
+    }));
+    const thousandNodeDocument: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: hierarchyNodes,
+      edges: hierarchyNodes.slice(1).map((node, index) => ({ id: `edge-${index}`, source: hierarchyNodes[index]!.id, target: node.id })),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      steps: [],
+      entryNodeId: 'node-0',
+      exitNodeIds: ['node-999'],
+    };
+
+    const started = performance.now();
+    expect(layoutFlowHierarchy(thousandNodeDocument).document.nodes).toHaveLength(1_000);
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });
