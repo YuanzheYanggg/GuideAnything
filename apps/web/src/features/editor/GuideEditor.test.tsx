@@ -223,6 +223,7 @@ describe('GuideEditor', () => {
 
     expect(screen.getByText('ERP', { selector: '.swimlane-column *' })).toBeVisible();
     expect(screen.getByText('系统', { selector: '.swimlane-column *' })).toBeVisible();
+    expect(screen.getByText('订单处理', { selector: '.stage-lane span' })).toHaveClass('stage-lane-label');
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
     await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
     expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({

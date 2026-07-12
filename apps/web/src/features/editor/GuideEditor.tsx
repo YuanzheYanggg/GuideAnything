@@ -563,7 +563,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
         >
           <ViewportPortal>
             {swimlaneBounds.map((bound) => <div key={bound.laneId ?? 'unassigned'} className="swimlane-column" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><div><span>{bound.title}</span>{bound.kind ? <em>{bound.kind === 'ROLE' ? '角色' : '系统'}</em> : null}</div></div>)}
-            {stageBounds.map((bound) => <div key={bound.stageId ?? 'none'} className="stage-lane" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><span>{bound.title}</span></div>)}
+            {stageBounds.map((bound) => <div key={bound.stageId ?? 'none'} className={`stage-lane${swimlaneBounds.length > 0 ? ' stage-lane-grid' : ''}`} style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><span className="stage-lane-label">{bound.title}</span></div>)}
             {creationMenu ? <CanvasCreationMenu position={creationMenu.position} allowResources onCreate={createFromConnection} onCancel={() => setCreationMenu(null)} /> : null}
             {edgeLabelEditor ? <EdgeLabelEditor position={edgeLabelEditor.position} {...(edgeLabelEditor.label !== undefined ? { label: edgeLabelEditor.label } : {})} onSave={saveEdgeLabel} onCancel={() => setEdgeLabelEditor(null)} /> : null}
           </ViewportPortal>
