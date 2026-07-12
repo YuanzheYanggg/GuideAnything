@@ -108,6 +108,18 @@ const hierarchySnapshot: GuideVersionSnapshot = {
   },
 };
 
+const laneHierarchySnapshot: GuideVersionSnapshot = {
+  ...hierarchySnapshot,
+  id: 'lane-hierarchy-version',
+  document: {
+    ...hierarchySnapshot.document,
+    lanes: [{ id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 0 }],
+    nodes: hierarchySnapshot.document.nodes.map((node) => node.id === 'source-process'
+      ? { ...node, laneId: 'erp' }
+      : node),
+  },
+};
+
 describe('expandSubguide', () => {
   it('namespaces source IDs, offsets coordinates, and records origin', () => {
     const reference = host.nodes[0] as CanvasNode<'subguide'>;
@@ -147,6 +159,17 @@ describe('expandSubguide', () => {
       expect(derived?.source).toEqual(expect.objectContaining({ referenceNodeId: 'ref-1' }));
       expect(derived).not.toHaveProperty('contentParentId');
     }
+  });
+
+  it('removes source swimlane attachments from every derived expansion node', () => {
+    const reference = host.nodes[0] as CanvasNode<'subguide'>;
+    const expanded = expandSubguide(host, reference, laneHierarchySnapshot);
+
+    expect(() => CanvasDocumentSchema.parse(expanded)).not.toThrow();
+    expect(expanded.nodes.filter(isDerived).every((node) => node.laneId === undefined)).toBe(true);
+    expect(expanded.nodes.find((node) => node.id === 'ref:ref-1:source-process')).toEqual(expect.objectContaining({
+      source: expect.objectContaining({ referenceNodeId: 'ref-1', sourceElementId: 'source-process' }),
+    }));
   });
 
   it('is idempotent and can hide and reveal only derived elements', () => {
