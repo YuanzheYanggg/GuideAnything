@@ -31,7 +31,8 @@ const hierarchyVersion: GuideVersionSnapshot = {
       { id: 'intro', type: 'process', stageId: 'prepare', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '确认销售范围', shape: 'process' } },
       { id: 'video', type: 'video', contentParentId: 'intro', position: { x: 320, y: 0 }, zIndex: 1, data: { url: 'https://example.com/va01.mp4', caption: 'VA01 操作演示', keypoints: [] } },
       { id: 'hidden-note', type: 'markdown', contentParentId: 'intro', hidden: true, position: { x: 320, y: 200 }, zIndex: 2, data: { markdown: '不应显示' } },
-      { id: 'expanded-copy', type: 'process', stageId: 'prepare', position: { x: 640, y: 0 }, zIndex: 3, source: { referenceNodeId: 'subguide', sourceGuideId: 'guide-child', sourceVersionId: 'version-child', sourceElementId: 'source-process' }, data: { label: '展开副本', shape: 'process' } },
+      { id: 'subguide', type: 'subguide', stageId: 'prepare', position: { x: 640, y: 0 }, zIndex: 3, data: { guideId: 'guide-child', guideVersionId: 'version-child', title: '子流程', version: 1, expanded: true } },
+      { id: 'expanded-copy', type: 'process', position: { x: 920, y: 0 }, zIndex: 4, source: { referenceNodeId: 'subguide', sourceGuideId: 'guide-child', sourceVersionId: 'version-child', sourceElementId: 'source-process' }, data: { label: '展开副本', shape: 'process' } },
     ],
     edges: [{ id: 'e1', source: 'intro', target: 'video' }], viewport: { x: 0, y: 0, zoom: 1 },
     steps: [
@@ -81,9 +82,9 @@ describe('LessonPage', () => {
     expect(screen.queryByText('不应显示')).not.toBeInTheDocument();
   });
 
-  it('keeps legacy steps ungrouped and excludes source-derived nodes from stage context', () => {
+  it('keeps legacy steps ungrouped while source-derived steps inherit their pinned subguide stage', () => {
     expect(resolveStepStage(version.document, 'intro')).toBeNull();
-    expect(resolveStepStage(hierarchyVersion.document, 'expanded-copy')).toBeNull();
+    expect(resolveStepStage(hierarchyVersion.document, 'expanded-copy')?.title).toBe('准备');
     expect(resourcesForStep(hierarchyVersion.document, 'intro').map((node) => node.id)).toEqual(['video']);
   });
 });

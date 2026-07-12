@@ -1,6 +1,6 @@
 # GuideAnything 进度
 
-> 最后更新：2026-07-12 09:48（Asia/Shanghai）
+> 最后更新：2026-07-12 10:14（Asia/Shanghai）
 
 ## 已完成
 
@@ -29,24 +29,26 @@
 - 完成作者结构树、资料改挂靠/脱离、阶段泳道与学习者阶段分组/步骤资料聚合；展开子指南产物不会进入宿主流程层或资料层。
 - 真实 Playwright 验收（种子“ERP 销售订单创建”）：作者创建 2 个业务阶段，将“收到客户下单需求”和“物料可销售？”分别归入阶段；选中前者新增 Markdown 后结构树显示“业务阶段 1 → 收到客户下单需求 → 操作说明”。资料脱离时“未挂靠资料”从 3 变为 4，重新挂靠后恢复；预览自动整理后取消仍为“已保存”，再次预览后应用并撤销成功。
 - 同一浏览器会话发布 v2；学习者搜索到 v2，步骤列表显示“业务阶段 2”和“业务阶段 1”，第 7 步展示“本步骤资料 / 操作说明”，第 3 步点击 `00:02` 视频关键点成功。浏览器控制台 error 为 0；开发态 React Flow warnings 存在，未作为无 warning 结论。
+- 收口层级体验：判断节点同 rank 分支会按 `branchLabels` 和 `是/yes → 否/no` 稳定排序；预览状态显式显示主流程、阶段、资料、孤立和循环诊断及“入口 → 阶段泳道 → 资料”规则。展开子指南产物只作为引用节点下的“子指南内容”呈现，学习步骤从 `source.referenceNodeId` 继承引用子指南阶段，仍不进入宿主资料聚合或自动布局输入。
+- 真实 Playwright（本 worktree `127.0.0.1:5173` / API `127.0.0.1:3001`）以作者打开种子“ERP 销售订单创建”，预览显示 `主流程 5 / 阶段 2 / 已挂靠资料 1 / 未挂靠资料 3 / 孤立节点 4 / 循环 2` 及规则说明；点击结构树远端“记录销售订单号”后，画布实际聚焦并选中该节点。预览期间浏览器快照确认新增节点、阶段、保存/发布、连线编辑及属性编辑均被禁用，而树选择仍可用。为避免改写共享种子草稿，未在此浏览器会话展开引用或发布新版本；该树与学习阶段路径由组件回归覆盖。未将开发态 React Flow warnings 作为“无 warning”结论。
 
 ## 最终验证
 
 ```text
 pnpm --filter @guideanything/contracts test -- canvas.test.ts                         1 文件、8 项通过
-pnpm --filter @guideanything/canvas-core test -- hierarchy.test.ts performance.test.ts 6 文件、22 项通过
-pnpm --filter @guideanything/web test -- GuideEditor.test.tsx HierarchyPanel.test.tsx LessonPage.test.tsx 9 文件、24 项通过
+pnpm --filter @guideanything/canvas-core test -- hierarchy.test.ts                         6 文件、23 项通过
+pnpm --filter @guideanything/web test -- GuideEditor.test.tsx HierarchyPanel.test.tsx LessonPage.test.tsx 9 文件、26 项通过
 pnpm lint                                                                  退出 0
 pnpm typecheck                                                             4 个 workspace 包退出 0
-pnpm test                                                                  23 个测试文件、68 项通过
+pnpm test                                                                  23 个测试文件、71 项通过
 pnpm build                                                                 API 类型构建与 Web Vite 生产构建退出 0
 ```
 
-测试分布：contracts 8、canvas-core 22、API 14、Web 24。
+测试分布：contracts 8、canvas-core 23、API 14、Web 26。
 
 ## 当前进行
 
-- 已完成全部 M0-M4 验收范围，以及业务流程层级体验的最终验证。
+- 已完成全部 M0-M4 验收范围，以及业务流程层级体验的最终验证与总审收口。
 
 ## 下一步
 

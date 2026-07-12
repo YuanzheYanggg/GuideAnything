@@ -9,6 +9,7 @@ const process = (id: string, stageId?: string) => ({ ...base, id, type: 'process
 const end = (id: string, stageId?: string) => ({ ...base, id, type: 'end' as const, ...(stageId ? { stageId } : {}), data: { label: '结束', shape: 'end' as const } });
 const markdown = (id: string, contentParentId?: string) => ({ ...base, id, type: 'markdown' as const, ...(contentParentId ? { contentParentId } : {}), data: { markdown: id } });
 const image = (id: string, contentParentId?: string) => ({ ...base, id, type: 'image' as const, ...(contentParentId ? { contentParentId } : {}), data: { url: 'https://example.com/a.png', alt: id } });
+const decision = (id: string) => ({ ...base, id, type: 'decision' as const, data: { label: '是否继续？', shape: 'decision' as const, branchLabels: ['是', '否'] } });
 const edge = (id: string, source: string, target: string) => ({ id, source, target });
 const makeDocument = (overrides: Partial<CanvasDocument>): CanvasDocument => ({ schemaVersion: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [], ...overrides });
 
@@ -138,5 +139,25 @@ describe('flow hierarchy layout', () => {
     expect(byId.get('start')!.position.x).toBeLessThan(byId.get('right')!.position.x);
     expect(byId.get('left')!.position.x).toBeLessThan(byId.get('merge')!.position.x);
     expect(byId.get('right')!.position.x).toBeLessThan(byId.get('merge')!.position.x);
+  });
+
+  it('places yes before no for sibling decision branches regardless of their prior positions', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      nodes: [
+        start('start'),
+        decision('continue'),
+        { ...process('no-branch'), position: { x: 0, y: 0 } },
+        { ...process('yes-branch'), position: { x: 0, y: 600 } },
+      ],
+      edges: [
+        edge('start-continue', 'start', 'continue'),
+        { ...edge('continue-no', 'continue', 'no-branch'), sourceHandle: 'no' },
+        { ...edge('continue-yes', 'continue', 'yes-branch'), sourceHandle: 'yes' },
+      ],
+      entryNodeId: 'start',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('yes-branch')!.position.y).toBeLessThan(byId.get('no-branch')!.position.y);
   });
 });

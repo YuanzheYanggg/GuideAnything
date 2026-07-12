@@ -70,7 +70,7 @@ export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutRe
   const ranked = rankFromEntry(document.entryNodeId, primary, graph);
   const contentByParent = attachedContentByParent(content, primaryIds);
   const rankX = calculateRankX(primary, content, ranked.rankById, primaryIds);
-  const positioned = placePrimary(primary, ranked.rankById, rankX, document.stages ?? [], contentByParent);
+  const positioned = placePrimary(primary, ranked.rankById, rankX, document.stages ?? [], contentByParent, document.edges);
   const withContent = placeContent(content, positioned, contentByParent);
   const byId = new Map(withContent.map((node) => [node.id, node]));
   const next = { ...document, nodes: document.nodes.map((node) => byId.get(node.id) ?? node) };
@@ -309,6 +309,7 @@ function placePrimary(
   rankX: Map<number, number>,
   stages: FlowStage[],
   contentByParent: Map<string, CanvasNode[]>,
+  edges: CanvasEdge[],
 ): PrimaryPlacement {
   const ordered = orderedStages(stages);
   const stageIds = new Set(ordered.map((stage) => stage.id));
@@ -325,6 +326,7 @@ function placePrimary(
 
   const nodes: CanvasNode[] = [];
   const byId = new Map<string, CanvasNode>();
+  const compareSiblings = decisionSiblingComparator(primary, edges);
   let laneY = 0;
   let unassignedContentY = 0;
   [...ordered.map((stage) => stage.id), null].forEach((stageId) => {
@@ -333,7 +335,7 @@ function placePrimary(
     if (byRank) {
       [...byRank.keys()].sort((left, right) => left - right).forEach((rank) => {
         let y = laneY;
-        byRank.get(rank)!.forEach((node) => {
+        byRank.get(rank)!.sort(compareSiblings).forEach((node) => {
           const positioned = { ...node, position: { x: rankX.get(rank)!, y } };
           nodes.push(positioned);
           byId.set(node.id, positioned);
@@ -346,6 +348,54 @@ function placePrimary(
     if (laneHeight > 0) laneY += laneHeight + STAGE_GAP_Y;
   });
   return { nodes, byId, unassignedContentY };
+}
+
+function decisionSiblingComparator(primary: CanvasNode[], edges: CanvasEdge[]): (left: CanvasNode, right: CanvasNode) => number {
+  const primaryById = new Map(primary.map((node) => [node.id, node]));
+  const branchByTarget = new Map<string, { sourceId: string; priority: number }>();
+  edges.forEach((edge) => {
+    if (edge.hidden || edge.sourceTrace) return;
+    const source = primaryById.get(edge.source);
+    if (!source || source.type !== 'decision' || !primaryById.has(edge.target)) return;
+    const priority = decisionBranchPriority(source, edge);
+    if (priority === undefined) return;
+    const existing = branchByTarget.get(edge.target);
+    if (!existing || priority < existing.priority) branchByTarget.set(edge.target, { sourceId: source.id, priority });
+  });
+
+  return (left, right) => {
+    const leftBranch = branchByTarget.get(left.id);
+    const rightBranch = branchByTarget.get(right.id);
+    if (leftBranch && rightBranch && leftBranch.sourceId === rightBranch.sourceId && leftBranch.priority !== rightBranch.priority) {
+      return leftBranch.priority - rightBranch.priority;
+    }
+    return compareNodes(left, right);
+  };
+}
+
+function decisionBranchPriority(node: CanvasNode<'decision'>, edge: CanvasEdge): number | undefined {
+  const values = [edge.label, edge.sourceHandle].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const labelIndex = (node.data.branchLabels ?? []).findIndex((label) => values.some((value) => sameBranchLabel(value, label)));
+  if (labelIndex >= 0) return labelIndex;
+  return values.map(yesNoBranch).find((value): value is number => value !== undefined);
+}
+
+function sameBranchLabel(value: string, label: string): boolean {
+  return normalizeBranchLabel(value) === normalizeBranchLabel(label);
+}
+
+function normalizeBranchLabel(value: string): string {
+  const normalized = value.trim().toLocaleLowerCase();
+  if (normalized === '是' || normalized === 'yes') return 'yes';
+  if (normalized === '否' || normalized === 'no') return 'no';
+  return normalized;
+}
+
+function yesNoBranch(value: string): number | undefined {
+  const normalized = normalizeBranchLabel(value);
+  if (normalized === 'yes') return 0;
+  if (normalized === 'no') return 1;
+  return undefined;
 }
 
 function occupiedHeight(node: CanvasNode, contentByParent: Map<string, CanvasNode[]>): number {

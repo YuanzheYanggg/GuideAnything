@@ -24,8 +24,9 @@ export interface LessonApi {
 
 export function resolveStepStage(document: CanvasDocument, nodeId: string): FlowStage | null {
   const node = document.nodes.find((item) => item.id === nodeId);
-  if (!node || node.source) return null;
-  const owner = document.nodes.find((item) => item.id === (node.contentParentId ?? nodeId));
+  if (!node) return null;
+  const ownerId = node.source?.referenceNodeId ?? node.contentParentId ?? nodeId;
+  const owner = document.nodes.find((item) => item.id === ownerId);
   if (!owner || owner.source) return null;
   return document.stages?.find((stage) => stage.id === owner.stageId) ?? null;
 }

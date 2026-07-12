@@ -6,6 +6,24 @@ import type { CanvasDocument, CanvasEdge, GuideVersionSnapshot } from '@guideany
 
 import { GuideEditor, persistableNodeChanges, toCanvasEdge, toFlowNodes, type EditorApi } from './GuideEditor';
 
+const { fitView } = vi.hoisted(() => ({ fitView: vi.fn() }));
+
+vi.mock('@xyflow/react', async () => {
+  const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react');
+  const React = await import('react');
+  return {
+    ...actual,
+    ReactFlow: ({ children, nodes = [], onInit, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string }>; onInit?: (instance: { fitView: typeof fitView }) => void; nodesDraggable?: boolean }) => {
+      React.useEffect(() => { onInit?.({ fitView }); }, [onInit]);
+      return <div className="react-flow">{nodes.map((node) => <div className={`react-flow__node${nodesDraggable ? ' draggable' : ''}`} data-id={node.id} key={node.id} />)}{children}</div>;
+    },
+    ViewportPortal: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+    Background: () => null,
+    MiniMap: () => null,
+    Controls: () => null,
+  };
+});
+
 const emptyGuide = {
   id: 'guide-host', ownerId: 'author', authorName: '王作者', title: '订单教学', summary: '', tags: ['ERP'],
   status: 'DRAFT', revision: 0, publishedVersionId: null, publishedVersion: null, updatedAt: new Date().toISOString(),
@@ -138,6 +156,37 @@ describe('GuideEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '撤销' }));
   });
 
+  it('explains the hierarchy preview and focuses an offscreen node selected from the structure tree', async () => {
+    const user = userEvent.setup();
+    fitView.mockClear();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      stages: [{ id: 'prepare', title: '准备', order: 0 }],
+      nodes: [
+        { id: 'start', type: 'start', stageId: 'prepare', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'offscreen', type: 'process', stageId: 'prepare', position: { x: 12_000, y: 8_000 }, zIndex: 1, data: { label: '离屏流程', shape: 'process' } },
+        { id: 'attached', type: 'markdown', contentParentId: 'start', position: { x: 320, y: 0 }, zIndex: 2, data: { markdown: '已挂靠资料' } },
+        { id: 'loose', type: 'markdown', position: { x: 320, y: 220 }, zIndex: 3, data: { markdown: '未挂靠资料' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    await user.click(screen.getByRole('button', { name: '预览自动整理' }));
+    expect(screen.getByText('主流程 2')).toBeVisible();
+    expect(screen.getByText('阶段 1')).toBeVisible();
+    expect(screen.getByText('已挂靠资料 1')).toBeVisible();
+    expect(screen.getByText('未挂靠资料 1')).toBeVisible();
+    expect(screen.getByText('孤立节点 1')).toBeVisible();
+    expect(screen.getByText('循环 0')).toBeVisible();
+    expect(screen.getByText('入口 → 阶段泳道 → 资料')).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: '选择流程节点 离屏流程' }));
+    expect(fitView).toHaveBeenCalledWith(expect.objectContaining({ nodes: [{ id: 'offscreen' }] }));
+  });
+
   it('keeps a layout preview intact when a canvas node drag is attempted', async () => {
     const api = createApi();
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
@@ -158,6 +207,10 @@ describe('GuideEditor', () => {
     fireEvent.pointerMove(document, { clientX: 220, clientY: 80, pointerId: 1, buttons: 1 });
     fireEvent.pointerUp(document, { clientX: 220, clientY: 80, pointerId: 1, button: 0 });
 
+    expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
+    expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
+
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
     expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
   });
