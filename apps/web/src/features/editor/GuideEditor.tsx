@@ -1,6 +1,6 @@
-import type { CanvasDocument, CanvasEdge, CanvasNode, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, FlowLane, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
-import { duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, reconcileSubguideEdges, setSubguideExpanded, type HierarchyLayoutResult } from '@guideanything/canvas-core';
+import { duplicateSelection, expandSubguide, getStageBounds, getSwimlaneBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, reconcileSubguideEdges, setSubguideExpanded, type HierarchyLayoutResult } from '@guideanything/canvas-core';
 import {
   addEdge,
   applyEdgeChanges,
@@ -104,7 +104,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       const normalized = reconcileSubguideEdges(validated);
       setGuide(loaded);
       setDocument(normalized);
-      setFlowNodes(toFlowNodes(normalized.nodes));
+      setFlowNodes(toFlowNodes(normalized.nodes, [], normalized.lanes));
       setTitle(loaded.title);
       setSummary(loaded.summary);
       setTags(loaded.tags);
@@ -119,14 +119,15 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     historyRef.current?.push(validated);
     setLayoutPreview(null);
     setDocument(validated);
-    setFlowNodes(toFlowNodes(validated.nodes, selectedIds));
+    setFlowNodes(toFlowNodes(validated.nodes, selectedIds, validated.lanes));
     setSaveState('未保存');
   }, [selectedIds]);
 
   const renderedDocument = layoutPreview?.document ?? document;
   const flowEdges = useMemo(() => renderedDocument ? [...renderedDocument.edges as Edge[], ...hierarchyPresentationEdges(renderedDocument)] : [], [renderedDocument]);
-  const renderedFlowNodes = useMemo(() => layoutPreview ? toFlowNodes(layoutPreview.document.nodes, selectedIds) : flowNodes, [flowNodes, layoutPreview, selectedIds]);
+  const renderedFlowNodes = useMemo(() => layoutPreview ? toFlowNodes(layoutPreview.document.nodes, selectedIds, layoutPreview.document.lanes) : flowNodes, [flowNodes, layoutPreview, selectedIds]);
   const stageBounds = useMemo(() => renderedDocument ? getStageBounds(renderedDocument) : [], [renderedDocument]);
+  const swimlaneBounds = useMemo(() => renderedDocument ? getSwimlaneBounds(renderedDocument) : [], [renderedDocument]);
 
   useEffect(() => {
     setFlowNodes((current) => {
@@ -181,12 +182,12 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     setSaveState('未保存');
     setDocument((current) => {
       if (!current) return current;
-      const changed = applyNodeChanges(persistedChanges, toFlowNodes(current.nodes));
+      const changed = applyNodeChanges(persistedChanges, toFlowNodes(current.nodes, selectedIds, current.lanes));
       const next = reconcileSubguideEdges(CanvasDocumentSchema.parse(fromFlowNodes(current, changed)));
       historyRef.current?.push(next);
       return next;
     });
-  }, [layoutPreview]);
+  }, [layoutPreview, selectedIds]);
 
   const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
     if (layoutPreview) return;
@@ -252,6 +253,34 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     commit({ ...document, stages: [...stages, stage] });
   };
 
+  const updateStage = (stageId: string, stageTitle: string) => {
+    if (!document || layoutPreview || !stageTitle.trim()) return;
+    commit({ ...document, stages: (document.stages ?? []).map((stage) => stage.id === stageId ? { ...stage, title: stageTitle } : stage) });
+  };
+
+  const moveStage = (stageId: string, direction: -1 | 1) => {
+    if (!document || layoutPreview) return;
+    const stages = moveOrderedItem(document.stages ?? [], stageId, direction);
+    if (stages) commit({ ...document, stages });
+  };
+
+  const addLane = (kind: FlowLane['kind']) => {
+    if (!document || layoutPreview) return;
+    const lanes = document.lanes ?? [];
+    commit({ ...document, lanes: [...lanes, { id: uniqueId('lane'), title: kind === 'ROLE' ? '新角色' : '新系统', kind, order: lanes.length }] });
+  };
+
+  const updateLane = (laneId: string, laneTitle: string) => {
+    if (!document || layoutPreview || !laneTitle.trim()) return;
+    commit({ ...document, lanes: (document.lanes ?? []).map((lane) => lane.id === laneId ? { ...lane, title: laneTitle } : lane) });
+  };
+
+  const moveLane = (laneId: string, direction: -1 | 1) => {
+    if (!document || layoutPreview) return;
+    const lanes = moveOrderedItem(document.lanes ?? [], laneId, direction);
+    if (lanes) commit({ ...document, lanes });
+  };
+
   const previewLayout = () => {
     if (!document || layoutPreview) return;
     setLayoutPreview(layoutFlowHierarchy(document));
@@ -298,16 +327,16 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     if (layoutPreview || !historyRef.current?.canUndo) return;
     const previous = reconcileSubguideEdges(historyRef.current.undo());
     setDocument(previous);
-    setFlowNodes(toFlowNodes(previous.nodes));
+    setFlowNodes(toFlowNodes(previous.nodes, selectedIds, previous.lanes));
     setSaveState('未保存');
-  }, [layoutPreview]);
+  }, [layoutPreview, selectedIds]);
   const redo = useCallback(() => {
     if (layoutPreview || !historyRef.current?.canRedo) return;
     const next = reconcileSubguideEdges(historyRef.current.redo());
     setDocument(next);
-    setFlowNodes(toFlowNodes(next.nodes));
+    setFlowNodes(toFlowNodes(next.nodes, selectedIds, next.lanes));
     setSaveState('未保存');
-  }, [layoutPreview]);
+  }, [layoutPreview, selectedIds]);
 
   const copy = useCallback(() => { clipboardRef.current = [...selectedIds]; }, [selectedIds]);
   const paste = useCallback(() => {
@@ -406,6 +435,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   const selectedNode = document.nodes.find((node) => node.id === selectedIds[0]);
   const primaryNodes = document.nodes.filter(isPrimaryFlowNode);
   const stages = [...(document.stages ?? [])].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+  const lanes = [...(document.lanes ?? [])].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
 
   return <main className="editor-page">
     <header className="editor-header">
@@ -433,10 +463,10 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       <button type="button" onClick={removeSelected} disabled={Boolean(layoutPreview) || selectedIds.length === 0} aria-label="删除选中项">删除</button>
       <span className="toolbar-divider" />
       <button type="button" className="reference-button" onClick={() => { setReferenceQuery(''); setReferenceResults([]); setReferenceError(''); setReferenceSearching(true); setReferenceOpen(true); }} disabled={Boolean(layoutPreview)} aria-label="插入子指南">＋ 插入子指南</button>
-      {layoutPreview ? <div className="layout-preview" role="status"><div className="layout-preview-copy"><span>已按入口从左到右整理</span><div className="layout-preview-summary"><span>主流程 {layoutPreview.report.primaryNodeIds.length}</span><span>阶段 {layoutPreview.report.stageCount}</span><span>已挂靠资料 {layoutPreview.report.attachedContentIds.length}</span><span>未挂靠资料 {layoutPreview.report.unassignedContentIds.length}</span><span>孤立节点 {layoutPreview.report.unconnectedPrimaryIds.length}</span><span>循环 {layoutPreview.report.cycleNodeIds.length}</span></div><span className="layout-preview-rule">入口 → 阶段泳道 → 资料</span></div><button type="button" onClick={applyLayoutPreview} aria-label="应用自动整理">应用自动整理</button><button type="button" onClick={() => setLayoutPreview(null)} aria-label="取消自动整理">取消</button></div> : null}
+      {layoutPreview ? <div className="layout-preview" role="status"><div className="layout-preview-copy"><span>已按入口从左到右整理</span><div className="layout-preview-summary"><span>主流程 {layoutPreview.report.primaryNodeIds.length}</span><span>阶段 {layoutPreview.report.stageCount}</span><span>泳道 {layoutPreview.report.laneCount}</span><span>已挂靠资料 {layoutPreview.report.attachedContentIds.length}</span><span>未挂靠资料 {layoutPreview.report.unassignedContentIds.length}</span><span>孤立节点 {layoutPreview.report.unconnectedPrimaryIds.length}</span><span>循环 {layoutPreview.report.cycleNodeIds.length}</span></div><span className="layout-preview-rule">入口 → 阶段泳道 → 资料</span></div><button type="button" onClick={applyLayoutPreview} aria-label="应用自动整理">应用自动整理</button><button type="button" onClick={() => setLayoutPreview(null)} aria-label="取消自动整理">取消</button></div> : null}
     </div>
     <div className="editor-workspace">
-      <HierarchyPanel document={document} selectedIds={selectedIds} onSelect={selectAndFocus} onAddStage={addStage} editingLocked={Boolean(layoutPreview)} />
+      <HierarchyPanel document={document} selectedIds={selectedIds} onSelect={selectAndFocus} onAddStage={addStage} onUpdateStage={updateStage} onMoveStage={moveStage} onAddLane={addLane} onUpdateLane={updateLane} onMoveLane={moveLane} editingLocked={Boolean(layoutPreview)} />
       <section className="canvas-shell" aria-label="无限画布编辑区">
         <ReactFlow
           nodes={renderedFlowNodes}
@@ -463,6 +493,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
           elementsSelectable={!layoutPreview}
         >
           <ViewportPortal>
+            {swimlaneBounds.map((bound) => <div key={bound.laneId ?? 'unassigned'} className="swimlane-column" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><div><span>{bound.title}</span>{bound.kind ? <em>{bound.kind === 'ROLE' ? '角色' : '系统'}</em> : null}</div></div>)}
             {stageBounds.map((bound) => <div key={bound.stageId ?? 'none'} className="stage-lane" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><span>{bound.title}</span></div>)}
           </ViewportPortal>
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="#a8b3aa" />
@@ -473,7 +504,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       <aside className="inspector" aria-label="属性与教学步骤">
         <div><span className="eyebrow">GUIDE DETAILS</span><label>摘要<textarea value={summary} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setSummary(event.target.value); setSaveState('未保存'); }} /></label><label>标签<input value={tags.join('，')} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTags(event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean)); setSaveState('未保存'); }} /></label></div>
         <hr />
-        {selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} onAddStep={addStep} api={api} locked={Boolean(layoutPreview)} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
+        {selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} lanes={lanes} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} onAddStep={addStep} api={api} locked={Boolean(layoutPreview)} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
         <hr />
         <div className="step-summary"><div><span className="eyebrow">LESSON PATH</span><strong>{document.steps.length} 个教学步骤</strong></div>{[...document.steps].sort((a, b) => a.order - b.order).map((step, index) => <div className="step-row" key={step.id}><span>{index + 1}</span><p>{step.title}</p></div>)}</div>
       </aside>
@@ -483,7 +514,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   </main>;
 }
 
-function NodeInspector({ node, primaryNodes, stages, onChange, onToggleReference, onAddStep, api, locked }: { node: CanvasNode; primaryNodes: CanvasNode[]; stages: FlowStage[]; onChange: (node: CanvasNode) => void; onToggleReference: () => void; onAddStep: () => void; api: EditorApi; locked: boolean }) {
+function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleReference, onAddStep, api, locked }: { node: CanvasNode; primaryNodes: CanvasNode[]; stages: FlowStage[]; lanes: FlowLane[]; onChange: (node: CanvasNode) => void; onToggleReference: () => void; onAddStep: () => void; api: EditorApi; locked: boolean }) {
   const updateData = (data: CanvasNode['data']) => onChange({ ...node, data } as CanvasNode);
   return <fieldset className="node-inspector" disabled={locked}><div className="inspector-node-heading"><span>{node.type.toUpperCase()}</span><code>{node.id.slice(0, 18)}</code></div>
     {['start', 'end', 'process', 'decision', 'data'].includes(node.type) ? <label>节点标题<input value={(node.data as CanvasNode<'process'>['data']).label} onChange={(event) => updateData({ ...node.data, label: event.target.value } as CanvasNode['data'])} /></label> : null}
@@ -491,7 +522,7 @@ function NodeInspector({ node, primaryNodes, stages, onChange, onToggleReference
     {node.type === 'image' ? <><label>图片地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>替代文字<input value={node.data.alt} onChange={(event) => updateData({ ...node.data, alt: event.target.value })} /></label><label>图片说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><label className="upload-label">上传图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
     {node.type === 'video' ? <><label>视频地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>视频说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><div className="keypoint-editor">{node.data.keypoints.map((point, index) => <div key={point.id}><input aria-label={`关键点 ${index + 1} 标题`} value={point.title} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, title: event.target.value } : item) })} /><input type="number" min="0" aria-label={`关键点 ${index + 1} 秒数`} value={point.timeSeconds} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, timeSeconds: Number(event.target.value) } : item) })} /></div>)}<button type="button" onClick={() => updateData({ ...node.data, keypoints: [...node.data.keypoints, { id: uniqueId('keypoint'), title: '新关键点', timeSeconds: 0 }] })}>添加视频关键点</button></div><label className="upload-label">上传视频<input type="file" accept="video/mp4,video/webm" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
     {node.type === 'subguide' ? <><div className="pinned-version"><strong>{node.data.title}</strong><span>固定版本 v{node.data.version}</span></div><button className="secondary-button" type="button" onClick={onToggleReference} aria-label={node.data.expanded ? '折叠子指南' : '展开子指南'}>{node.data.expanded ? '折叠子指南' : '展开子指南'}</button></> : null}
-    {isPrimaryFlowNode(node) ? <label>所属业务阶段<select value={node.stageId ?? ''} onChange={(event) => onChange({ ...node, stageId: event.target.value || undefined })}><option value="">未分阶段</option>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.title}</option>)}</select></label> : null}
+    {isPrimaryFlowNode(node) ? <><label>所属业务阶段<select value={node.stageId ?? ''} onChange={(event) => onChange({ ...node, stageId: event.target.value || undefined })}><option value="">未分阶段</option>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.title}</option>)}</select></label><label>责任泳道<select value={node.laneId ?? ''} onChange={(event) => onChange({ ...node, laneId: event.target.value || undefined })}><option value="">未分配责任</option>{lanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.title}</option>)}</select></label></> : null}
     {isContentNode(node) ? <label>挂靠到流程节点<select value={node.contentParentId ?? ''} onChange={(event) => onChange({ ...node, contentParentId: event.target.value || undefined })}><option value="">未挂靠</option>{primaryNodes.map((primary) => <option key={primary.id} value={primary.id}>{nodeLabel(primary)}</option>)}</select></label> : null}
     <button className="secondary-button" type="button" onClick={onAddStep}>加入教学步骤</button>
   </fieldset>;
@@ -521,12 +552,16 @@ export function persistableNodeChanges(changes: NodeChange<Node>[]): NodeChange<
   );
 }
 
-export function toFlowNodes(nodes: CanvasDocument['nodes'], selectedIds: string[] = []): Node[] {
+export function toFlowNodes(nodes: CanvasDocument['nodes'], selectedIds: string[] = [], lanes: FlowLane[] = []): Node[] {
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
   return nodes.map((node) => ({
     id: node.id,
     type: node.type,
     position: node.position,
-    data: node.data as unknown as Record<string, unknown>,
+    data: {
+      ...node.data,
+      ...(isPrimaryFlowNode(node) && node.laneId && laneById.has(node.laneId) ? { responsibility: pickResponsibility(laneById.get(node.laneId)!) } : {}),
+    } as unknown as Record<string, unknown>,
     ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
     zIndex: node.zIndex,
     className: node.contentParentId ? 'context-node' : 'primary-node',
@@ -559,15 +594,26 @@ function fromFlowNodes(document: CanvasDocument, nodes: Node[]): CanvasDocument 
       const source = existing.get(node.id)!;
       const width = node.width ?? node.measured?.width;
       const height = node.height ?? node.measured?.height;
+      const data = stripPresentationData(node.data);
       return {
         ...source,
+        data: data as CanvasNode['data'],
         position: node.position,
         zIndex: node.zIndex ?? source.zIndex,
         ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
         ...(width && height ? { size: { width, height } } : {}),
-      };
+      } as CanvasNode;
     }),
   };
+}
+
+function stripPresentationData(data: Record<string, unknown>): Record<string, unknown> {
+  const { responsibility: _responsibility, ...persisted } = data;
+  return persisted;
+}
+
+function pickResponsibility(lane: FlowLane): { title: string; kind: FlowLane['kind'] } {
+  return { title: lane.title, kind: lane.kind };
 }
 
 export function toCanvasEdge(edge: Edge): CanvasEdge {
@@ -590,6 +636,16 @@ function maxZIndex(document: CanvasDocument): number {
 
 function uniqueId(prefix: string): string {
   return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+function moveOrderedItem<T extends { id: string; order: number }>(items: T[], id: string, direction: -1 | 1): T[] | null {
+  const ordered = [...items].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+  const index = ordered.findIndex((item) => item.id === id);
+  const targetIndex = index + direction;
+  if (index < 0 || targetIndex < 0 || targetIndex >= ordered.length) return null;
+  const [item] = ordered.splice(index, 1);
+  ordered.splice(targetIndex, 0, item!);
+  return ordered.map((current, order) => ({ ...current, order }));
 }
 
 function nodeLabel(node: CanvasNode): string {

@@ -191,6 +191,43 @@ describe('GuideEditor', () => {
     expect(fitView).toHaveBeenCalledWith(expect.objectContaining({ nodes: [{ id: 'offscreen' }] }));
   });
 
+  it('persists named stages and responsibility lanes without leaking presentation data', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      stages: [{ id: 'entry', title: '订单录入', order: 0 }],
+      nodes: [
+        { id: 'start', type: 'start', stageId: 'entry', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'enter-order', type: 'process', stageId: 'entry', position: { x: 320, y: 0 }, zIndex: 1, data: { label: '录入订单', shape: 'process' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.change(screen.getByRole('textbox', { name: '业务阶段 订单录入' }), { target: { value: '订单处理' } });
+    fireEvent.click(screen.getByRole('button', { name: '添加系统泳道' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '责任泳道 新系统' }), { target: { value: 'ERP' } });
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 录入订单' }));
+    const erpLaneId = (screen.getByRole('option', { name: 'ERP' }) as HTMLOptionElement).value;
+    fireEvent.change(screen.getByLabelText('责任泳道'), { target: { value: erpLaneId } });
+
+    expect(screen.getByText('ERP', { selector: '.swimlane-column *' })).toBeVisible();
+    expect(screen.getByText('系统', { selector: '.swimlane-column *' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({
+        stages: [expect.objectContaining({ id: 'entry', title: '订单处理' })],
+        lanes: [expect.objectContaining({ id: erpLaneId, title: 'ERP', kind: 'SYSTEM' })],
+        nodes: expect.arrayContaining([expect.objectContaining({ id: 'enter-order', laneId: erpLaneId, data: expect.not.objectContaining({ responsibility: expect.anything() }) })]),
+      }),
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
+    expect(screen.getByText('泳道 1')).toBeVisible();
+  });
+
   it('keeps preview navigation and guide metadata transient until cancellation', async () => {
     const user = userEvent.setup();
     const document: CanvasDocument = {
