@@ -3,6 +3,101 @@ import { describe, expect, it } from 'vitest';
 import { CanvasDocumentSchema } from './canvas';
 
 describe('CanvasDocumentSchema', () => {
+  function hierarchyDocument(overrides: Record<string, unknown> = {}) {
+    return {
+      schemaVersion: 1,
+      stages: [{ id: 'prepare', title: '准备', order: 0 }],
+      nodes: [
+        {
+          id: 'start',
+          type: 'start',
+          position: { x: 0, y: 0 },
+          zIndex: 0,
+          stageId: 'prepare',
+          data: { label: '开始', shape: 'start' },
+        },
+        {
+          id: 'note',
+          type: 'markdown',
+          position: { x: 0, y: 160 },
+          zIndex: 1,
+          contentParentId: 'start',
+          data: { markdown: '核对前置条件' },
+        },
+      ],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      steps: [],
+      entryNodeId: 'start',
+      exitNodeIds: ['start'],
+      ...overrides,
+    };
+  }
+
+  it('accepts stages and a resource attached to a primary flow node', () => {
+    expect(CanvasDocumentSchema.safeParse(hierarchyDocument()).success).toBe(true);
+  });
+
+  it('rejects invalid hierarchy references', () => {
+    const nested = hierarchyDocument({
+      nodes: [
+        ...hierarchyDocument().nodes.slice(0, 2),
+        {
+          id: 'image',
+          type: 'image',
+          position: { x: 0, y: 280 },
+          zIndex: 2,
+          contentParentId: 'note',
+          data: { url: 'https://example.com/a.png', alt: 'A' },
+        },
+      ],
+    });
+    const unknownStage = hierarchyDocument({
+      nodes: [{ ...hierarchyDocument().nodes[0], stageId: 'missing' }],
+    });
+    const duplicateStage = hierarchyDocument({
+      stages: [
+        { id: 'prepare', title: '准备', order: 0 },
+        { id: 'prepare', title: '复核', order: 1 },
+      ],
+    });
+
+    expect(CanvasDocumentSchema.safeParse(nested).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(unknownStage).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(duplicateStage).success).toBe(false);
+  });
+
+  it('rejects a resource attached to a derived process node', () => {
+    const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      nodes: [
+        ...hierarchyDocument().nodes.slice(0, 2),
+        {
+          id: 'derived-process',
+          type: 'process',
+          position: { x: 0, y: 280 },
+          zIndex: 2,
+          source: {
+            referenceNodeId: 'source-process',
+            sourceGuideId: 'source-guide',
+            sourceVersionId: 'source-version',
+            sourceElementId: 'source-element',
+          },
+          data: { label: '派生流程', shape: 'process' },
+        },
+        {
+          id: 'derived-note',
+          type: 'markdown',
+          position: { x: 0, y: 440 },
+          zIndex: 3,
+          contentParentId: 'derived-process',
+          data: { markdown: '派生资料' },
+        },
+      ],
+    }));
+
+    expect(result.success).toBe(false);
+  });
+
   it('accepts a valid multimodal canvas', () => {
     const result = CanvasDocumentSchema.safeParse({
       schemaVersion: 1,
