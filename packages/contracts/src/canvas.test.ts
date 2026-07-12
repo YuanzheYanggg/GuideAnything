@@ -38,6 +38,47 @@ describe('CanvasDocumentSchema', () => {
     expect(CanvasDocumentSchema.safeParse(hierarchyDocument()).success).toBe(true);
   });
 
+  it('accepts mixed role and system lanes on a source-free primary', () => {
+    const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      lanes: [
+        { id: 'sales', title: '销售人员', kind: 'ROLE', order: 0 },
+        { id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 1 },
+      ],
+      nodes: [{ ...hierarchyDocument().nodes[0], laneId: 'sales' }, hierarchyDocument().nodes[1]],
+    }));
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects duplicate, missing, resource, and derived lane assignments', () => {
+    const lane = { id: 'sales', title: '销售人员', kind: 'ROLE', order: 0 };
+
+    expect(CanvasDocumentSchema.safeParse(hierarchyDocument({
+      lanes: [lane, { ...lane, title: '重复', order: 1 }],
+    })).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(hierarchyDocument({
+      lanes: [lane],
+      nodes: [{ ...hierarchyDocument().nodes[0], laneId: 'missing' }],
+    })).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(hierarchyDocument({
+      lanes: [lane],
+      nodes: [{ ...hierarchyDocument().nodes[0], laneId: 'sales' }, { ...hierarchyDocument().nodes[1], laneId: 'sales' }],
+    })).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(hierarchyDocument({
+      lanes: [lane],
+      nodes: [
+        { ...hierarchyDocument().nodes[0], laneId: 'sales' },
+        {
+          ...hierarchyDocument().nodes[0],
+          id: 'derived',
+          stageId: undefined,
+          laneId: 'sales',
+          source: sourceTrace('reference-1', 'derived-flow'),
+        },
+      ],
+    })).success).toBe(false);
+  });
+
   it('rejects invalid hierarchy references', () => {
     const nested = hierarchyDocument({
       nodes: [

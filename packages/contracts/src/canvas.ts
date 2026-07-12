@@ -18,6 +18,7 @@ const NodeBaseSchema = z.object({
   hidden: z.boolean().optional(),
   source: SourceTraceSchema.optional(),
   stageId: IdSchema.optional(),
+  laneId: IdSchema.optional(),
   contentParentId: IdSchema.optional(),
 });
 
@@ -46,6 +47,13 @@ export const FlowStageSchema = z.object({
   title: z.string().min(1).max(120),
   order: z.number().int().min(0).max(10_000),
   description: z.string().max(1_000).optional(),
+});
+
+export const FlowLaneSchema = z.object({
+  id: IdSchema,
+  title: z.string().min(1).max(120),
+  kind: z.enum(['ROLE', 'SYSTEM']),
+  order: z.number().int().min(0).max(10_000),
 });
 
 function isSafeMediaUrl(value: string): boolean {
@@ -118,6 +126,7 @@ export const LessonStepSchema = z.object({
 export const CanvasDocumentSchema = z.object({
   schemaVersion: z.literal(1),
   stages: z.array(FlowStageSchema).max(200).optional(),
+  lanes: z.array(FlowLaneSchema).max(200).optional(),
   nodes: z.array(CanvasNodeSchema).max(20_000),
   edges: z.array(CanvasEdgeSchema).max(40_000),
   viewport: z.object({
@@ -137,15 +146,24 @@ export const CanvasDocumentSchema = z.object({
   const edgeIds = new Set<string>();
   const seenNodeIds = new Set<string>();
   const seenStageIds = new Set<string>();
+  const seenLaneIds = new Set<string>();
   const primaryTypes = new Set(['start', 'end', 'process', 'decision', 'data', 'subguide']);
   const contentTypes = new Set(['markdown', 'image', 'video']);
   const stageIds = new Set(document.stages?.map((stage) => stage.id) ?? []);
+  const laneIds = new Set(document.lanes?.map((lane) => lane.id) ?? []);
 
   document.stages?.forEach((stage, index) => {
     if (seenStageIds.has(stage.id)) {
       context.addIssue({ code: 'custom', path: ['stages', index, 'id'], message: '阶段 ID 必须唯一' });
     }
     seenStageIds.add(stage.id);
+  });
+
+  document.lanes?.forEach((lane, index) => {
+    if (seenLaneIds.has(lane.id)) {
+      context.addIssue({ code: 'custom', path: ['lanes', index, 'id'], message: '责任泳道 ID 必须唯一' });
+    }
+    seenLaneIds.add(lane.id);
   });
 
   document.nodes.forEach((item, index) => {
@@ -159,6 +177,9 @@ export const CanvasDocumentSchema = z.object({
     const primary = primaryTypes.has(node.type) && !node.source;
     if (node.stageId && (!primary || !stageIds.has(node.stageId))) {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'stageId'], message: '阶段只能标记存在的一级主流程节点' });
+    }
+    if (node.laneId && (!primary || !laneIds.has(node.laneId))) {
+      context.addIssue({ code: 'custom', path: ['nodes', index, 'laneId'], message: '责任泳道只能标记存在的一级主流程节点' });
     }
     if (!node.contentParentId) return;
     const parent = nodesById.get(node.contentParentId);
@@ -195,6 +216,7 @@ export const CanvasDocumentSchema = z.object({
 
 export type SourceTrace = z.infer<typeof SourceTraceSchema>;
 export type FlowStage = z.infer<typeof FlowStageSchema>;
+export type FlowLane = z.infer<typeof FlowLaneSchema>;
 export type NodeKind = z.infer<typeof CanvasNodeSchema>['type'];
 type AnyCanvasNode = z.infer<typeof CanvasNodeSchema>;
 export type CanvasNode<TType extends NodeKind = NodeKind> = Extract<AnyCanvasNode, { type: TType }>;
