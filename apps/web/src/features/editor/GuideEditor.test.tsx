@@ -6,14 +6,18 @@ import type { CanvasDocument, CanvasEdge, GuideVersionSnapshot } from '@guideany
 
 import { GuideEditor, persistableNodeChanges, toCanvasEdge, toFlowNodes, type EditorApi } from './GuideEditor';
 
-const { fitView } = vi.hoisted(() => ({ fitView: vi.fn() }));
+const { fitView, reactFlowCallbacks } = vi.hoisted(() => ({
+  fitView: vi.fn(),
+  reactFlowCallbacks: { onMoveEnd: undefined as undefined | ((event: unknown, viewport: { x: number; y: number; zoom: number }) => void) },
+}));
 
 vi.mock('@xyflow/react', async () => {
   const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react');
   const React = await import('react');
   return {
     ...actual,
-    ReactFlow: ({ children, nodes = [], onInit, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string }>; onInit?: (instance: { fitView: typeof fitView }) => void; nodesDraggable?: boolean }) => {
+    ReactFlow: ({ children, nodes = [], onInit, onMoveEnd, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string }>; onInit?: (instance: { fitView: typeof fitView }) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; nodesDraggable?: boolean }) => {
+      reactFlowCallbacks.onMoveEnd = onMoveEnd;
       React.useEffect(() => { onInit?.({ fitView }); }, [onInit]);
       return <div className="react-flow">{nodes.map((node) => <div className={`react-flow__node${nodesDraggable ? ' draggable' : ''}`} data-id={node.id} key={node.id} />)}{children}</div>;
     },
@@ -185,6 +189,38 @@ describe('GuideEditor', () => {
 
     await user.click(screen.getByRole('button', { name: '选择流程节点 离屏流程' }));
     expect(fitView).toHaveBeenCalledWith(expect.objectContaining({ nodes: [{ id: 'offscreen' }] }));
+  });
+
+  it('keeps preview navigation and guide metadata transient until cancellation', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'offscreen', type: 'process', position: { x: 12_000, y: 8_000 }, zIndex: 1, data: { label: '离屏流程', shape: 'process' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    await user.click(screen.getByRole('button', { name: '预览自动整理' }));
+    expect(screen.getByLabelText('指南标题')).toBeDisabled();
+    expect(screen.getByLabelText('摘要')).toBeDisabled();
+    expect(screen.getByLabelText('标签')).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '选择流程节点 离屏流程' }));
+    act(() => reactFlowCallbacks.onMoveEnd?.(null, { x: 480, y: 220, zoom: 0.8 }));
+    fireEvent.keyDown(window, { key: 's', metaKey: true });
+    expect(api.saveGuide).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: '取消自动整理' }));
+    expect(api.saveGuide).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledTimes(1));
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      title: '订单教学', summary: '', tags: ['ERP'], document: expect.objectContaining({ viewport: { x: 0, y: 0, zoom: 1 } }),
+    }));
   });
 
   it('keeps a layout preview intact when a canvas node drag is attempted', async () => {

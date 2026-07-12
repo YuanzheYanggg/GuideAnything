@@ -160,4 +160,28 @@ describe('flow hierarchy layout', () => {
 
     expect(byId.get('yes-branch')!.position.y).toBeLessThan(byId.get('no-branch')!.position.y);
   });
+
+  it('keeps ordered decision branches together when an unrelated node shares their rank', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      nodes: [
+        start('start'),
+        decision('continue'),
+        process('parallel'),
+        { ...process('no-branch'), position: { x: 0, y: 0 } },
+        { ...process('unrelated'), position: { x: 0, y: 300 } },
+        { ...process('yes-branch'), position: { x: 0, y: 600 } },
+      ],
+      edges: [
+        edge('start-continue', 'start', 'continue'),
+        edge('start-parallel', 'start', 'parallel'),
+        { ...edge('continue-no', 'continue', 'no-branch'), sourceHandle: 'no' },
+        { ...edge('continue-yes', 'continue', 'yes-branch'), sourceHandle: 'yes' },
+        edge('parallel-unrelated', 'parallel', 'unrelated'),
+      ],
+      entryNodeId: 'start',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('yes-branch')!.position.y).toBeLessThan(byId.get('no-branch')!.position.y);
+  });
 });

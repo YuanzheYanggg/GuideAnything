@@ -228,11 +228,12 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   }, [flowInstance]);
 
   const onMoveEnd = useCallback((_event: MouseEvent | TouchEvent | null, viewport: CanvasDocument['viewport']) => {
+    if (layoutPreview) return;
     setDocument((current) => {
       if (!current || (current.viewport.x === viewport.x && current.viewport.y === viewport.y && current.viewport.zoom === viewport.zoom)) return current;
       return { ...current, viewport };
     });
-  }, []);
+  }, [layoutPreview]);
 
   const addNode = (type: CanvasNode['type']) => {
     if (!document || layoutPreview) return;
@@ -252,7 +253,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   };
 
   const previewLayout = () => {
-    if (!document) return;
+    if (!document || layoutPreview) return;
     setLayoutPreview(layoutFlowHierarchy(document));
   };
 
@@ -262,7 +263,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   };
 
   const save = useCallback(async () => {
-    if (!guide || !document) return;
+    if (layoutPreview || !guide || !document) return;
     setSaveState('保存中…');
     setError('');
     try {
@@ -275,15 +276,16 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       setError(reason instanceof Error ? reason.message : '保存失败');
       throw reason;
     }
-  }, [api, document, guide, summary, tags, title]);
+  }, [api, document, guide, layoutPreview, summary, tags, title]);
 
   useEffect(() => {
-    if (!guide || !document || saveState !== '未保存') return;
+    if (layoutPreview || !guide || !document || saveState !== '未保存') return;
     const timer = window.setTimeout(() => { void save().catch(() => undefined); }, 1_500);
     return () => window.clearTimeout(timer);
-  }, [document, guide, save, saveState, summary, tags, title]);
+  }, [document, guide, layoutPreview, save, saveState, summary, tags, title]);
 
   const publish = async () => {
+    if (layoutPreview) return;
     try {
       await save();
       const version = await api.publishGuide(guideId);
@@ -408,7 +410,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
   return <main className="editor-page">
     <header className="editor-header">
       <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库">←</button>
-      <div className="editor-title"><input aria-label="指南标题" value={title} onChange={(event) => { setTitle(event.target.value); setSaveState('未保存'); }} /><span aria-live="polite">{guide.status === 'PUBLISHED' ? `已发布 v${guide.publishedVersion ?? 1}` : '草稿'} · {saveState}</span></div>
+      <div className="editor-title"><input aria-label="指南标题" value={title} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTitle(event.target.value); setSaveState('未保存'); }} /><span aria-live="polite">{guide.status === 'PUBLISHED' ? `已发布 v${guide.publishedVersion ?? 1}` : '草稿'} · {saveState}</span></div>
       <div className="editor-actions"><button className="secondary-button" type="button" onClick={() => void save()} disabled={Boolean(layoutPreview)} aria-label="保存草稿">保存草稿</button><button className="primary-button" type="button" onClick={() => void publish()} disabled={Boolean(layoutPreview)} aria-label="发布指南">发布指南</button></div>
     </header>
     <div className="editor-toolbar" aria-label="画布工具栏">
@@ -469,7 +471,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
         </ReactFlow>
       </section>
       <aside className="inspector" aria-label="属性与教学步骤">
-        <div><span className="eyebrow">GUIDE DETAILS</span><label>摘要<textarea value={summary} onChange={(event) => { setSummary(event.target.value); setSaveState('未保存'); }} /></label><label>标签<input value={tags.join('，')} onChange={(event) => setTags(event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean))} /></label></div>
+        <div><span className="eyebrow">GUIDE DETAILS</span><label>摘要<textarea value={summary} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setSummary(event.target.value); setSaveState('未保存'); }} /></label><label>标签<input value={tags.join('，')} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTags(event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean)); setSaveState('未保存'); }} /></label></div>
         <hr />
         {selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} onAddStep={addStep} api={api} locked={Boolean(layoutPreview)} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
         <hr />

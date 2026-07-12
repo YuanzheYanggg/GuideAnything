@@ -29,6 +29,11 @@ interface PrimaryPlacement {
   unassignedContentY: number;
 }
 
+interface DecisionBranchPlacement {
+  sourceId: string;
+  priority: number | undefined;
+}
+
 export interface HierarchyLayoutReport {
   primaryNodeIds: string[];
   attachedContentIds: string[];
@@ -326,7 +331,7 @@ function placePrimary(
 
   const nodes: CanvasNode[] = [];
   const byId = new Map<string, CanvasNode>();
-  const compareSiblings = decisionSiblingComparator(primary, edges);
+  const branchesByTarget = decisionBranchPlacements(primary, edges);
   let laneY = 0;
   let unassignedContentY = 0;
   [...ordered.map((stage) => stage.id), null].forEach((stageId) => {
@@ -335,7 +340,7 @@ function placePrimary(
     if (byRank) {
       [...byRank.keys()].sort((left, right) => left - right).forEach((rank) => {
         let y = laneY;
-        byRank.get(rank)!.sort(compareSiblings).forEach((node) => {
+        orderRankNodes(byRank.get(rank)!, branchesByTarget).forEach((node) => {
           const positioned = { ...node, position: { x: rankX.get(rank)!, y } };
           nodes.push(positioned);
           byId.set(node.id, positioned);
@@ -350,27 +355,45 @@ function placePrimary(
   return { nodes, byId, unassignedContentY };
 }
 
-function decisionSiblingComparator(primary: CanvasNode[], edges: CanvasEdge[]): (left: CanvasNode, right: CanvasNode) => number {
+function decisionBranchPlacements(primary: CanvasNode[], edges: CanvasEdge[]): Map<string, DecisionBranchPlacement> {
   const primaryById = new Map(primary.map((node) => [node.id, node]));
-  const branchByTarget = new Map<string, { sourceId: string; priority: number }>();
+  const branchByTarget = new Map<string, DecisionBranchPlacement>();
   edges.forEach((edge) => {
     if (edge.hidden || edge.sourceTrace) return;
     const source = primaryById.get(edge.source);
     if (!source || source.type !== 'decision' || !primaryById.has(edge.target)) return;
     const priority = decisionBranchPriority(source, edge);
-    if (priority === undefined) return;
     const existing = branchByTarget.get(edge.target);
-    if (!existing || priority < existing.priority) branchByTarget.set(edge.target, { sourceId: source.id, priority });
+    const existingSource = existing ? primaryById.get(existing.sourceId) : undefined;
+    const existingPriority = existing?.priority ?? Number.MAX_SAFE_INTEGER;
+    const sourceOrder = existingSource ? compareNodes(source, existingSource) : -1;
+    if (!existingSource || sourceOrder < 0 || (sourceOrder === 0 && (priority ?? Number.MAX_SAFE_INTEGER) < existingPriority)) {
+      branchByTarget.set(edge.target, { sourceId: source.id, priority });
+    }
+  });
+  return branchByTarget;
+}
+
+function orderRankNodes(nodes: CanvasNode[], branchesByTarget: Map<string, DecisionBranchPlacement>): CanvasNode[] {
+  const groups = new Map<string, { firstIndex: number; sourceId: string | null; nodes: CanvasNode[] }>();
+  nodes.forEach((node, index) => {
+    const branch = branchesByTarget.get(node.id);
+    const key = branch ? `decision:${branch.sourceId}` : `node:${node.id}`;
+    const group = groups.get(key);
+    if (group) group.nodes.push(node);
+    else groups.set(key, { firstIndex: index, sourceId: branch?.sourceId ?? null, nodes: [node] });
   });
 
-  return (left, right) => {
-    const leftBranch = branchByTarget.get(left.id);
-    const rightBranch = branchByTarget.get(right.id);
-    if (leftBranch && rightBranch && leftBranch.sourceId === rightBranch.sourceId && leftBranch.priority !== rightBranch.priority) {
-      return leftBranch.priority - rightBranch.priority;
-    }
-    return compareNodes(left, right);
-  };
+  return [...groups.values()]
+    .sort((left, right) => left.firstIndex - right.firstIndex)
+    .flatMap((group) => {
+      if (!group.sourceId) return group.nodes;
+      return [...group.nodes].sort((left, right) => {
+        const leftPriority = branchesByTarget.get(left.id)?.priority ?? Number.MAX_SAFE_INTEGER;
+        const rightPriority = branchesByTarget.get(right.id)?.priority ?? Number.MAX_SAFE_INTEGER;
+        return leftPriority - rightPriority || compareNodes(left, right);
+      });
+    });
 }
 
 function decisionBranchPriority(node: CanvasNode<'decision'>, edge: CanvasEdge): number | undefined {
