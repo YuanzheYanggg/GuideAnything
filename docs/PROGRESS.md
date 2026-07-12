@@ -1,6 +1,6 @@
 # GuideAnything 进度
 
-> 最后更新：2026-07-12 10:52（Asia/Shanghai）
+> 最后更新：2026-07-12 23:21（Asia/Shanghai）
 
 ## 已完成
 
@@ -33,24 +33,31 @@
 - 真实 Playwright（本 worktree `127.0.0.1:5173` / API `127.0.0.1:3001`）以作者打开种子“ERP 销售订单创建”，预览显示 `主流程 5 / 阶段 2 / 已挂靠资料 1 / 未挂靠资料 3 / 孤立节点 4 / 循环 2` 及规则说明；点击结构树远端“记录销售订单号”后，画布实际聚焦并选中该节点。预览期间浏览器快照确认新增节点、阶段、保存/发布、连线编辑及属性编辑均被禁用，而树选择仍可用。为避免改写共享种子草稿，未在此浏览器会话展开引用或发布新版本；该树与学习阶段路径由组件回归覆盖。未将开发态 React Flow warnings 作为“无 warning”结论。
 - 总审 P1 收口：同 rank 中混入无关节点时，判断分支先按来源判断节点分组，再按 `branchLabels`/是-否顺序落入稳定槽位，避免比较器非传递性；预览期间 `onMoveEnd` 不再写入 viewport，标题、摘要、标签以及保存/发布、快捷键保存和自动保存均被守卫，取消预览后草稿保持未变。
 - 总审协议收口：带 `source` 的 Markdown、图片或视频即使 `contentParentId` 指向源自由宿主主流程也会被 schema 拒绝；源自由资料仍可正常挂靠，派生节点不带挂靠字段则保持兼容。
+- 完成业务流程二维表达：业务阶段可命名、排序并按时间自上而下展示；责任泳道可混合角色与系统，一级主流程按“阶段 × 泳道”归属，资料与展开子指南产物只继承展示语境。未配置泳道的旧文档继续使用原有布局。
+- 完成直接画布创作：主流程端口拖到空白画布可直接创建下一流程节点或自动挂靠资料；双击真实业务连线可新增、修改和清空标注；流程节点明细在画布显示两行概览并在属性面板完整编辑。
+- 完成学习者责任提示：当前教学步骤显示“责任 · 名称”或“系统 · 名称”；无泳道旧版本不显示提示，展开子指南步骤仅从引用节点解析阶段与责任。
 
 ## 最终验证
 
 ```text
-pnpm --filter @guideanything/contracts test -- canvas.test.ts                         1 文件、9 项通过
-pnpm --filter @guideanything/canvas-core test -- hierarchy.test.ts                         6 文件、24 项通过
-pnpm --filter @guideanything/web test -- GuideEditor.test.tsx HierarchyPanel.test.tsx LessonPage.test.tsx 9 文件、27 项通过
-pnpm lint                                                                  退出 0
-pnpm typecheck                                                             4 个 workspace 包退出 0
-pnpm test                                                                  23 个测试文件、74 项通过
-pnpm build                                                                 API 类型构建与 Web Vite 生产构建退出 0
+pnpm --filter @guideanything/contracts test -- canvas.test.ts                              1 文件、11 项通过
+pnpm --filter @guideanything/canvas-core test -- hierarchy.test.ts performance.test.ts    6 文件、27 项通过
+pnpm --filter @guideanything/web test -- GuideEditor.test.tsx HierarchyPanel.test.tsx LessonPage.test.tsx CanvasCreationMenu.test.tsx EdgeLabelEditor.test.tsx
+                                                                               11 文件、35 项通过
+pnpm lint                                                                   退出 0
+pnpm typecheck                                                              4 个 workspace 包退出 0
+pnpm test                                                                   25 个测试文件、87 项通过
+pnpm build                                                                  API 类型构建与 Web Vite 生产构建退出 0
+git diff --check                                                            退出 0
 ```
 
-测试分布：contracts 9、canvas-core 24、API 14、Web 27。
+测试分布：contracts 11、canvas-core 27、API 14、Web 35。
+
+本轮未对正在使用的共享 SQLite 种子数据执行写入式浏览器验收，因此没有将“重命名阶段、添加泳道、发布”标为新的浏览器事实；这些写路径由上述组件、协议与布局回归覆盖。
 
 ## 当前进行
 
-- 已完成全部 M0-M4 验收范围，以及业务流程层级体验的最终验证与总审收口。
+- 已完成全部 M0-M4 验收范围，以及业务流程层级、混合责任泳道、直接画布创作和学习者责任提示的自动化验证。
 
 ## 下一步
 

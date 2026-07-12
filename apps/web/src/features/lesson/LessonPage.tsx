@@ -1,4 +1,4 @@
-import type { CanvasDocument, CanvasNode, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasNode, FlowLane, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
 import {
   Background,
   BackgroundVariant,
@@ -29,6 +29,15 @@ export function resolveStepStage(document: CanvasDocument, nodeId: string): Flow
   const owner = document.nodes.find((item) => item.id === ownerId);
   if (!owner || owner.source) return null;
   return document.stages?.find((stage) => stage.id === owner.stageId) ?? null;
+}
+
+export function resolveStepLane(document: CanvasDocument, nodeId: string): FlowLane | null {
+  const node = document.nodes.find((item) => item.id === nodeId);
+  const ownerId = node?.source?.referenceNodeId ?? node?.contentParentId ?? nodeId;
+  const owner = document.nodes.find((item) => item.id === ownerId);
+  return owner && !owner.source && owner.laneId
+    ? document.lanes?.find((lane) => lane.id === owner.laneId) ?? null
+    : null;
 }
 
 export function resourcesForStep(document: CanvasDocument, nodeId: string): CanvasNode[] {
@@ -65,8 +74,13 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
 
   const lessonSteps = useMemo(() => version ? [...version.document.steps]
     .sort((a, b) => a.order - b.order)
-    .map((step) => ({ step, stage: resolveStepStage(version.document, step.nodeId) })) : [], [version]);
+    .map((step) => ({
+      step,
+      stage: resolveStepStage(version.document, step.nodeId),
+      lane: resolveStepLane(version.document, step.nodeId),
+    })) : [], [version]);
   const currentStep = lessonSteps[currentIndex]?.step;
+  const currentLane = lessonSteps[currentIndex]?.lane;
   const currentNode = version?.document.nodes.find((node) => node.id === currentStep?.nodeId);
   const currentResources = useMemo(
     () => version && currentNode ? resourcesForStep(version.document, currentNode.id) : [],
@@ -125,7 +139,7 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
         </ReactFlow>
       </section>
       <aside className="lesson-content" aria-live="polite">
-        <div className="lesson-step-meta"><span>步骤 {currentIndex + 1}</span><small>{typeLabel(currentNode?.type)}</small></div>
+        <div className="lesson-step-meta"><span>步骤 {currentIndex + 1}</span><span className="lesson-step-context"><small>{typeLabel(currentNode?.type)}</small>{currentLane ? <small className="lesson-responsibility-badge">{currentLane.kind === 'ROLE' ? '责任' : '系统'} · {currentLane.title}</small> : null}</span></div>
         <h2>{currentStep?.title}</h2>
         {currentStep?.body ? <p className="lesson-body">{currentStep.body}</p> : null}
         {currentNode ? <CurrentNodeContent node={currentNode} /> : <p className="error-message">关联节点不存在</p>}
