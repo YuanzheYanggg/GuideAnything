@@ -36,8 +36,8 @@
 
 ## M4 工程质量与最终验收
 
-- [x] API/共享算法/前端组件共 49 项测试全部通过，生产构建通过。
+- [x] API/共享算法/前端组件共 68 项测试全部通过，生产构建通过。
 - [x] 1000 节点展开/折叠纯算法本机耗时 6ms；媒体懒加载、受保护 Blob URL 与折叠可见区渲染已实现。
 - [x] 加载/空/错误/冲突状态、响应式布局、键盘可达与必要 aria-label 已检查。
-- [x] 真实启动 Web/API/SQLite，Playwright 浏览器验证完整关键路径；冷启动控制台 0 errors / 0 warnings。
+- [x] 真实启动 Web/API/SQLite，Playwright 浏览器验证完整关键路径；本次控制台 errors 为 0。开发态 React Flow warnings 存在，未作为无 warning 结论。
 - [x] 中文 README 包含启动、迁移、示例账号、测试、目录、API、数据库检查和验收说明。
