@@ -198,7 +198,7 @@ Expected: FAIL，缺少 hierarchy 模块及 layoutFlowHierarchy 导出。
       return ['start', 'end', 'process', 'decision', 'data', 'subguide'].includes(node.type) && !node.source;
     }
     export function isContentNode(node: CanvasNode): boolean {
-      return ['markdown', 'image', 'video'].includes(node.type);
+      return ['markdown', 'image', 'video'].includes(node.type) && !node.source;
     }
 
     export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutResult {
@@ -215,7 +215,7 @@ Expected: FAIL，缺少 hierarchy 模块及 layoutFlowHierarchy 导出。
       return { document: next, report: reportFor(primary, visible.filter(isContentNode), ranked, document.stages), stageBounds: getStageBounds(next) };
     }
 
-compareNodes 必须按旧 position.y、position.x、id 排序。buildPrimaryGraph 只接受未 hidden 且两端都是一级主流程的普通边。rankFromEntry 先用 entryNodeId，缺失时用入度 0 的节点；以 Kahn 队列赋最大前驱 rank。剩余节点按 compareNodes 填入后续 rank 并标记 cycleNodeIds；没有从 roots 到达的节点记录为 unconnectedPrimaryIds。实现 nodeSize(node)：优先 node.size，未设置时流程节点为 240x104、Markdown 为 300x180、图片/视频为 320x260、子指南为 240x120。calculateRankX 必须为每个 rank 预留该列最大主流程宽度和该列所有挂靠资料的最大宽度，再用 CONTENT_GAP_X 与 BASE_RANK_GAP 累加列起点；因此资料轨道不会覆盖下一 rank。placePrimary 将 stage.order 决定为从上到下泳道，使用 nodeSize 高度和 NODE_GAP_Y 堆叠同格节点。placeContent 仅认定位于 positioned primary map 的 contentParentId，位置为 parent.x + nodeSize(parent).width + CONTENT_GAP_X，Y 坐标使用每条资料的 nodeSize 高度加 CONTENT_GAP_Y 稳定累加；未挂靠资料放在最后泳道。getStageBounds 按 stageId（资料继承父主节点）聚合可见节点，按 nodeSize 扩展右/下边界并在四周扩 40px，只在有节点时输出未分阶段。
+compareNodes 必须按旧 position.y、position.x、id 排序。buildPrimaryGraph 只接受未 hidden 且两端都是一级主流程的普通边。rankFromEntry 先用 entryNodeId，缺失时用入度 0 的节点；以 Kahn 队列赋最大前驱 rank。剩余节点按 compareNodes 填入后续 rank 并标记 cycleNodeIds；没有从 roots 到达的节点记录为 unconnectedPrimaryIds。isContentNode 必须排除带 source 的展开产物：它们以 source.referenceNodeId 归入子指南内容，不得作为宿主画布资料布局。实现 nodeSize(node)：优先 node.size，未设置时流程节点为 240x104、Markdown 为 300x180、图片/视频为 320x260、子指南为 240x120。calculateRankX 必须为每个 rank 预留该列最大主流程宽度和该列所有挂靠资料的最大宽度，再用 CONTENT_GAP_X 与 BASE_RANK_GAP 累加列起点；因此资料轨道不会覆盖下一 rank。placePrimary 将 stage.order 决定为从上到下泳道，使用 nodeSize 高度和 NODE_GAP_Y 堆叠同格节点。placeContent 仅认定位于 positioned primary map 的 contentParentId，位置为 parent.x + nodeSize(parent).width + CONTENT_GAP_X，Y 坐标使用每条资料的 nodeSize 高度加 CONTENT_GAP_Y 稳定累加；未挂靠资料放在最后泳道。getStageBounds 按 stageId（资料继承父主节点）聚合可见节点，按 nodeSize 扩展右/下边界并在四周扩 40px，只在有节点时输出未分阶段。
 
 - [ ] **Step 4: 加入性能测试、运行并提交**
 
