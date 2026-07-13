@@ -170,10 +170,10 @@ describe('workspace API', () => {
 
     for (const permission of ['EDIT', 'VIEW'] as const) {
       const response = await context.app.inject({
-        method: 'PUT',
-        url: `/api/workspaces/${workspace.id}/members/${context.userIds.author}`,
+        method: 'POST',
+        url: `/api/workspaces/${workspace.id}/members`,
         headers: authorization(context.tokens.author),
-        payload: { permission },
+        payload: { userId: context.userIds.author, permission },
       });
       expect(response.statusCode).toBe(400);
       expect(response.json().code).toBe('OWNER_CANNOT_BE_CHANGED');
@@ -182,6 +182,23 @@ describe('workspace API', () => {
     expect(context.database.prepare(
       `SELECT permission FROM workspace_members WHERE workspace_id = ? AND user_id = ?`,
     ).get(workspace.id, context.userIds.author)).toEqual({ permission: 'OWNER' });
+    await context.close();
+  });
+
+  it('does not expose an unrequested targeted-member PUT route', async () => {
+    const context = await createTestContext();
+    const workspace = seedTestWorkspace(context.database, context.userIds.author, {
+      id: 'workspace-route-scope',
+      slug: 'route-scope',
+      name: '路由范围',
+    });
+    const response = await context.app.inject({
+      method: 'PUT',
+      url: `/api/workspaces/${workspace.id}/members/${context.userIds.editor}`,
+      headers: authorization(context.tokens.author),
+      payload: { permission: 'EDIT' },
+    });
+    expect(response.statusCode).toBe(404);
     await context.close();
   });
 });
