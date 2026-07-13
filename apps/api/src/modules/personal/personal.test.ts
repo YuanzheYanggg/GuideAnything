@@ -395,4 +395,29 @@ describe('personal workspace state', () => {
       await context.close();
     }
   });
+
+  it('returns 404 for every learner lifecycle action against a draft item id', async () => {
+    const context = await createTestContext();
+    try {
+      const workspace = seedTestWorkspace(context.database, context.userIds.author, {
+        id: 'workspace-draft-lifecycle', slug: 'draft-lifecycle', name: '草稿生命周期',
+      });
+      addTestWorkspaceMember(context.database, workspace.id, context.userIds.learner, 'VIEW');
+      const created = await context.app.inject({
+        method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+        payload: { workspaceId: workspace.id, title: '不可见草稿' },
+      });
+      const itemId = created.json().guide.workspaceItemId as string;
+      for (const request of [
+        { method: 'POST' as const, url: `/api/workspace-items/${itemId}/trash` },
+        { method: 'POST' as const, url: `/api/workspace-items/${itemId}/restore` },
+        { method: 'DELETE' as const, url: `/api/workspace-items/${itemId}` },
+      ]) {
+        const response = await context.app.inject({
+          ...request, headers: authorization(context.tokens.learner),
+        });
+        expect(response.statusCode).toBe(404);
+      }
+    } finally { await context.close(); }
+  });
 });

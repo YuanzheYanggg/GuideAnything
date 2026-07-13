@@ -21,18 +21,26 @@ describe('Workspace V1 existing-data upgrade', () => {
     insert.run('guide-material','legacy-author','采购检查','',JSON.stringify(['供应商']),'DRAFT',now,now);
     insert.run('guide-finance','legacy-author','月末结账','',JSON.stringify([]),'PUBLISHED',now,now);
     insert.run('guide-archived','legacy-author','销售订单','',JSON.stringify([]),'ARCHIVED',now,now);
+    database.prepare(`INSERT INTO users (id,email,password_hash,display_name,role,created_at)
+      VALUES ('second-author','second@example.com','hash','第二作者','AUTHOR',?)`).run(now);
+    insert.run('guide-material-two','second-author','供应商检查','',JSON.stringify([]),'DRAFT',now,now);
 
     upgradeWorkspaceV1(database);
+    database.prepare(`DELETE FROM workspace_members
+      WHERE workspace_id='workspace-materials' AND user_id='second-author'`).run();
     upgradeWorkspaceV1(database);
 
-    expect(database.prepare('SELECT COUNT(*) AS count FROM users').get()).toEqual({ count: 1 });
+    expect(database.prepare('SELECT COUNT(*) AS count FROM users').get()).toEqual({ count: 2 });
     expect(database.prepare('SELECT COUNT(*) AS count FROM workspaces').get()).toEqual({ count: 6 });
     expect(database.prepare(`SELECT entity_id, workspace_id FROM workspace_items ORDER BY entity_id`).all()).toEqual([
       { entity_id: 'guide-finance', workspace_id: 'workspace-finance' },
       { entity_id: 'guide-material', workspace_id: 'workspace-materials' },
+      { entity_id: 'guide-material-two', workspace_id: 'workspace-materials' },
     ]);
     expect(database.prepare(`SELECT COUNT(*) AS count FROM workspace_members
       WHERE user_id='legacy-author' AND permission='OWNER'`).get()).toEqual({ count: 6 });
+    expect(database.prepare(`SELECT COUNT(*) AS count FROM workspace_members
+      WHERE user_id='second-author'`).get()).toEqual({ count: 0 });
   });
 
   it('does not resurrect a permanently removed published guide on restart', () => {

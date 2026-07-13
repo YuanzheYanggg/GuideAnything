@@ -54,6 +54,10 @@ export function upgradeWorkspaceV1(database: DatabaseSync): void {
        VALUES (?,?,'GUIDE',?,?,?,?,?,?) ON CONFLICT(kind,entity_id) DO NOTHING`,
     );
     for (const guide of guides) {
+      const existingItem = database.prepare(
+        `SELECT 1 FROM workspace_items WHERE kind = 'GUIDE' AND entity_id = ?`,
+      ).get(guide.id);
+      if (existingItem) continue;
       const workspaceId = classifyWorkspace(guide.title, guide.tags_json);
       const workspace = database.prepare('SELECT owner_id FROM workspaces WHERE id = ?').get(workspaceId) as { owner_id: string };
       insertMember.run(workspaceId, guide.owner_id, guide.owner_id === workspace.owner_id ? 'OWNER' : 'EDIT', now);

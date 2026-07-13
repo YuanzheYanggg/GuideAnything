@@ -170,7 +170,7 @@ export function getWorkspaceItemForUser(
      LEFT JOIN guide_collaborators collaborator
        ON collaborator.guide_id = guide.id AND collaborator.user_id = ?
      WHERE item.id = ?
-       AND (member.user_id IS NOT NULL OR guide.owner_id = ? OR collaborator.user_id IS NOT NULL)`,
+       AND ${REQUESTER_CAN_ACCESS}`,
   ).get(userId, userId, itemId, userId) as unknown as {
     id: string;
     workspace_id: string;
@@ -201,9 +201,7 @@ export function requesterCanAccessItem(
      LEFT JOIN guide_collaborators collaborator
        ON collaborator.guide_id = guide.id AND collaborator.user_id = ?
      WHERE item.id = ? AND item.deleted_at IS NULL
-       AND ((item.kind != 'GUIDE' AND member.user_id IS NOT NULL)
-         OR (item.kind = 'GUIDE' AND (guide.owner_id = ? OR collaborator.user_id IS NOT NULL
-           OR (member.user_id IS NOT NULL AND guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL))))`,
+       AND ${REQUESTER_CAN_ACCESS}`,
   ).get(userId, userId, itemId, userId);
   return Boolean(row);
 }
