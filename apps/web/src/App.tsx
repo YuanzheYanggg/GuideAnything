@@ -11,6 +11,7 @@ import {
 import { LoginPage, type LoginCredentials } from './features/auth/LoginPage';
 import type { AuthUser } from './features/auth/types';
 import { LibraryPage } from './features/library/LibraryPage';
+import { PersonalResourcePage } from './features/personal/PersonalResourcePage';
 import { AppearanceProvider } from './features/theme/AppearanceToggle';
 import { ReservedModulePage } from './features/workspace/ReservedModulePage';
 import { WorkspaceDirectoryPage } from './features/workspace/WorkspaceDirectoryPage';
@@ -95,17 +96,6 @@ function AppContent() {
       <LessonPage versionId={versionId} api={{ getVersion: editorApi.getVersion }} onBack={() => navigate('/library')} />
     </Suspense>;
   }
-}
-
-const personalTitles = {
-  favorites: '收藏夹',
-  recent: '最近查看',
-  shared: '与我共享',
-  trash: '回收站',
-} as const;
-
-function PersonalResourcePage({ kind }: { kind: keyof typeof personalTitles }) {
-  return <div><h1>{personalTitles[kind]}</h1></div>;
 }
 
 function LoadingState({ label }: { label: string }) {
