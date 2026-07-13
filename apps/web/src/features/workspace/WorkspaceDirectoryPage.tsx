@@ -1,22 +1,11 @@
-import { useEffect, useState } from 'react';
 import { ArrowRight, FileText } from '@phosphor-icons/react';
-import { Link } from 'react-router-dom';
+import { Link, useOutletContext } from 'react-router-dom';
 
-import type { WorkspaceApi, WorkspaceSummary } from './types';
+import type { WorkspaceOutletContext } from './WorkspaceShell';
+import type { WorkspaceSummary } from './types';
 
-export function WorkspaceDirectoryPage({ workspaceApi }: { workspaceApi: WorkspaceApi }) {
-  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    let active = true;
-    workspaceApi.list()
-      .then((items) => { if (active) setWorkspaces(items); })
-      .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '工作区载入失败'); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [workspaceApi]);
+export function WorkspaceDirectoryPage() {
+  const { workspaces, workspaceLoading: loading, workspaceError: error } = useOutletContext<WorkspaceOutletContext>();
 
   return <div className="workspace-directory page-stack">
     <header className="page-heading">

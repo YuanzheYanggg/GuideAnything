@@ -8,7 +8,6 @@ import {
   ClockCounterClockwise,
   Cube,
   FileText,
-  Gear,
   MagnifyingGlass,
   Question,
   SquaresFour,
@@ -33,6 +32,8 @@ export interface WorkspaceOutletContext {
   workspaceApi: WorkspaceApi;
   personalApi: PersonalApi;
   workspaces: WorkspaceSummary[];
+  workspaceLoading: boolean;
+  workspaceError: string;
 }
 
 const primaryNav: Array<{ to: string; label: string; icon: Icon }> = [
@@ -123,14 +124,19 @@ export function WorkspaceShell({ user, workspaceApi, personalApi, onLogout }: Wo
         <NavLink to="/workspaces" end className={navClass}><SquaresFour size={21} /><span>查看全部</span></NavLink>
       </nav>
       <div className="workspace-sidebar-footer">
-        <NavLink to="/settings" className={navClass}><Gear size={21} /><span>设置</span></NavLink>
         <AppearanceToggle />
       </div>
     </aside>
 
-    <section className="workspace-content">
-      <Outlet context={{ workspaceApi, personalApi, workspaces } satisfies WorkspaceOutletContext} />
-    </section>
+    <main className="workspace-content">
+      <Outlet context={{
+        workspaceApi,
+        personalApi,
+        workspaces,
+        workspaceLoading: loading,
+        workspaceError: error,
+      } satisfies WorkspaceOutletContext} />
+    </main>
   </div>;
 }
 

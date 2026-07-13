@@ -9,7 +9,7 @@ import { ReservedModulePage } from './ReservedModulePage';
 import { WorkspaceDirectoryPage } from './WorkspaceDirectoryPage';
 import { WorkspaceOverviewPage } from './WorkspaceOverviewPage';
 import { WorkspaceShell } from './WorkspaceShell';
-import type { PersonalApi, WorkspaceApi, WorkspaceSummary } from './types';
+import type { PersonalApi, WorkspaceApi, WorkspaceItemSummary, WorkspaceSummary } from './types';
 
 const authorUser: AuthUser = {
   id: 'user-author', displayName: '王作者', email: 'author@guide.local', role: 'AUTHOR',
@@ -38,14 +38,18 @@ function createEmptyPersonalApi(): PersonalApi {
   };
 }
 
-function renderWorkspaceRoutes(input: { initialPath: string; workspaces: WorkspaceSummary[] }) {
+function renderWorkspaceRoutes(input: {
+  initialPath: string;
+  workspaces: WorkspaceSummary[];
+  items?: WorkspaceItemSummary[];
+}) {
   const workspaceApi: WorkspaceApi = {
     list: vi.fn().mockResolvedValue(input.workspaces),
     get: vi.fn(async (id) => ({
       workspace: input.workspaces.find((item) => item.id === id)!,
       counts: { GUIDE: 3, SOURCE: 0, AGENT: 0, ONTOLOGY: 0, CONVERSATION: 0, ARTIFACT: 0 },
     })),
-    listItems: vi.fn().mockResolvedValue([]),
+    listItems: vi.fn().mockResolvedValue(input.items ?? []),
     activity: vi.fn().mockResolvedValue([]),
   };
   const personalApi = createEmptyPersonalApi();
@@ -55,7 +59,7 @@ function renderWorkspaceRoutes(input: { initialPath: string; workspaces: Workspa
         <Routes>
           <Route element={<WorkspaceShell user={authorUser} workspaceApi={workspaceApi} personalApi={personalApi} onLogout={vi.fn()} />}>
             <Route path="/library" element={<h1>指南库</h1>} />
-            <Route path="/workspaces" element={<WorkspaceDirectoryPage workspaceApi={workspaceApi} />} />
+            <Route path="/workspaces" element={<WorkspaceDirectoryPage />} />
             <Route path="/workspaces/:workspaceId" element={<WorkspaceOverviewPage workspaceApi={workspaceApi} />} />
             <Route path="/workspaces/:workspaceId/:module" element={<ReservedModulePage />} />
           </Route>
@@ -63,6 +67,7 @@ function renderWorkspaceRoutes(input: { initialPath: string; workspaces: Workspa
       </MemoryRouter>
     </AppearanceProvider>,
   );
+  return { workspaceApi };
 }
 
 describe('workspace pages', () => {
@@ -80,7 +85,7 @@ describe('workspace pages', () => {
   });
 
   it('renders the workspace directory from API data', async () => {
-    renderWorkspaceRoutes({
+    const { workspaceApi } = renderWorkspaceRoutes({
       initialPath: '/workspaces',
       workspaces: [{ ...workspaceDefaults, id: 'workspace-materials', name: '物料管理' }],
     });
@@ -88,6 +93,71 @@ describe('workspace pages', () => {
     expect(await screen.findByRole('heading', { name: '工作区' })).toBeVisible();
     expect(screen.getByText('维护物料主数据、供应商和采购流程。')).toBeVisible();
     expect(screen.getByText('3 条指南')).toBeVisible();
+    expect(workspaceApi.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses one main landmark and hides settings without a real route', async () => {
+    renderWorkspaceRoutes({ initialPath: '/library', workspaces: [] });
+
+    expect(await screen.findByRole('heading', { name: '指南库' })).toBeVisible();
+    expect(screen.getAllByRole('main')).toHaveLength(1);
+    expect(screen.queryByRole('link', { name: '设置' })).not.toBeInTheDocument();
+  });
+
+  it.each(['OWNER', 'EDIT'] as const)('offers %s users a workspace-scoped create action', async (permission) => {
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces/workspace-materials',
+      workspaces: [{ ...workspaceDefaults, permission, id: 'workspace-materials', name: '物料管理' }],
+    });
+
+    expect(await screen.findByRole('link', { name: '新建指南' })).toHaveAttribute(
+      'href', '/workspaces/workspace-materials/guides?create=1',
+    );
+  });
+
+  it('does not offer VIEW users a create action', async () => {
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces/workspace-materials',
+      workspaces: [{ ...workspaceDefaults, permission: 'VIEW', id: 'workspace-materials', name: '物料管理' }],
+    });
+
+    expect(await screen.findByRole('heading', { name: '物料管理' })).toBeVisible();
+    expect(screen.queryByRole('link', { name: '新建指南' })).not.toBeInTheDocument();
+  });
+
+  it('links favorite guides to the route allowed by their permission', async () => {
+    const items: WorkspaceItemSummary[] = [
+      {
+        id: 'item-owner', workspaceId: 'workspace-materials', workspaceName: '物料管理', kind: 'GUIDE',
+        entityId: 'guide-owner', title: '所有者指南', summary: '', updatedAt: workspaceDefaults.updatedAt,
+        favorite: true, permission: 'OWNER', publishedVersionId: null,
+      },
+      {
+        id: 'item-edit', workspaceId: 'workspace-materials', workspaceName: '物料管理', kind: 'GUIDE',
+        entityId: 'guide-edit', title: '可编辑指南', summary: '', updatedAt: workspaceDefaults.updatedAt,
+        favorite: true, permission: 'EDIT', publishedVersionId: null,
+      },
+      {
+        id: 'item-view', workspaceId: 'workspace-materials', workspaceName: '物料管理', kind: 'GUIDE',
+        entityId: 'guide-view', title: '可学习指南', summary: '', updatedAt: workspaceDefaults.updatedAt,
+        favorite: true, permission: 'VIEW', publishedVersionId: 'version-view',
+      },
+      {
+        id: 'item-source', workspaceId: 'workspace-materials', workspaceName: '物料管理', kind: 'SOURCE',
+        entityId: 'source-future', title: '未来资料源', summary: '', updatedAt: workspaceDefaults.updatedAt,
+        favorite: true, permission: 'VIEW',
+      },
+    ];
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces/workspace-materials', items,
+      workspaces: [{ ...workspaceDefaults, id: 'workspace-materials', name: '物料管理' }],
+    });
+
+    expect(await screen.findByRole('link', { name: /所有者指南/u })).toHaveAttribute('href', '/guides/guide-owner/edit');
+    expect(screen.getByRole('link', { name: /可编辑指南/u })).toHaveAttribute('href', '/guides/guide-edit/edit');
+    expect(screen.getByRole('link', { name: /可学习指南/u })).toHaveAttribute('href', '/versions/version-view/learn');
+    expect(screen.getByText('未来资料源')).toBeVisible();
+    expect(screen.queryByRole('link', { name: /未来资料源/u })).not.toBeInTheDocument();
   });
 
   it('shows honest empty states for reserved modules', async () => {

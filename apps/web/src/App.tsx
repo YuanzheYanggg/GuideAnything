@@ -58,7 +58,7 @@ function AppContent() {
       <Route path="/recent" element={<PersonalResourcePage kind="recent" />} />
       <Route path="/shared" element={<PersonalResourcePage kind="shared" />} />
       <Route path="/trash" element={<PersonalResourcePage kind="trash" />} />
-      <Route path="/workspaces" element={<WorkspaceDirectoryPage workspaceApi={workspaceApi} />} />
+      <Route path="/workspaces" element={<WorkspaceDirectoryPage />} />
       <Route path="/workspaces/:workspaceId" element={<WorkspaceOverviewPage workspaceApi={workspaceApi} />} />
       <Route path="/workspaces/:workspaceId/guides" element={<LibraryRoute user={user} />} />
       <Route path="/workspaces/:workspaceId/:module" element={<ReservedModulePage />} />
@@ -105,7 +105,7 @@ const personalTitles = {
 } as const;
 
 function PersonalResourcePage({ kind }: { kind: keyof typeof personalTitles }) {
-  return <main><h1>{personalTitles[kind]}</h1></main>;
+  return <div><h1>{personalTitles[kind]}</h1></div>;
 }
 
 function LoadingState({ label }: { label: string }) {

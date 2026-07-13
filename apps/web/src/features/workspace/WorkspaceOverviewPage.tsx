@@ -65,7 +65,11 @@ export function WorkspaceOverviewPage({ workspaceApi }: { workspaceApi: Workspac
 
 function WorkspaceHero({ workspace }: { workspace: WorkspaceSummary }) {
   return <header className={`workspace-hero domain-card-${workspace.colorKey}`}>
-    <div><span className="page-kicker">工作区概览</span><h1>{workspace.name}</h1><p>{workspace.description || '这个工作区暂未补充业务范围说明。'}</p></div>
+    <div>
+      <span className="page-kicker">工作区概览</span><h1>{workspace.name}</h1>
+      <p>{workspace.description || '这个工作区暂未补充业务范围说明。'}</p>
+      {workspace.permission !== 'VIEW' ? <Link className="workspace-create-button workspace-hero-create" to={`/workspaces/${workspace.id}/guides?create=1`}><span aria-hidden="true">+</span>新建指南</Link> : null}
+    </div>
     <dl><div><dt>负责人</dt><dd>{workspace.ownerName}</dd></div><div><dt>我的权限</dt><dd>{permissionLabel(workspace.permission)}</dd></div><div><dt>最近更新</dt><dd>{formatDate(workspace.updatedAt)}</dd></div></dl>
   </header>;
 }
@@ -99,9 +103,24 @@ function FavoriteResources({ items }: { items: WorkspaceItemSummary[] }) {
   return <section className="overview-panel" aria-labelledby="favorite-heading">
     <div className="section-title"><div><span className="page-kicker">PINNED</span><h2 id="favorite-heading">常用资源</h2></div></div>
     {items.length === 0 ? <div className="workspace-empty compact"><strong>尚未收藏本工作区资源</strong><span>收藏的真实指南会集中显示在这里。</span></div> : <div className="favorite-resource-list">
-      {items.slice(0, 5).map((item) => <article key={item.id}><Star size={18} weight="fill" /><div><strong>{item.title}</strong><span>{item.summary || '暂无摘要'}</span></div></article>)}
+      {items.slice(0, 5).map((item) => <FavoriteResource key={item.id} item={item} />)}
     </div>}
   </section>;
+}
+
+function FavoriteResource({ item }: { item: WorkspaceItemSummary }) {
+  const route = favoriteRoute(item);
+  const content = <><Star size={18} weight="fill" /><div><strong>{item.title}</strong><span>{item.summary || '暂无摘要'}</span></div></>;
+  return route
+    ? <Link className="favorite-resource-item" to={route}>{content}</Link>
+    : <article className="favorite-resource-item">{content}</article>;
+}
+
+function favoriteRoute(item: WorkspaceItemSummary): string | null {
+  if (item.kind !== 'GUIDE') return null;
+  if (item.permission === 'OWNER' || item.permission === 'EDIT') return `/guides/${item.entityId}/edit`;
+  if (item.publishedVersionId) return `/versions/${item.publishedVersionId}/learn`;
+  return null;
 }
 
 function permissionLabel(permission: WorkspaceSummary['permission']) {
