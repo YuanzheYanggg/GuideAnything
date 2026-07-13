@@ -17,6 +17,8 @@ export const GuideVersionSnapshotSchema = z.object({
 
 export const GuideSummarySchema = z.object({
   id: z.string().min(1),
+  workspaceId: z.string().min(1),
+  workspaceItemId: z.string().min(1),
   title: z.string().min(1).max(200),
   summary: z.string().max(2_000),
   tags: z.array(z.string()),
@@ -33,4 +35,3 @@ export type UserRole = z.infer<typeof UserRoleSchema>;
 export type GuideStatus = z.infer<typeof GuideStatusSchema>;
 export type GuideVersionSnapshot = z.infer<typeof GuideVersionSnapshotSchema>;
 export type GuideSummary = z.infer<typeof GuideSummarySchema>;
-

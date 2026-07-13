@@ -6,6 +6,10 @@ const migrations = [
     version: 1,
     sql: readFileSync(new URL('./migrations/0001_init.sql', import.meta.url), 'utf8'),
   },
+  {
+    version: 2,
+    sql: readFileSync(new URL('./migrations/0002_workspace_v1.sql', import.meta.url), 'utf8'),
+  },
 ] as const;
 
 export function migrateDatabase(database: DatabaseSync): void {
@@ -32,4 +36,3 @@ export function migrateDatabase(database: DatabaseSync): void {
     }
   }
 }
-
