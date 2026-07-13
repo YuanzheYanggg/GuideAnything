@@ -90,7 +90,27 @@ describe('guide permissions', () => {
     ).get(workspaceId)).toEqual({ action: 'COLLABORATOR_ADDED' });
   });
 
-  it('requires an author with owner or edit workspace permission to create', async () => {
+  it('allows author or editor roles with owner or edit workspace permission to create', async () => {
+    const editorCreate = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.editor),
+      payload: { workspaceId, title: '编辑者创建' },
+    });
+    expect(editorCreate.statusCode).toBe(201);
+
+    addTestWorkspaceMember(context.database, workspaceId, context.userIds.editor, 'VIEW');
+    const editorView = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.editor),
+      payload: { workspaceId, title: '编辑者只读越权' },
+    });
+    expect(editorView.statusCode).toBe(403);
+    addTestWorkspaceMember(context.database, workspaceId, context.userIds.editor, 'EDIT');
+
+    const learnerCreate = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.learner),
+      payload: { workspaceId, title: '学习者越权' },
+    });
+    expect(learnerCreate.statusCode).toBe(403);
+
     const missingMembership = await context.app.inject({
       method: 'POST',
       url: '/api/guides',
@@ -124,5 +144,39 @@ describe('guide permissions', () => {
     });
     expect(owned.statusCode).toBe(200);
     expect(owned.json().items.map((guide: { id: string }) => guide.id)).toEqual([editable.json().guide.id]);
+  });
+
+  it('returns requester-specific favorite and lifecycle capabilities for drafts', async () => {
+    const created = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.editor),
+      payload: { workspaceId, title: '编辑者草稿' },
+    });
+    expect(created.statusCode).toBe(201);
+    const itemId = created.json().guide.workspaceItemId as string;
+
+    const before = await context.app.inject({
+      method: 'GET', url: `/api/guides?workspaceId=${workspaceId}`, headers: authorization(context.tokens.editor),
+    });
+    expect(before.json().items[0]).toMatchObject({ favorite: false, canManageLifecycle: true });
+
+    await context.app.inject({ method: 'PUT', url: `/api/me/favorites/${itemId}`, headers: authorization(context.tokens.editor) });
+    const after = await context.app.inject({
+      method: 'GET', url: `/api/guides?workspaceId=${workspaceId}`, headers: authorization(context.tokens.editor),
+    });
+    expect(after.json().items[0]).toMatchObject({ favorite: true, canManageLifecycle: true });
+
+    const published = await context.app.inject({
+      method: 'POST', url: `/api/guides/${created.json().guide.id}/publish`, headers: authorization(context.tokens.editor),
+    });
+    expect(published.statusCode).toBe(201);
+    const searchUrl = `/api/search?q=${encodeURIComponent('编辑者草稿')}`;
+    const guideOwnerResult = await context.app.inject({
+      method: 'GET', url: searchUrl, headers: authorization(context.tokens.editor),
+    });
+    expect(guideOwnerResult.json().items[0]).toMatchObject({ canManageLifecycle: true });
+    const workspaceOwnerResult = await context.app.inject({
+      method: 'GET', url: searchUrl, headers: authorization(context.tokens.author),
+    });
+    expect(workspaceOwnerResult.json().items[0]).toMatchObject({ canManageLifecycle: true });
   });
 });

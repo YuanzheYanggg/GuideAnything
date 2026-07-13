@@ -25,6 +25,7 @@ interface ItemSummaryRow {
   view_count: number | null;
   favorite: number;
   permission: WorkspacePermission;
+  can_manage_lifecycle: number;
 }
 
 export interface WorkspaceItemRecord {
@@ -45,6 +46,8 @@ const ITEM_SUMMARY_SELECT = `
          deleted_by.display_name AS deleted_by_name, guide_owner.display_name AS author_name,
          guide.published_version_id, recent.last_viewed_at, recent.view_count,
          CASE WHEN favorite.item_id IS NULL THEN 0 ELSE 1 END AS favorite,
+         CASE WHEN guide.owner_id = ? OR member.permission = 'OWNER'
+                   OR (item.kind != 'GUIDE' AND item.created_by = ?) THEN 1 ELSE 0 END AS can_manage_lifecycle,
          CASE
            WHEN member.permission = 'OWNER' THEN 'OWNER'
            WHEN guide.owner_id = ? OR collaborator.user_id IS NOT NULL OR member.permission = 'EDIT' THEN 'EDIT'
@@ -66,7 +69,7 @@ const ITEM_SUMMARY_SELECT = `
   LEFT JOIN users deleted_by ON deleted_by.id = item.deleted_by
 `;
 
-const requesterArgs = (userId: string) => [userId, userId, userId, userId, userId];
+const requesterArgs = (userId: string) => [userId, userId, userId, userId, userId, userId, userId];
 
 const REQUESTER_CAN_ACCESS = `(
   member.user_id IS NOT NULL
@@ -360,6 +363,7 @@ function mapItemSummary(row: ItemSummaryRow): WorkspaceItemSummary {
     updatedAt: row.updated_at,
     favorite: row.favorite === 1,
     permission: row.permission,
+    canManageLifecycle: row.can_manage_lifecycle === 1,
     deletedAt: row.deleted_at,
     deletedByName: row.deleted_by_name,
     authorName: row.author_name,

@@ -17,6 +17,7 @@ function guideResource(overrides: Partial<WorkspaceItemSummary> = {}): Workspace
     updatedAt: '2026-07-13T00:00:00.000Z',
     favorite: false,
     permission: 'EDIT',
+    canManageLifecycle: true,
     publishedVersionId: 'version-1',
     ...overrides,
   };

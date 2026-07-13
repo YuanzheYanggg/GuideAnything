@@ -91,6 +91,7 @@ describe('published guide search', () => {
         workspaceItemId: created.json().guide.workspaceItemId,
         workspaceName: '检索工作区',
         favorite: false,
+        canManageLifecycle: false,
       });
     }
     const outsideWorkspace = await context.app.inject({
@@ -110,7 +111,7 @@ describe('published guide search', () => {
       headers: authorization(context.tokens.author),
     });
     expect(authorSearch.statusCode).toBe(200);
-    expect(authorSearch.json().items[0]).toMatchObject({ favorite: false });
+    expect(authorSearch.json().items[0]).toMatchObject({ favorite: false, canManageLifecycle: true });
 
     const unrelated = await searchAs(context, '销售订单', context.tokens.otherAuthor);
     expect(unrelated.items).toEqual([]);
@@ -123,6 +124,7 @@ describe('published guide search', () => {
     });
     expect(invited.statusCode).toBe(201);
     expect((await searchAs(context, '销售订单', context.tokens.editor)).items[0]).toMatchObject({ guideId });
+    expect((await searchAs(context, '销售订单', context.tokens.editor)).items[0]).toMatchObject({ canManageLifecycle: false });
 
     context.database.prepare(
       `UPDATE workspace_items SET deleted_at = ?, deleted_by = ? WHERE entity_id = ?`,

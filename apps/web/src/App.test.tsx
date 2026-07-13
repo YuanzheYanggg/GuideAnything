@@ -1,7 +1,9 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { App } from './App';
+import { App, safeReturnTo, withReturnTo } from './App';
 import { ApiClient } from './lib/api';
 import { mockAuthenticatedWorkspaceApi } from './test/workspace-api-mocks';
 
@@ -56,11 +58,36 @@ describe('App routes', () => {
       createGuide,
     });
 
-    render(<App />);
+    render(<StrictMode><App /></StrictMode>);
 
     await waitFor(() => expect(createGuide).toHaveBeenCalledWith('workspace-materials'));
     expect(window.location.pathname).toBe('/workspaces/workspace-materials/guides');
     expect(window.location.search).toBe('');
+    expect(createGuide).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a workspace library origin and rejects unsafe return targets', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', '/workspaces/workspace-materials/guides');
+    mockAuthenticatedWorkspaceApi({ workspaces: [workspace] });
+    vi.spyOn(ApiClient.prototype, 'libraryApi').mockReturnValue({
+      listEditableWorkspaces: vi.fn().mockResolvedValue([workspace]),
+      listDrafts: vi.fn().mockResolvedValue([]),
+      search: vi.fn().mockResolvedValue([{
+        versionId: 'version-1', guideId: 'guide-1', workspaceId: workspace.id,
+        workspaceItemId: 'item-1', workspaceName: workspace.name, favorite: false,
+        canManageLifecycle: true, title: '物料指南', summary: '', tags: [], version: 1, authorName: '王作者',
+      }]),
+      createGuide: vi.fn(),
+    });
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: '学习 物料指南' }));
+    expect(window.location.pathname).toBe('/versions/version-1/learn');
+    expect(new URLSearchParams(window.location.search).get('returnTo')).toBe('/workspaces/workspace-materials/guides');
+    expect(safeReturnTo('/workspaces/workspace-materials/guides')).toBe('/workspaces/workspace-materials/guides');
+    expect(safeReturnTo('//evil.example/path')).toBe('/library');
+    expect(safeReturnTo('https://evil.example/path')).toBe('/library');
+    expect(withReturnTo('/guides/guide-1/edit', '/library')).toBe('/guides/guide-1/edit?returnTo=%2Flibrary');
   });
 });
 

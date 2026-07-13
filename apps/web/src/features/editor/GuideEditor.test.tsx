@@ -23,7 +23,7 @@ const sourceVersion: GuideVersionSnapshot = {
 };
 
 const otherSearchItem = {
-  versionId: 'version-other', guideId: 'guide-other', workspaceId: 'workspace-stock', workspaceItemId: 'item-guide-other', workspaceName: '库存管理', favorite: false, title: '库存盘点流程', summary: '盘点前的准备工作', tags: ['库存'], version: 1, authorName: '李作者',
+  versionId: 'version-other', guideId: 'guide-other', workspaceId: 'workspace-stock', workspaceItemId: 'item-guide-other', workspaceName: '库存管理', favorite: false, canManageLifecycle: false, title: '库存盘点流程', summary: '盘点前的准备工作', tags: ['库存'], version: 1, authorName: '李作者',
 };
 
 describe('GuideEditor', () => {
@@ -83,7 +83,7 @@ describe('GuideEditor', () => {
 
   it('shows all reusable guides on open and filters them while typing', async () => {
     const user = userEvent.setup();
-    const sourceItem = { versionId: 'version-source', guideId: 'guide-source', workspaceId: 'workspace-materials', workspaceItemId: 'item-guide-source', workspaceName: '物料管理', favorite: false, title: '物料主数据检查', summary: '', tags: ['物料'], version: 1, authorName: '王作者' };
+    const sourceItem = { versionId: 'version-source', guideId: 'guide-source', workspaceId: 'workspace-materials', workspaceItemId: 'item-guide-source', workspaceName: '物料管理', favorite: false, canManageLifecycle: false, title: '物料主数据检查', summary: '', tags: ['物料'], version: 1, authorName: '王作者' };
     const search = vi.fn<EditorApi['search']>().mockImplementation(async (query, offset = 0) => {
       if (query) return { items: [sourceItem], nextOffset: null };
       return offset === 0 ? { items: [otherSearchItem], nextOffset: 1 } : { items: [sourceItem], nextOffset: null };
@@ -145,7 +145,7 @@ function createApi(): EditorApi & Record<string, ReturnType<typeof vi.fn>> {
     getGuide: vi.fn().mockResolvedValue(structuredClone(emptyGuide)),
     saveGuide: vi.fn().mockResolvedValue({ ...structuredClone(emptyGuide), revision: 1 }),
     publishGuide: vi.fn().mockResolvedValue(sourceVersion),
-    search: vi.fn().mockResolvedValue({ items: [{ versionId: 'version-source', guideId: 'guide-source', workspaceId: 'workspace-materials', workspaceItemId: 'item-guide-source', workspaceName: '物料管理', favorite: false, title: '物料主数据检查', summary: '', tags: ['物料'], version: 1, authorName: '王作者' }], nextOffset: null }),
+    search: vi.fn().mockResolvedValue({ items: [{ versionId: 'version-source', guideId: 'guide-source', workspaceId: 'workspace-materials', workspaceItemId: 'item-guide-source', workspaceName: '物料管理', favorite: false, canManageLifecycle: false, title: '物料主数据检查', summary: '', tags: ['物料'], version: 1, authorName: '王作者' }], nextOffset: null }),
     getVersion: vi.fn().mockResolvedValue(sourceVersion),
     uploadMedia: vi.fn(),
   };

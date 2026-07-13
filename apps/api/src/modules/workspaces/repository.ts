@@ -186,6 +186,7 @@ export function listWorkspaceItems(
             deleted_by.display_name AS deleted_by_name, creator.display_name AS author_name,
             g.published_version_id, recent.last_viewed_at, recent.view_count,
             CASE WHEN favorite.item_id IS NULL THEN 0 ELSE 1 END AS favorite,
+            CASE WHEN g.owner_id = ? OR member.permission = 'OWNER' THEN 1 ELSE 0 END AS can_manage_lifecycle,
             member.permission
      FROM workspace_items item
      JOIN workspaces w ON w.id = item.workspace_id AND w.status = 'ACTIVE'
@@ -198,7 +199,7 @@ export function listWorkspaceItems(
      WHERE item.workspace_id = ? AND item.deleted_at IS NULL
        AND (? IS NULL OR item.kind = ?)
      ORDER BY item.updated_at DESC`,
-  ).all(userId, userId, userId, workspaceId, kind ?? null, kind ?? null) as unknown as Array<{
+  ).all(userId, userId, userId, userId, workspaceId, kind ?? null, kind ?? null) as unknown as Array<{
     id: string;
     workspace_id: string;
     workspace_name: string;
@@ -215,6 +216,7 @@ export function listWorkspaceItems(
     view_count: number | null;
     favorite: number;
     permission: WorkspacePermission;
+    can_manage_lifecycle: number;
   }>;
   return rows.map((row) => ({
     id: row.id,
@@ -227,6 +229,7 @@ export function listWorkspaceItems(
     updatedAt: row.updated_at,
     favorite: row.favorite === 1,
     permission: row.permission,
+    canManageLifecycle: row.can_manage_lifecycle === 1,
     deletedAt: row.deleted_at,
     deletedByName: row.deleted_by_name,
     authorName: row.author_name,

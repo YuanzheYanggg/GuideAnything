@@ -1,5 +1,5 @@
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -127,5 +127,24 @@ describe('LessonPage', () => {
     fireEvent.click(screen.getAllByText(childVersion.title, { selector: 'strong' })[0]!);
     await screen.findByText('这个发布版本还没有编排教学步骤');
     expect(personalApi.recordRecent).toHaveBeenNthCalledWith(2, 'item-guide-child', { mode: 'lesson', versionId: 'version-child' });
+  });
+
+  it('ignores duplicate subguide activation while the version request is in flight', async () => {
+    let resolveChild!: (value: GuideVersionSnapshot) => void;
+    const child = { ...version, id: 'version-child', guideId: 'guide-child', workspaceItemId: 'item-child', title: '异步子指南', document: { ...version.document, steps: [] } };
+    const parent = { ...version, document: { ...version.document, nodes: [{ id: 'sub', type: 'subguide' as const, position: { x: 0, y: 0 }, zIndex: 0, data: { guideId: child.guideId, guideVersionId: child.id, title: child.title, version: 2, expanded: false } }], edges: [], steps: [{ id: 'step-sub', order: 0, title: '打开异步子指南', nodeId: 'sub' }], entryNodeId: 'sub', exitNodeIds: ['sub'] } };
+    const api = { getVersion: vi.fn((id: string) => id === child.id ? new Promise<GuideVersionSnapshot>((resolve) => { resolveChild = resolve; }) : Promise.resolve(parent)) };
+    const personalApi = createPersonalApiMock();
+    render(<LessonPage versionId={parent.id} api={api} personalApi={personalApi} onBack={vi.fn()} />);
+    await screen.findByRole('heading', { name: parent.title });
+    const target = screen.getAllByText(child.title, { selector: 'strong' })[0]!;
+    act(() => {
+      target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(api.getVersion).toHaveBeenCalledTimes(2);
+    resolveChild(child);
+    await screen.findByText('这个发布版本还没有编排教学步骤');
+    expect(personalApi.recordRecent).toHaveBeenCalledTimes(2);
   });
 });

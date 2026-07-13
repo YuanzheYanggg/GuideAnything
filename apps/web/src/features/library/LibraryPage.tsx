@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, FileText, MagnifyingGlass, SlidersHorizontal } from '@phosphor-icons/react';
 
 import type { AuthUser } from '../auth/types';
@@ -12,6 +12,7 @@ export interface SearchItem {
   workspaceItemId: string;
   workspaceName: string;
   favorite: boolean;
+  canManageLifecycle: boolean;
   title: string;
   summary: string;
   tags: string[];
@@ -31,6 +32,8 @@ export interface DraftItem {
   revision: number;
   authorName: string;
   updatedAt: string;
+  favorite: boolean;
+  canManageLifecycle: boolean;
 }
 
 export interface LibraryApi {
@@ -67,6 +70,7 @@ export function LibraryPage({
   const [drafts, setDrafts] = useState<DraftItem[]>([]);
   const [editableWorkspaces, setEditableWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+  const [workspaceLoadError, setWorkspaceLoadError] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState('全部');
@@ -76,24 +80,36 @@ export function LibraryPage({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const createIntentHandled = useRef(false);
+  const requestGenerationRef = useRef(0);
+  const createTriggerRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    let active = true;
-    api.listEditableWorkspaces()
-      .then((items) => { if (active) setEditableWorkspaces(items.filter((item) => item.permission !== 'VIEW')); })
-      .catch(() => { /* Creation retries if the user invokes it. */ })
-      .finally(() => { if (active) setWorkspacesLoaded(true); });
-    return () => { active = false; };
+  const loadEditableWorkspaces = useCallback(async () => {
+    setWorkspaceLoadError('');
+    try {
+      const items = (await api.listEditableWorkspaces()).filter((item) => item.permission !== 'VIEW');
+      setEditableWorkspaces(items);
+      setWorkspacesLoaded(true);
+      return items;
+    } catch (reason) {
+      setWorkspacesLoaded(false);
+      setWorkspaceLoadError(errorMessage(reason, '工作区载入失败'));
+      throw reason;
+    }
   }, [api]);
 
   useEffect(() => {
-    let active = true;
+    void loadEditableWorkspaces().catch(() => undefined);
+  }, [loadEditableWorkspaces]);
+
+  useEffect(() => {
+    const generation = ++requestGenerationRef.current;
+    setResults(null);
     setLoadingPublished(true);
     api.search('', workspaceId)
-      .then((items) => { if (active) setPublished(items); })
-      .catch((reason: unknown) => { if (active) setError(errorMessage(reason, '指南载入失败')); })
-      .finally(() => { if (active) setLoadingPublished(false); });
-    return () => { active = false; };
+      .then((items) => { if (requestGenerationRef.current === generation) setPublished(items); })
+      .catch((reason: unknown) => { if (requestGenerationRef.current === generation) setError(errorMessage(reason, '指南载入失败')); })
+      .finally(() => { if (requestGenerationRef.current === generation) setLoadingPublished(false); });
+    return () => { if (requestGenerationRef.current === generation) requestGenerationRef.current += 1; };
   }, [api, workspaceId]);
 
   useEffect(() => {
@@ -107,12 +123,13 @@ export function LibraryPage({
     return () => { active = false; };
   }, [api, user.role, workspaceId]);
 
-  const createInside = async (targetWorkspaceId: string) => {
-    setPickerOpen(false);
+  const createInside = async (targetWorkspaceId: string, fromPicker = false) => {
+    if (!fromPicker) setPickerOpen(false);
     setCreating(true);
     setError('');
     try {
       const guide = await api.createGuide(targetWorkspaceId);
+      setPickerOpen(false);
       onEdit(guide.id);
     } catch (reason) {
       setError(errorMessage(reason, '创建指南失败'));
@@ -129,9 +146,7 @@ export function LibraryPage({
     let candidates = editableWorkspaces;
     if (!workspacesLoaded) {
       try {
-        candidates = (await api.listEditableWorkspaces()).filter((item) => item.permission !== 'VIEW');
-        setEditableWorkspaces(candidates);
-        setWorkspacesLoaded(true);
+        candidates = await loadEditableWorkspaces();
       } catch (reason) {
         setError(errorMessage(reason, '工作区载入失败'));
         return;
@@ -160,18 +175,22 @@ export function LibraryPage({
   const submitSearch = async (event: FormEvent) => {
     event.preventDefault();
     if (!query.trim()) {
+      requestGenerationRef.current += 1;
       setResults(null);
+      setSearching(false);
       return;
     }
     setSearching(true);
+    const generation = ++requestGenerationRef.current;
     setError('');
     setFilter('全部');
     try {
-      setResults(await api.search(query.trim(), workspaceId));
+      const items = await api.search(query.trim(), workspaceId);
+      if (requestGenerationRef.current === generation) setResults(items);
     } catch (reason) {
-      setError(errorMessage(reason, '检索失败，请稍后重试'));
+      if (requestGenerationRef.current === generation) setError(errorMessage(reason, '检索失败，请稍后重试'));
     } finally {
-      setSearching(false);
+      if (requestGenerationRef.current === generation) setSearching(false);
     }
   };
 
@@ -190,6 +209,7 @@ export function LibraryPage({
     updatedAt: item.publishedAt ?? '',
     favorite: item.favorite,
     permission: workspaceMap.get(item.workspaceId)?.permission ?? 'VIEW',
+    canManageLifecycle: item.canManageLifecycle,
     authorName: item.authorName,
     publishedVersionId: item.versionId,
   }));
@@ -202,8 +222,9 @@ export function LibraryPage({
     title: draft.title,
     summary: draft.summary,
     updatedAt: draft.updatedAt,
-    favorite: false,
+    favorite: draft.favorite,
     permission: workspaceMap.get(draft.workspaceId)?.permission ?? 'EDIT',
+    canManageLifecycle: draft.canManageLifecycle,
     authorName: draft.authorName,
   }));
 
@@ -216,6 +237,7 @@ export function LibraryPage({
     const update = (entries: SearchItem[]) => entries.map((entry) => entry.workspaceItemId === item.id ? { ...entry, favorite } : entry);
     setPublished(update);
     setResults((current) => current ? update(current) : current);
+    setDrafts((current) => current.map((entry) => entry.workspaceItemId === item.id ? { ...entry, favorite } : entry));
   };
   const mutate = async (operation: () => Promise<unknown>, update: () => void) => {
     setError('');
@@ -242,12 +264,12 @@ export function LibraryPage({
   return <div className="library-workspace-page" aria-labelledby="library-heading">
     <div className="workspace-heading">
       <h1 id="library-heading">指南库</h1>
-      {user.role !== 'LEARNER' ? <button className="workspace-create-button" type="button" disabled={creating} onClick={() => void create()}><span aria-hidden="true">+</span>{creating ? '正在创建指南…' : '新建指南'}</button> : null}
+      {user.role !== 'LEARNER' ? <button ref={createTriggerRef} className="workspace-create-button" type="button" disabled={creating} onClick={() => void create()}><span aria-hidden="true">+</span>{creating && !pickerOpen ? '正在创建指南…' : '新建指南'}</button> : null}
     </div>
 
     <div className="workspace-search-wrap">
       <form className="workspace-search" onSubmit={submitSearch}>
-        <button className="workspace-search-submit" type="submit" aria-label="搜索指南" disabled={searching}><MagnifyingGlass size={22} /></button>
+        <button className="workspace-search-submit" type="submit" aria-label="搜索指南"><MagnifyingGlass size={22} /></button>
         <label className="sr-only" htmlFor="guide-search">搜索指南</label>
         <input id="guide-search" type="search" placeholder="搜索指南" value={query} onChange={(event) => setQuery(event.target.value)} />
         <button className={`workspace-filter-button ${filterOpen ? 'is-open' : ''}`} type="button" aria-label="筛选指南" aria-expanded={filterOpen} onClick={() => setFilterOpen((open) => !open)}><SlidersHorizontal size={20} /></button>
@@ -271,14 +293,58 @@ export function LibraryPage({
       {!loadingDrafts && draftResources.length > 0 ? <ResourceTable {...tableProps} items={draftResources} /> : null}
     </section> : null}
 
-    {pickerOpen ? <div className="confirm-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPickerOpen(false); }}>
-      <section className="workspace-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-picker-title">
-        <h2 id="workspace-picker-title">选择创建位置</h2>
-        <p>新指南将继承所选工作区的成员与权限。</p>
-        <div>{editableWorkspaces.map((item) => <button key={item.id} type="button" onClick={() => void createInside(item.id)}>在{item.name}中新建</button>)}</div>
-        <button className="secondary-button" type="button" onClick={() => setPickerOpen(false)}>取消</button>
-      </section>
-    </div> : null}
+    {workspaceLoadError ? <div className="workspace-error" role="alert"><span>{workspaceLoadError}</span><button type="button" onClick={() => void loadEditableWorkspaces().catch(() => undefined)}>重试载入工作区</button></div> : null}
+
+    {pickerOpen ? <WorkspacePickerDialog
+      workspaces={editableWorkspaces}
+      pending={creating}
+      onSelect={(id) => void createInside(id, true)}
+      onClose={() => {
+        if (creating) return;
+        setPickerOpen(false);
+        createTriggerRef.current?.focus();
+      }}
+    /> : null}
+  </div>;
+}
+
+function WorkspacePickerDialog({ workspaces, pending, onSelect, onClose }: {
+  workspaces: WorkspaceSummary[];
+  pending: boolean;
+  onSelect: (id: string) => void;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const firstRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { firstRef.current?.focus(); }, []);
+  useEffect(() => { if (pending) dialogRef.current?.focus(); }, [pending]);
+  const keyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      if (!pending) onClose();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    if (pending) {
+      event.preventDefault();
+      dialogRef.current?.focus();
+      return;
+    }
+    if (event.shiftKey && document.activeElement === firstRef.current) {
+      event.preventDefault();
+      cancelRef.current?.focus();
+    } else if (!event.shiftKey && document.activeElement === cancelRef.current) {
+      event.preventDefault();
+      firstRef.current?.focus();
+    }
+  };
+  return <div className="confirm-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onClose(); }}>
+    <section ref={dialogRef} className="workspace-picker-dialog" role="dialog" tabIndex={-1} aria-modal="true" aria-labelledby="workspace-picker-title" onKeyDown={keyDown}>
+      <h2 id="workspace-picker-title">选择创建位置</h2>
+      <p>{pending ? '正在创建指南…' : '新指南将继承所选工作区的成员与权限。'}</p>
+      <div>{workspaces.map((item, index) => <button ref={index === 0 ? firstRef : undefined} key={item.id} disabled={pending} type="button" onClick={() => onSelect(item.id)}>在{item.name}中新建</button>)}</div>
+      <button ref={cancelRef} className="secondary-button" type="button" disabled={pending} onClick={onClose}>取消</button>
+    </section>
   </div>;
 }
 

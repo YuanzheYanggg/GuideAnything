@@ -70,3 +70,82 @@ git diff --check                            passed
 ## Concerns
 
 No blocking concerns. Recent recording is intentionally fire-and-forget so analytics failure does not block a successfully loaded guide.
+
+---
+
+## Review follow-up: permission, async, and navigation hardening
+
+### RED evidence
+
+The review regression tests were added before the follow-up implementation. The focused frontend run reported 6 intended failures covering draft favorite state, overlapping search, picker behavior, workspace-load retry, safe return navigation, and duplicate subguide activation. The first complete backend run then exposed the requester-aware SQL regression exactly:
+
+```text
+pnpm --filter @guideanything/api test
+Test Files  5 failed | 4 passed (9)
+Tests       19 failed | 15 passed (34)
+root error: no such column: favorite.item_id
+```
+
+After correcting the query scope, one deliberately incorrect permission expectation remained and demonstrated that a VIEW learner receives `canManageLifecycle: false`:
+
+```text
+Test Files  1 failed | 8 passed (9)
+Tests       1 failed | 33 passed (34)
+expected canManageLifecycle true, received false
+```
+
+### GREEN evidence
+
+Fresh follow-up verification:
+
+```text
+pnpm --filter @guideanything/api test
+Test Files  9 passed (9)
+Tests       34 passed (34)
+
+pnpm --filter @guideanything/web test
+Test Files  12 passed (12)
+Tests       67 passed (67)
+
+pnpm --filter @guideanything/api typecheck   passed
+pnpm --filter @guideanything/web typecheck   passed
+pnpm lint                                    passed
+pnpm build                                   passed
+git diff --check                             passed
+```
+
+### Permission note
+
+Lifecycle authority is explicit and requester-specific. A guide owner and the owning workspace's `OWNER` receive `canManageLifecycle: true`; an EDIT collaborator receives `false` unless they own the guide. The API remains authoritative for trash, restore, and permanent removal. Creation now allows application roles `AUTHOR` and `EDITOR`, but still requires workspace permission `OWNER` or `EDIT`; VIEW members, learners, and non-members are rejected.
+
+### Follow-up behavior
+
+- Draft and published rows use server-provided favorite and lifecycle capability state.
+- Overlapping published/search requests use a generation guard, including clearing an in-flight search.
+- The workspace picker manages initial focus, Tab wrapping, Escape/backdrop close, trigger focus restoration, and a locked pending state.
+- Workspace loading distinguishes a real failure from a successfully loaded empty set and exposes retry.
+- Editor and lesson routes preserve a validated internal `returnTo`; external or scheme-based values fall back to `/library`.
+- Subguide activation uses a synchronous in-flight ref, preventing duplicate requests before React state commits.
+- Workspace `?create=1` is consumed with replacement before the request and remains exactly-once under StrictMode effect replay.
+
+### Changed files
+
+```text
+apps/api/src/modules/guides/permissions.test.ts
+apps/api/src/modules/guides/repository.ts
+apps/api/src/modules/guides/service.ts
+apps/api/src/modules/personal/repository.ts
+apps/api/src/modules/search/repository.ts
+apps/api/src/modules/search/search.test.ts
+apps/api/src/modules/workspaces/repository.ts
+apps/web/src/App.test.tsx
+apps/web/src/App.tsx
+apps/web/src/features/editor/GuideEditor.test.tsx
+apps/web/src/features/lesson/LessonPage.test.tsx
+apps/web/src/features/lesson/LessonPage.tsx
+apps/web/src/features/library/LibraryPage.test.tsx
+apps/web/src/features/library/LibraryPage.tsx
+apps/web/src/features/personal/PersonalResourcePage.test.tsx
+apps/web/src/features/resources/ResourceTable.tsx
+packages/contracts/src/workspace.ts
+```

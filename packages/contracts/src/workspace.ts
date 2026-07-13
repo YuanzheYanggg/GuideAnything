@@ -35,6 +35,7 @@ export const WorkspaceItemSummarySchema = z.object({
   updatedAt: z.string().datetime(),
   favorite: z.boolean(),
   permission: WorkspacePermissionSchema,
+  canManageLifecycle: z.boolean().optional(),
   deletedAt: z.string().datetime().nullable().optional(),
   deletedByName: z.string().nullable().optional(),
   authorName: z.string().nullable().optional(),

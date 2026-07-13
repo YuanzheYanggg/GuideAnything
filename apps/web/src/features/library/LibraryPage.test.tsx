@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceSummary } from '../workspace/types';
@@ -13,6 +13,7 @@ const result = {
   workspaceItemId: 'item-guide-1',
   workspaceName: '销售与分销',
   favorite: false,
+  canManageLifecycle: true,
   title: 'ERP 销售订单创建',
   summary: 'VA01 操作教学',
   tags: ['ERP', '销售订单'],
@@ -148,5 +149,86 @@ describe('LibraryPage', () => {
     await user.click(screen.getByRole('button', { name: '确认移到回收站' }));
     expect(personalApi.trashItem).toHaveBeenCalledWith('item-guide-1');
     expect(screen.queryByText('ERP 销售订单创建')).not.toBeInTheDocument();
+  });
+
+  it('hides trash from workspace editors unless the capability allows lifecycle management', async () => {
+    const api = createLibraryApi({ workspaces: [workspace({ id: 'workspace-sales', permission: 'EDIT' })] });
+    api.search = vi.fn().mockResolvedValue([{ ...result, canManageLifecycle: false }]);
+    render(<LibraryPage user={{ id: 'editor', displayName: '陈编辑', email: 'editor@guide.local', role: 'EDITOR' }} api={api} personalApi={createPersonalApiMock()} onEdit={vi.fn()} onLearn={vi.fn()} />);
+    await screen.findByText(result.title);
+    expect(screen.queryByRole('button', { name: `更多操作 ${result.title}` })).not.toBeInTheDocument();
+  });
+
+  it('uses draft favorite state and toggles it in both directions', async () => {
+    const user = userEvent.setup();
+    const personalApi = createPersonalApiMock();
+    const api = createLibraryApi({ workspaces: [workspace({ id: 'workspace-sales' })] });
+    api.listDrafts = vi.fn().mockResolvedValue([{ ...result, id: 'guide-1', status: 'DRAFT', revision: 1, updatedAt: '2026-07-13T00:00:00.000Z', favorite: true, canManageLifecycle: true }]);
+    render(<LibraryPage user={{ id: 'author', displayName: '王作者', email: 'author@guide.local', role: 'AUTHOR' }} api={api} personalApi={personalApi} onEdit={vi.fn()} onLearn={vi.fn()} />);
+    await user.click(await screen.findByRole('button', { name: `取消收藏 ${result.title}` }));
+    expect(personalApi.unfavorite).toHaveBeenCalledWith(result.workspaceItemId);
+    await user.click(await screen.findByRole('button', { name: `收藏 ${result.title}` }));
+    expect(personalApi.favorite).toHaveBeenCalledWith(result.workspaceItemId);
+  });
+
+  it('ignores an older overlapping search response and its finally state', async () => {
+    const user = userEvent.setup();
+    let resolveOld!: (items: typeof result[]) => void;
+    let resolveNew!: (items: typeof result[]) => void;
+    const api = createLibraryApi({ workspaces: [] });
+    api.search = vi.fn((query: string) => {
+      if (!query) return Promise.resolve([]);
+      return new Promise<typeof result[]>((resolve) => { if (query === '旧') resolveOld = resolve; else resolveNew = resolve; });
+    });
+    render(<LibraryPage user={{ id: 'learner', displayName: '李学员', email: 'learner@guide.local', role: 'LEARNER' }} api={api} personalApi={createPersonalApiMock()} onEdit={vi.fn()} onLearn={vi.fn()} />);
+    const searchbox = screen.getByRole('searchbox');
+    await user.type(searchbox, '旧');
+    await user.click(screen.getByRole('button', { name: '搜索指南' }));
+    await user.clear(searchbox);
+    await user.type(searchbox, '新');
+    await user.click(screen.getByRole('button', { name: '搜索指南' }));
+    resolveNew([{ ...result, title: '新结果' }]);
+    expect(await screen.findByText('新结果')).toBeVisible();
+    resolveOld([{ ...result, title: '旧结果' }]);
+    await Promise.resolve();
+    expect(screen.queryByText('旧结果')).not.toBeInTheDocument();
+    expect(screen.queryByText('正在检索已发布指南…')).not.toBeInTheDocument();
+  });
+
+  it('traps picker focus, restores the trigger, and locks while creation is pending', async () => {
+    const user = userEvent.setup();
+    let resolveCreate!: (guide: { id: string }) => void;
+    const api = createLibraryApi({ workspaces: [workspace({ id: 'w1', name: '甲' }), workspace({ id: 'w2', name: '乙' })] });
+    api.createGuide = vi.fn(() => new Promise<{ id: string }>((resolve) => { resolveCreate = resolve; }));
+    render(<LibraryPage user={{ id: 'author', displayName: '王作者', email: 'author@guide.local', role: 'AUTHOR' }} api={api} personalApi={createPersonalApiMock()} onEdit={vi.fn()} onLearn={vi.fn()} />);
+    const trigger = screen.getByRole('button', { name: '新建指南' });
+    await user.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: '选择创建位置' });
+    const first = within(dialog).getByRole('button', { name: '在甲中新建' });
+    const cancel = within(dialog).getByRole('button', { name: '取消' });
+    expect(first).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(cancel).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(trigger).toHaveFocus();
+    await user.click(trigger);
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '在甲中新建' }));
+    expect(screen.getByRole('dialog')).toBeVisible();
+    expect(within(screen.getByRole('dialog')).getByText('正在创建指南…')).toBeVisible();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(screen.getByRole('dialog')).toBeVisible();
+    resolveCreate({ id: 'guide-new' });
+  });
+
+  it('keeps workspace load failures distinct and retries from the real error', async () => {
+    const user = userEvent.setup();
+    const api = createLibraryApi({ workspaces: [] });
+    api.listEditableWorkspaces = vi.fn().mockRejectedValueOnce(new Error('网络不可用')).mockResolvedValueOnce([workspace()]);
+    render(<LibraryPage user={{ id: 'author', displayName: '王作者', email: 'author@guide.local', role: 'AUTHOR' }} api={api} personalApi={createPersonalApiMock()} onEdit={vi.fn()} onLearn={vi.fn()} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('网络不可用');
+    expect(screen.queryByText('没有可创建指南的工作区')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '重试载入工作区' }));
+    await waitFor(() => expect(api.listEditableWorkspaces).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('网络不可用')).not.toBeInTheDocument();
   });
 });

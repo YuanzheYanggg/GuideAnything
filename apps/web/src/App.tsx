@@ -5,6 +5,7 @@ import {
   Route,
   Routes,
   useNavigate,
+  useLocation,
   useParams,
   useSearchParams,
 } from 'react-router-dom';
@@ -72,6 +73,7 @@ function AppContent() {
 
   function LibraryRoute({ user: routeUser }: { user: AuthUser }) {
     const navigate = useNavigate();
+    const location = useLocation();
     const { workspaceId } = useParams();
     const [searchParams, setSearchParams] = useSearchParams();
     return <LibraryPage
@@ -85,28 +87,45 @@ function AppContent() {
         next.delete('create');
         setSearchParams(next, { replace: true });
       }}
-      onEdit={(guideId) => navigate(`/guides/${guideId}/edit`)}
-      onLearn={(versionId) => navigate(`/versions/${versionId}/learn`)}
+      onEdit={(guideId) => navigate(withReturnTo(`/guides/${guideId}/edit`, libraryReturnPath(location.pathname, location.search)))}
+      onLearn={(versionId) => navigate(withReturnTo(`/versions/${versionId}/learn`, libraryReturnPath(location.pathname, location.search)))}
     />;
   }
 
   function GuideEditorRoute() {
     const navigate = useNavigate();
     const { guideId } = useParams();
+    const [searchParams] = useSearchParams();
     if (!guideId) return <Navigate to="/library" replace />;
     return <Suspense fallback={<LoadingState label="正在载入画布编辑器…" />}>
-      <GuideEditor guideId={guideId} api={editorApi} personalApi={personalApi} onBack={() => navigate('/library')} />
+      <GuideEditor guideId={guideId} api={editorApi} personalApi={personalApi} onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))} />
     </Suspense>;
   }
 
   function LessonRoute() {
     const navigate = useNavigate();
     const { versionId } = useParams();
+    const [searchParams] = useSearchParams();
     if (!versionId) return <Navigate to="/library" replace />;
     return <Suspense fallback={<LoadingState label="正在载入教学模式…" />}>
-      <LessonPage versionId={versionId} api={{ getVersion: editorApi.getVersion }} personalApi={personalApi} onBack={() => navigate('/library')} />
+      <LessonPage versionId={versionId} api={{ getVersion: editorApi.getVersion }} personalApi={personalApi} onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))} />
     </Suspense>;
   }
+}
+
+export function safeReturnTo(value: string | null | undefined): string {
+  return value?.startsWith('/') && !value.startsWith('//') ? value : '/library';
+}
+
+export function withReturnTo(path: string, returnTo: string): string {
+  return `${path}?returnTo=${encodeURIComponent(safeReturnTo(returnTo))}`;
+}
+
+function libraryReturnPath(pathname: string, search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete('create');
+  const query = params.toString();
+  return `${pathname}${query ? `?${query}` : ''}`;
 }
 
 function LoadingState({ label }: { label: string }) {

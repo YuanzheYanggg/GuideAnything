@@ -22,7 +22,7 @@ export class GuideService {
     user: { id: string; role: string },
     input: { workspaceId: string; title: string; summary: string; tags: string[] },
   ) {
-    if (user.role !== 'AUTHOR') throw httpError(403, 'FORBIDDEN', '只有作者可以创建指南');
+    if (!['AUTHOR', 'EDITOR'].includes(user.role)) throw httpError(403, 'FORBIDDEN', '只有作者或编辑者可以创建指南');
     const permission = getWorkspacePermission(this.database, input.workspaceId, user.id);
     if (!permission) throw httpError(404, 'WORKSPACE_NOT_FOUND', '工作区不存在');
     if (!['OWNER', 'EDIT'].includes(permission)) {

@@ -12,7 +12,7 @@ import {
   type NodeTypes,
   type ReactFlowInstance,
 } from '@xyflow/react';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { MarkdownNodeView } from '../nodes/MarkdownNode';
 import { VideoNodeView } from '../nodes/VideoNode';
@@ -56,6 +56,7 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
   const [instance, setInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
   const [subguideLoading, setSubguideLoading] = useState(false);
   const [error, setError] = useState('');
+  const inFlightSubguidesRef = useRef(new Set<string>());
 
   useEffect(() => {
     let active = true;
@@ -77,11 +78,12 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
   const currentStep = steps[currentIndex];
   const currentNode = version?.document.nodes.find((node) => node.id === currentStep?.nodeId);
   const openSubguide = useCallback(async (guideVersionId: string) => {
-    if (subguideLoading) return;
+    if (inFlightSubguidesRef.current.has(guideVersionId)) return;
     if (versionHistory.some((item) => item.id === guideVersionId)) {
       setError('这个子指南已经在当前学习路径中，无法再次打开。');
       return;
     }
+    inFlightSubguidesRef.current.add(guideVersionId);
     setSubguideLoading(true);
     setError('');
     try {
@@ -95,9 +97,10 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : '子指南载入失败');
     } finally {
+      inFlightSubguidesRef.current.delete(guideVersionId);
       setSubguideLoading(false);
     }
-  }, [api, personalApi, subguideLoading, versionHistory]);
+  }, [api, personalApi, versionHistory]);
   const handleBack = useCallback(() => {
     setError('');
     if (versionHistory.length > 1) {

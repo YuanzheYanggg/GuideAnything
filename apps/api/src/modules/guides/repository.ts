@@ -21,6 +21,8 @@ export interface GuideDraft {
   publishedVersionId: string | null;
   publishedVersion: number | null;
   updatedAt: string;
+  favorite?: boolean;
+  canManageLifecycle?: boolean;
 }
 
 interface GuideRow {
@@ -38,6 +40,8 @@ interface GuideRow {
   published_version_id: string | null;
   published_version: number | null;
   updated_at: string;
+  favorite?: number;
+  can_manage_lifecycle?: number;
 }
 
 interface VersionRow {
@@ -120,12 +124,16 @@ export function listGuides(
     `SELECT DISTINCT g.id, g.owner_id, item.workspace_id, item.id AS workspace_item_id,
             u.display_name AS author_name, g.title, g.summary,
             g.tags_json, g.status, g.revision, g.draft_document, g.published_version_id,
-            v.version AS published_version, g.updated_at
+            v.version AS published_version, g.updated_at,
+            CASE WHEN favorite.item_id IS NULL THEN 0 ELSE 1 END AS favorite,
+            CASE WHEN g.owner_id = ? OR member.permission = 'OWNER' THEN 1 ELSE 0 END AS can_manage_lifecycle
      FROM guides g
      JOIN users u ON u.id = g.owner_id
      JOIN workspace_items item ON item.kind = 'GUIDE' AND item.entity_id = g.id
      JOIN workspaces workspace ON workspace.id = item.workspace_id AND workspace.status = 'ACTIVE'
      LEFT JOIN guide_collaborators c ON c.guide_id = g.id AND c.user_id = ?
+     LEFT JOIN workspace_members member ON member.workspace_id = workspace.id AND member.user_id = ?
+     LEFT JOIN user_favorites favorite ON favorite.item_id = item.id AND favorite.user_id = ?
      LEFT JOIN guide_versions v ON v.id = g.published_version_id
      WHERE g.status != 'ARCHIVED' AND item.deleted_at IS NULL
        AND (? IS NULL OR item.workspace_id = ?)
@@ -136,6 +144,9 @@ export function listGuides(
        )
      ORDER BY g.updated_at DESC`,
   ).all(
+    userId,
+    userId,
+    userId,
     userId,
     options.workspaceId ?? null,
     options.workspaceId ?? null,
@@ -351,6 +362,8 @@ function mapGuide(row: GuideRow): GuideDraft {
     publishedVersionId: row.published_version_id,
     publishedVersion: row.published_version,
     updatedAt: row.updated_at,
+    ...(row.favorite === undefined ? {} : { favorite: row.favorite === 1 }),
+    ...(row.can_manage_lifecycle === undefined ? {} : { canManageLifecycle: row.can_manage_lifecycle === 1 }),
   };
 }
 
