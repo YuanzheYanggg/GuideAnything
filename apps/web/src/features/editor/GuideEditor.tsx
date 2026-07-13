@@ -27,6 +27,7 @@ import { ImageNode } from '../nodes/ImageNode';
 import { MarkdownNode } from '../nodes/MarkdownNode';
 import { SubguideNode } from '../nodes/SubguideNode';
 import { VideoNode } from '../nodes/VideoNode';
+import { AppearanceToggle } from '../theme/AppearanceToggle';
 
 export interface GuideDraftDetail {
   id: string;
@@ -69,7 +70,7 @@ const nodeTypes: NodeTypes = {
   subguide: SubguideNode,
 };
 
-const defaultEdgeOptions = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#52705f', strokeWidth: 2 } };
+const defaultEdgeOptions = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: 'var(--ga-accent)', strokeWidth: 2 } };
 const snapGrid: [number, number] = [20, 20];
 const multiSelectionKeyCode = ['Meta', 'Control'];
 
@@ -361,7 +362,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
     <header className="editor-header">
       <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库">←</button>
       <div className="editor-title"><input aria-label="指南标题" value={title} onChange={(event) => { setTitle(event.target.value); setSaveState('未保存'); }} /><span aria-live="polite">{guide.status === 'PUBLISHED' ? `已发布 v${guide.publishedVersion ?? 1}` : '草稿'} · {saveState}</span></div>
-      <div className="editor-actions"><button className="secondary-button" type="button" onClick={() => void save()} aria-label="保存草稿">保存草稿</button><button className="primary-button" type="button" onClick={() => void publish()} aria-label="发布指南">发布指南</button></div>
+      <div className="editor-actions"><AppearanceToggle /><button className="secondary-button" type="button" onClick={() => void save()} aria-label="保存草稿">保存草稿</button><button className="primary-button" type="button" onClick={() => void publish()} aria-label="发布指南">发布指南</button></div>
     </header>
     <div className="editor-toolbar" aria-label="画布工具栏">
       <button type="button" onClick={() => addNode('start')} aria-label="添加开始节点">开始</button>
@@ -405,7 +406,7 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
           minZoom={0.1}
           maxZoom={2.5}
         >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="#a8b3aa" />
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--ga-border-strong)" />
           <MiniMap pannable zoomable nodeStrokeWidth={3} />
           <Controls showInteractive={false} />
         </ReactFlow>

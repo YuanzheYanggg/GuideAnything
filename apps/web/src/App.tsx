@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { LoginPage, type LoginCredentials } from './features/auth/LoginPage';
 import type { AuthUser } from './features/auth/types';
 import { LibraryPage } from './features/library/LibraryPage';
+import { AppearanceProvider } from './features/theme/AppearanceToggle';
 import { apiClient } from './lib/api';
 
 type Page = { name: 'library' } | { name: 'editor'; guideId: string } | { name: 'lesson'; versionId: string };
@@ -10,6 +11,10 @@ const GuideEditor = lazy(() => import('./features/editor/GuideEditor').then((mod
 const LessonPage = lazy(() => import('./features/lesson/LessonPage').then((module) => ({ default: module.LessonPage })));
 
 export function App() {
+  return <AppearanceProvider><AppContent /></AppearanceProvider>;
+}
+
+function AppContent() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [restoring, setRestoring] = useState(apiClient.hasToken);
   const [page, setPage] = useState<Page>({ name: 'library' });

@@ -17,6 +17,7 @@ import { memo, useEffect, useMemo, useState } from 'react';
 import { MarkdownNodeView } from '../nodes/MarkdownNode';
 import { VideoNodeView } from '../nodes/VideoNode';
 import { useMediaSource } from '../nodes/useMediaSource';
+import { AppearanceToggle } from '../theme/AppearanceToggle';
 
 export interface LessonApi {
   getVersion: (versionId: string) => Promise<GuideVersionSnapshot>;
@@ -31,7 +32,7 @@ const nodeTypes: NodeTypes = {
   start: LessonMapNode, end: LessonMapNode, process: LessonMapNode, decision: LessonMapNode, data: LessonMapNode,
   markdown: LessonMapNode, image: LessonMapNode, video: LessonMapNode, subguide: LessonMapNode,
 };
-const edgeOptions = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: '#60776a', strokeWidth: 2 } };
+const edgeOptions = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: 'var(--ga-accent)', strokeWidth: 2 } };
 
 export function LessonPage({ versionId, api, onBack }: { versionId: string; api: LessonApi; onBack: () => void }) {
   const [version, setVersion] = useState<GuideVersionSnapshot | null>(null);
@@ -70,7 +71,7 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
     <header className="lesson-header">
       <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库">←</button>
       <div><span className="eyebrow">LEARNING MODE · v{version.version}</span><h1>{version.title}</h1></div>
-      <div className="lesson-progress"><span>{steps.length ? `步骤 ${currentIndex + 1} / ${steps.length}` : '尚未编排步骤'}</span><div><i style={{ width: `${steps.length ? ((currentIndex + 1) / steps.length) * 100 : 0}%` }} /></div></div>
+      <div className="lesson-header-actions"><AppearanceToggle /><div className="lesson-progress"><span>{steps.length ? `步骤 ${currentIndex + 1} / ${steps.length}` : '尚未编排步骤'}</span><div><i style={{ width: `${steps.length ? ((currentIndex + 1) / steps.length) * 100 : 0}%` }} /></div></div></div>
     </header>
     {steps.length === 0 ? <section className="lesson-empty"><strong>这个发布版本还没有编排教学步骤</strong><p>仍可在画布中查看流程结构；请联系作者补充学习路径。</p><button className="secondary-button" onClick={onBack}>返回资料库</button></section> : <div className="lesson-layout">
       <aside className="lesson-steps" aria-label="教学步骤">
@@ -92,7 +93,7 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
           minZoom={0.15}
           maxZoom={2}
         >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#aab4ac" />
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--ga-border-strong)" />
           <MiniMap pannable zoomable />
           <Controls showInteractive={false} />
         </ReactFlow>
@@ -133,4 +134,3 @@ function nodeSummary(type: string | undefined, data: Record<string, unknown>): s
   if (typeof data.alt === 'string') return data.alt;
   return typeLabel(type);
 }
-

@@ -1,5 +1,7 @@
 import { type FormEvent, useState } from 'react';
 
+import { AppearanceToggle } from '../theme/AppearanceToggle';
+
 export interface LoginCredentials {
   email: string;
   password: string;
@@ -41,8 +43,8 @@ export function LoginPage({ onLogin }: { onLogin: (credentials: LoginCredentials
         </div>
       </section>
       <section className="login-card" aria-labelledby="login-title">
+        <div className="login-card-topbar"><span className="login-card-kicker">LOCAL DEMO</span><AppearanceToggle /></div>
         <div>
-          <span className="eyebrow">LOCAL DEMO</span>
           <h2 id="login-title">进入教学工作台</h2>
           <p className="muted">使用预置角色体验作者、编辑者和学习者路径。</p>
         </div>
@@ -61,4 +63,3 @@ export function LoginPage({ onLogin }: { onLogin: (credentials: LoginCredentials
     </main>
   );
 }
-

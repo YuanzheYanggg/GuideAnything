@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useState } from 'react';
 
 import type { AuthUser } from '../auth/types';
+import { AppearanceToggle } from '../theme/AppearanceToggle';
 
 export interface SearchItem {
   versionId: string;
@@ -82,6 +83,7 @@ export function LibraryPage({ user, api, onEdit, onLearn, onLogout }: LibraryPag
       <header className="app-header">
         <a className="brand" href="/" aria-label="GuideAnything 资料库"><span className="brand-mark">G</span><span>GuideAnything</span></a>
         <div className="user-chip">
+          <AppearanceToggle />
           <span><strong>{user.displayName}</strong><small>{roleLabel(user.role)}</small></span>
           {onLogout ? <button type="button" onClick={onLogout}>退出</button> : null}
         </div>
@@ -128,4 +130,3 @@ export function LibraryPage({ user, api, onEdit, onLearn, onLogout }: LibraryPag
 function roleLabel(role: AuthUser['role']): string {
   return { AUTHOR: '作者', EDITOR: '编辑者', LEARNER: '学习者' }[role];
 }
-
