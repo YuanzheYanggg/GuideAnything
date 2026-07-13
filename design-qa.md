@@ -1,75 +1,47 @@
-# GuideAnything 指南库视觉 QA
+# GuideAnything 知识工作台 V1 设计 QA
 
-## Comparison target
+## 最终产品表面
 
-- Source visual truth: `/var/folders/7h/8np_p58s6xg1f7ms2vzk42240000gn/T/codex-clipboard-7401b427-89fa-44a8-a79a-51e37c3936b0.png`
-- Rendered implementation: `http://127.0.0.1:5173/`
-- Browser screenshot: `/Users/yangyuanzhe/private/CodeHub/Projects/GuideAnything/.worktrees/guideanything-impeccable/.playwright-cli/guide-library-final-dark.png`
-- Viewport: `1440 × 1024 CSS px`
-- State: author demo account logged in, default library route, dark appearance, published list visible, drafts visible, no search/filter active.
+V1 已从单一指南库扩展为桌面知识工作台。当前 Shell 提供真实 URL 和 API 数据：
 
-## Full-view comparison evidence
+- 全局：`/library`、`/favorites`、`/recent`、`/shared`、`/trash`、`/workspaces`。
+- 工作区：`/workspaces/:workspaceId`、`/guides`、`/sources`、`/agents`、`/ontology`、`/artifacts`。
+- 指南：`/guides/:guideId/edit` 和 `/versions/:versionId/learn`，可携带安全的工作区 `returnTo` 上下文。
 
-The source screenshot and the browser-rendered screenshot were reviewed together at desktop scale. The implementation preserves the reference's major composition: rounded glass top bar, left navigation rail, large library content surface, search/create row, published-guide table, draft table, domain color coding, and restrained blue accent. The rejected mountain/photo treatment is intentionally absent; the implementation uses layered blue, violet, and teal radial gradients over a near-black base so the background remains “五彩斑斓的黑色” without a raster asset.
+当前只有 GUIDE 是已实现领域资源。资料源、Agent、Ontology 和会话与产物页显示“尚未配置/建立/产生”，并明确声明不连接运行时、不同步资料、不生成模拟数据。
 
-The implementation currently renders the real seeded data (2 published guides and 4 drafts) rather than hard-coding the reference's longer fixture list. This changes density but keeps the same table rhythm and real actions.
+## 视觉基线与证据
 
-## Focused region comparison evidence
+- 验收视口：`1440 × 1024` CSS px（desktop-only）。
+- 深色证据：`.playwright-cli/task-9-shared-dark-1440x1024.png`。
+- 浅色证据：`.playwright-cli/task-9-shared-light-1440x1024.png`。
+- 宽度检查：深色和浅色下 `body.scrollWidth = window.innerWidth = 1440`，无水平阻断性溢出。
 
-- Top bar: brand, hint copy, search/notification/help affordances, avatar, account menu, border, blur, and spacing were checked against the source.
-- Sidebar: active 指南库 state, primary navigation, 工作区 domain color chips, 设置, and appearance switch were checked.
-- Content: heading scale, search field with filter control, blue 新建指南 button, column labels, row icons, domain chips, owner avatars, dates, and overflow actions were checked.
-- Responsive follow-up: at `390 × 844`, the primary navigation becomes a horizontal strip and the table becomes stacked cards; `bodyScrollWidth` remained `390`, so no horizontal overflow hides controls.
+深浅色都保留现有的 CSS 彩色渐变、毛玻璃顶栏/侧栏、蓝色交互强调和工作区领域色。通用资源表的标题、工作区、类型、更新时间和操作层级在两种外观下均可读。
 
-## Required fidelity surfaces
+## 真实交互验收
 
-- Fonts and typography: system UI stack, compact metadata sizing, clear heading hierarchy, and muted secondary copy maintain the source's Apple-like optical hierarchy.
-- Spacing and layout rhythm: 276px navigation rail, 80px top bar row, rounded content panel, consistent 8/12/16px controls, table row separators, and mobile breakpoints are aligned to the reference proportions.
-- Colors and visual tokens: near-black base with blue/violet/teal gradients, translucent panels, cool white text, blue focus ring, and distinct domain colors are tokenized in `styles.css`; light mode has a separate readable palette.
-- Image quality and asset fidelity: no raster background, generated mountain, or handcrafted replacement image is shipped. The brand and UI marks use the existing Phosphor icon library, preserving vector sharpness while avoiding a new image dependency.
-- Copy and content: reference copy such as 指南库、找到答案，再沿着流程走一遍、搜索指南、已发布指南、草稿、工作区 and 新建指南 is retained; live guide titles and summaries come from the API.
+Playwright CLI 使用独立的本地 QA 数据库和真实 Web/API 完成以下操作：
 
-## Findings
+1. 作者从 `/workspaces/workspace-materials` 查看物料管理概览和真实活动。
+2. 作者在物料管理工作区内新建指南，进入编辑器，再返回工作区限定的指南库；新草稿显示归属“物料管理”。
+3. 收藏新草稿后在 `/favorites` 可见，刷新后仍保留。
+4. 打开该草稿后 `/recent` 显示一条统一资源记录，没有重复行。
+5. 将草稿移入 `/trash` 后，收藏/最近的默认列表不再显示；恢复后回收站归零，工作区活动显示回收与恢复事件。
+6. 编辑者账号的 `/shared` 只显示显式协作的“ERP 销售订单创建”，可学习/收藏，不显示资源生命周期菜单。
+7. 实际打开 Source、Agent、Ontology 和 Artifact 四个预留页，均只有解释性空状态和返回链接，没有聊天框、同步按钮或假结果。
+8. 在编辑者共享列表切换深色/浅色并采集最终截图；浏览器 console 统计为 `Errors: 0, Warnings: 0`。
 
-No actionable P0, P1, or P2 findings remain.
+## 权限与边界 QA
 
-- [P3] Fixture density differs from the source. Location: published/draft tables. Evidence: source shows a longer sample list; the implementation renders the current API seed data. Impact: visual density is lighter in this environment, but hard-coding extra rows would misrepresent live data. Follow-up: add richer seed fixtures only if screenshot-density regression tests become a requirement.
-- [P3] The source's custom GuideAnything mark is represented by the closest available Phosphor cube mark. Location: top-bar brand. Impact: small brand-shape difference; no local source asset was available. Follow-up: replace with the official vector asset when one is provided.
+- 工作区概览按成员权限决定是否显示“新建指南”。
+- 个人视图操作使用 API 返回的 `permission`/`canManageLifecycle`，实际授权仍由服务端执行。
+- 从工作区创建时保留 `workspaceId`；从编辑器/学习页返回时只接受站内绝对路径。
+- 共享、收藏、最近和回收均使用真实持久化数据，而不是前端 fixture。
+- Adapter 仅是共享契约；本轮 QA 没有启动 Codex CLI、执行命令、同步资料或构建 Ontology。
 
-## Comparison history
+## 环境说明与最终结果
 
-1. Initial exploration used a decorative photo background. The user explicitly rejected that direction, so the image asset and its references were removed.
-2. Revised pass uses CSS-only chromatic gradients and glass surfaces. Desktop, mobile, filter, search, appearance toggle, account menu, and logout affordances were rechecked; no P0/P1/P2 issue remained.
-
-## Primary interactions tested
-
-- Author demo session restored at `/`.
-- 聚焦搜索 focuses the search box.
-- 搜索指南 returns live API results and empty-state feedback.
-- 筛选指南 opens a popover and filters by tag/title.
-- 新建指南 calls the create API and routes to the editor.
-- Published/draft title buttons route to learning/editing flows.
-- 浅色/深色 appearance toggle changes the full workspace palette.
-- Avatar/caret opens the account menu; 退出登录 calls the existing logout callback.
-
-## Console and verification notes
-
-- Browser console checked on the library route: no errors.
-- Targeted web tests: 20 passed.
-- Web and API typechecks: passed.
-- Full repository test/build verification is recorded in the handoff command output.
-
-## Implementation Checklist
-
-- [x] Replace image background with CSS-only dark chromatic gradient.
-- [x] Match desktop library composition and glass surfaces.
-- [x] Preserve real search, filter, create, learn, edit, appearance, and logout actions.
-- [x] Add responsive mobile layout without horizontal overflow.
-- [x] Verify dark and light appearance states.
-
-## Follow-up Polish
-
-- Supply the official GuideAnything brand vector if exact logo fidelity is required.
-- Expand development seed data if the reference's longer table density is needed for visual regression snapshots.
+默认 `3001` 在验收时属于另一个 FactoryWeb 进程；本次没有终止或复用它，而是将 GuideAnything API 隔离在 `3002`，Web 仍使用 `5173`。QA 结束后两个 GuideAnything 临时进程均已停止，临时 Vite proxy 调整已撤回。
 
 final result: passed
