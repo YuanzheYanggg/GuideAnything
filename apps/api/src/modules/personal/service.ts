@@ -1,8 +1,10 @@
+import type { UserRole, WorkspaceItemSummary } from '@guideanything/contracts';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { httpError } from '../../lib/http-error';
 import {
   getWorkspaceItemForUser,
+  getItemSummary,
   listFavorites,
   listRecentViews,
   listSharedItems,
@@ -20,27 +22,34 @@ import {
 export class PersonalService {
   constructor(private readonly database: DatabaseSync) {}
 
-  listFavorites(userId: string) {
-    return listFavorites(this.database, userId);
+  listFavorites(user: PersonalUser) {
+    return listFavorites(this.database, user.id, user.role);
   }
 
-  setFavorite(userId: string, itemId: string): void {
-    this.requireItemAccess(userId, itemId);
-    setFavorite(this.database, userId, itemId);
+  setFavorite(user: PersonalUser, itemId: string): WorkspaceItemSummary {
+    this.requireItemAccess(user, itemId);
+    setFavorite(this.database, user.id, itemId);
+    return this.requireSummary(user.id, itemId);
   }
 
-  removeFavorite(userId: string, itemId: string): void {
-    this.requireItemAccess(userId, itemId);
-    removeFavorite(this.database, userId, itemId);
+  removeFavorite(user: PersonalUser, itemId: string): WorkspaceItemSummary {
+    this.requireItemAccess(user, itemId);
+    removeFavorite(this.database, user.id, itemId);
+    return this.requireSummary(user.id, itemId);
   }
 
-  recordRecentView(userId: string, itemId: string, context: Record<string, unknown>): void {
-    this.requireItemAccess(userId, itemId);
-    recordRecentView(this.database, userId, itemId, context);
+  recordRecentView(
+    user: PersonalUser,
+    itemId: string,
+    context: Record<string, unknown>,
+  ): WorkspaceItemSummary {
+    this.requireItemAccess(user, itemId);
+    recordRecentView(this.database, user.id, itemId, context);
+    return this.requireSummary(user.id, itemId);
   }
 
-  listRecentViews(userId: string) {
-    return listRecentViews(this.database, userId);
+  listRecentViews(user: PersonalUser) {
+    return listRecentViews(this.database, user.id, user.role);
   }
 
   listSharedItems(userId: string) {
@@ -51,16 +60,16 @@ export class PersonalService {
     return listTrash(this.database, userId);
   }
 
-  trashItem(userId: string, itemId: string): void {
+  trashItem(userId: string, itemId: string): WorkspaceItemSummary {
     const item = this.requireLifecycleAccess(userId, itemId);
-    if (item.deletedAt) throw httpError(409, 'ITEM_ALREADY_TRASHED', '项目已在回收站中');
-    trashItem(this.database, item, userId);
+    if (!item.deletedAt) trashItem(this.database, item, userId);
+    return this.requireSummary(userId, itemId);
   }
 
-  restoreItem(userId: string, itemId: string): void {
+  restoreItem(userId: string, itemId: string): WorkspaceItemSummary {
     const item = this.requireLifecycleAccess(userId, itemId);
-    if (!item.deletedAt) throw httpError(409, 'ITEM_NOT_TRASHED', '项目不在回收站中');
-    restoreItem(this.database, item, userId);
+    if (item.deletedAt) restoreItem(this.database, item, userId);
+    return this.requireSummary(userId, itemId);
   }
 
   permanentlyRemoveItem(userId: string, itemId: string): void {
@@ -69,8 +78,8 @@ export class PersonalService {
     permanentlyRemoveItem(this.database, item);
   }
 
-  private requireItemAccess(userId: string, itemId: string): void {
-    if (!requesterCanAccessItem(this.database, userId, itemId)) {
+  private requireItemAccess(user: PersonalUser, itemId: string): void {
+    if (!requesterCanAccessItem(this.database, user.id, user.role, itemId)) {
       throw httpError(404, 'ITEM_NOT_FOUND', '项目不存在或无权访问');
     }
   }
@@ -86,4 +95,15 @@ export class PersonalService {
     }
     return item;
   }
+
+  private requireSummary(userId: string, itemId: string): WorkspaceItemSummary {
+    const item = getItemSummary(this.database, userId, itemId);
+    if (!item) throw httpError(404, 'ITEM_NOT_FOUND', '项目不存在');
+    return item;
+  }
+}
+
+interface PersonalUser {
+  id: string;
+  role: UserRole;
 }

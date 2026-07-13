@@ -14,33 +14,30 @@ export async function registerPersonalRoutes(app: FastifyInstance, database: Dat
   const auth = { preHandler: app.authenticateRequest };
 
   app.get('/api/me/favorites', auth, async (request) => ({
-    items: service.listFavorites(request.authUser!.id),
+    items: service.listFavorites(request.authUser!),
   }));
 
   app.put('/api/me/favorites/:itemId', auth, async (request, reply) => {
     const params = parseOrReply(ItemParamsSchema, request.params, reply);
     if (!params) return;
-    service.setFavorite(request.authUser!.id, params.itemId);
-    return { favorite: true };
+    return { item: service.setFavorite(request.authUser!, params.itemId) };
   });
 
   app.delete('/api/me/favorites/:itemId', auth, async (request, reply) => {
     const params = parseOrReply(ItemParamsSchema, request.params, reply);
     if (!params) return;
-    service.removeFavorite(request.authUser!.id, params.itemId);
-    return reply.code(204).send();
+    return { item: service.removeFavorite(request.authUser!, params.itemId) };
   });
 
   app.get('/api/me/recent', auth, async (request) => ({
-    items: service.listRecentViews(request.authUser!.id),
+    items: service.listRecentViews(request.authUser!),
   }));
 
   app.put('/api/me/recent/:itemId', auth, async (request, reply) => {
     const params = parseOrReply(ItemParamsSchema, request.params, reply);
     const input = parseOrReply(RecentContextSchema, request.body ?? {}, reply);
     if (!params || !input) return;
-    service.recordRecentView(request.authUser!.id, params.itemId, input.context);
-    return { recorded: true };
+    return { item: service.recordRecentView(request.authUser!, params.itemId, input.context) };
   });
 
   app.get('/api/me/shared', auth, async (request) => ({
@@ -54,15 +51,13 @@ export async function registerPersonalRoutes(app: FastifyInstance, database: Dat
   app.post('/api/workspace-items/:itemId/trash', auth, async (request, reply) => {
     const params = parseOrReply(ItemParamsSchema, request.params, reply);
     if (!params) return;
-    service.trashItem(request.authUser!.id, params.itemId);
-    return { trashed: true };
+    return { item: service.trashItem(request.authUser!.id, params.itemId) };
   });
 
   app.post('/api/workspace-items/:itemId/restore', auth, async (request, reply) => {
     const params = parseOrReply(ItemParamsSchema, request.params, reply);
     if (!params) return;
-    service.restoreItem(request.authUser!.id, params.itemId);
-    return { restored: true };
+    return { item: service.restoreItem(request.authUser!.id, params.itemId) };
   });
 
   app.delete('/api/workspace-items/:itemId', auth, async (request, reply) => {

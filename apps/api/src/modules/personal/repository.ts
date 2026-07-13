@@ -1,4 +1,9 @@
-import type { WorkspaceItemKind, WorkspaceItemSummary, WorkspacePermission } from '@guideanything/contracts';
+import type {
+  UserRole,
+  WorkspaceItemKind,
+  WorkspaceItemSummary,
+  WorkspacePermission,
+} from '@guideanything/contracts';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { recordActivity } from '../workspaces/repository';
@@ -41,8 +46,8 @@ const ITEM_SUMMARY_SELECT = `
          guide.published_version_id, recent.last_viewed_at, recent.view_count,
          CASE WHEN favorite.item_id IS NULL THEN 0 ELSE 1 END AS favorite,
          CASE
-           WHEN member.permission IS NOT NULL THEN member.permission
-           WHEN guide.owner_id = ? OR collaborator.user_id IS NOT NULL OR item.created_by = ? THEN 'EDIT'
+           WHEN member.permission = 'OWNER' THEN 'OWNER'
+           WHEN guide.owner_id = ? OR collaborator.user_id IS NOT NULL OR member.permission = 'EDIT' THEN 'EDIT'
            ELSE 'VIEW'
          END AS permission
   FROM workspace_items item
@@ -61,7 +66,7 @@ const ITEM_SUMMARY_SELECT = `
   LEFT JOIN users deleted_by ON deleted_by.id = item.deleted_by
 `;
 
-const requesterArgs = (userId: string) => [userId, userId, userId, userId, userId, userId];
+const requesterArgs = (userId: string) => [userId, userId, userId, userId, userId];
 
 const REQUESTER_CAN_ACCESS = `(
   member.user_id IS NOT NULL
@@ -69,13 +74,22 @@ const REQUESTER_CAN_ACCESS = `(
   OR collaborator.user_id IS NOT NULL
 )`;
 
-export function listFavorites(database: DatabaseSync, userId: string): WorkspaceItemSummary[] {
+export function listFavorites(
+  database: DatabaseSync,
+  userId: string,
+  userRole: UserRole,
+): WorkspaceItemSummary[] {
   const rows = database.prepare(
     `${ITEM_SUMMARY_SELECT}
      WHERE item.deleted_at IS NULL AND favorite.item_id IS NOT NULL
        AND ${REQUESTER_CAN_ACCESS}
+       AND (
+         item.kind != 'GUIDE'
+         OR (guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL)
+         OR ? != 'LEARNER'
+       )
      ORDER BY favorite.created_at DESC`,
-  ).all(...requesterArgs(userId), userId) as unknown as ItemSummaryRow[];
+  ).all(...requesterArgs(userId), userId, userRole) as unknown as ItemSummaryRow[];
   return rows.map(mapItemSummary);
 }
 
@@ -108,13 +122,22 @@ export function recordRecentView(
   ).run(userId, itemId, now, JSON.stringify(context));
 }
 
-export function listRecentViews(database: DatabaseSync, userId: string): WorkspaceItemSummary[] {
+export function listRecentViews(
+  database: DatabaseSync,
+  userId: string,
+  userRole: UserRole,
+): WorkspaceItemSummary[] {
   const rows = database.prepare(
     `${ITEM_SUMMARY_SELECT}
      WHERE item.deleted_at IS NULL AND recent.item_id IS NOT NULL
        AND ${REQUESTER_CAN_ACCESS}
+       AND (
+         item.kind != 'GUIDE'
+         OR (guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL)
+         OR ? != 'LEARNER'
+       )
      ORDER BY recent.last_viewed_at DESC`,
-  ).all(...requesterArgs(userId), userId) as unknown as ItemSummaryRow[];
+  ).all(...requesterArgs(userId), userId, userRole) as unknown as ItemSummaryRow[];
   return rows.map(mapItemSummary);
 }
 
@@ -151,8 +174,11 @@ export function getWorkspaceItemForUser(
      JOIN workspaces workspace ON workspace.id = item.workspace_id AND workspace.status = 'ACTIVE'
      LEFT JOIN workspace_members member ON member.workspace_id = workspace.id AND member.user_id = ?
      LEFT JOIN guides guide ON item.kind = 'GUIDE' AND guide.id = item.entity_id
-     WHERE item.id = ?`,
-  ).get(userId, itemId) as unknown as {
+     LEFT JOIN guide_collaborators collaborator
+       ON collaborator.guide_id = guide.id AND collaborator.user_id = ?
+     WHERE item.id = ?
+       AND (member.user_id IS NOT NULL OR guide.owner_id = ? OR collaborator.user_id IS NOT NULL)`,
+  ).get(userId, userId, itemId, userId) as unknown as {
     id: string;
     workspace_id: string;
     kind: WorkspaceItemKind;
@@ -166,7 +192,12 @@ export function getWorkspaceItemForUser(
   return row ? mapWorkspaceItem(row) : null;
 }
 
-export function requesterCanAccessItem(database: DatabaseSync, userId: string, itemId: string): boolean {
+export function requesterCanAccessItem(
+  database: DatabaseSync,
+  userId: string,
+  userRole: UserRole,
+  itemId: string,
+): boolean {
   const row = database.prepare(
     `SELECT 1
      FROM workspace_items item
@@ -177,9 +208,26 @@ export function requesterCanAccessItem(database: DatabaseSync, userId: string, i
      LEFT JOIN guide_collaborators collaborator
        ON collaborator.guide_id = guide.id AND collaborator.user_id = ?
      WHERE item.id = ? AND item.deleted_at IS NULL
-       AND (member.user_id IS NOT NULL OR guide.owner_id = ? OR collaborator.user_id IS NOT NULL)`,
-  ).get(userId, userId, itemId, userId);
+       AND (member.user_id IS NOT NULL OR guide.owner_id = ? OR collaborator.user_id IS NOT NULL)
+       AND (
+         item.kind != 'GUIDE'
+         OR (guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL)
+         OR ? != 'LEARNER'
+       )`,
+  ).get(userId, userId, itemId, userId, userRole);
   return Boolean(row);
+}
+
+export function getItemSummary(
+  database: DatabaseSync,
+  userId: string,
+  itemId: string,
+): WorkspaceItemSummary | null {
+  const row = database.prepare(
+    `${ITEM_SUMMARY_SELECT}
+     WHERE item.id = ?`,
+  ).get(...requesterArgs(userId), itemId) as unknown as ItemSummaryRow | undefined;
+  return row ? mapItemSummary(row) : null;
 }
 
 export function trashItem(database: DatabaseSync, item: WorkspaceItemRecord, actorId: string): void {
