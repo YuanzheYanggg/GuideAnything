@@ -159,4 +159,29 @@ describe('workspace API', () => {
     expect(removed.statusCode).toBe(204);
     await context.close();
   });
+
+  it('rejects owner demotion and preserves OWNER permission', async () => {
+    const context = await createTestContext();
+    const workspace = seedTestWorkspace(context.database, context.userIds.author, {
+      id: 'workspace-owner-guard',
+      slug: 'owner-guard',
+      name: '所有者保护',
+    });
+
+    for (const permission of ['EDIT', 'VIEW'] as const) {
+      const response = await context.app.inject({
+        method: 'PUT',
+        url: `/api/workspaces/${workspace.id}/members/${context.userIds.author}`,
+        headers: authorization(context.tokens.author),
+        payload: { permission },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().code).toBe('OWNER_CANNOT_BE_CHANGED');
+    }
+
+    expect(context.database.prepare(
+      `SELECT permission FROM workspace_members WHERE workspace_id = ? AND user_id = ?`,
+    ).get(workspace.id, context.userIds.author)).toEqual({ permission: 'OWNER' });
+    await context.close();
+  });
 });

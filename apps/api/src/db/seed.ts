@@ -82,21 +82,22 @@ function seedWorkspaces(database: DatabaseSync): void {
 
 function backfillGuideWorkspaceItems(database: DatabaseSync): void {
   const guides = database.prepare(
-    `SELECT id, owner_id, title, summary, created_at, updated_at
-     FROM guides
-     WHERE status != 'ARCHIVED'`,
+    `SELECT id, owner_id, title, summary, status, created_at, updated_at
+     FROM guides`,
   ).all() as unknown as Array<{
     id: string;
     owner_id: string;
     title: string;
     summary: string;
+    status: string;
     created_at: string;
     updated_at: string;
   }>;
   const insert = database.prepare(
     `INSERT INTO workspace_items (
-      id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
-    ) VALUES (?, ?, 'GUIDE', ?, ?, ?, ?, ?, ?)
+      id, workspace_id, kind, entity_id, title, summary, created_by,
+      deleted_at, deleted_by, created_at, updated_at
+    ) VALUES (?, ?, 'GUIDE', ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (kind, entity_id) DO UPDATE SET
       title = excluded.title,
       summary = excluded.summary`,
@@ -114,6 +115,8 @@ function backfillGuideWorkspaceItems(database: DatabaseSync): void {
       guide.title,
       guide.summary,
       guide.owner_id,
+      guide.status === 'ARCHIVED' ? guide.updated_at : null,
+      guide.status === 'ARCHIVED' ? guide.owner_id : null,
       guide.created_at,
       guide.updated_at,
     );

@@ -20,6 +20,7 @@ const AddMemberSchema = z.object({
   userId: z.string().min(1).max(200),
   permission: z.enum(['EDIT', 'VIEW']),
 });
+const UpdateMemberSchema = AddMemberSchema.pick({ permission: true });
 
 export async function registerWorkspaceRoutes(app: FastifyInstance, database: DatabaseSync): Promise<void> {
   const service = new WorkspaceService(database);
@@ -80,6 +81,15 @@ export async function registerWorkspaceRoutes(app: FastifyInstance, database: Da
     return reply.code(201).send({
       member: service.addMember(request.authUser!.id, params.id, input.userId, input.permission),
     });
+  });
+
+  app.put('/api/workspaces/:id/members/:userId', { preHandler: app.authenticateRequest }, async (request, reply) => {
+    const params = parseOrReply(MemberParamsSchema, request.params, reply);
+    const input = parseOrReply(UpdateMemberSchema, request.body, reply);
+    if (!params || !input) return;
+    return {
+      member: service.addMember(request.authUser!.id, params.id, params.userId, input.permission),
+    };
   });
 
   app.delete('/api/workspaces/:id/members/:userId', { preHandler: app.authenticateRequest }, async (request, reply) => {

@@ -56,4 +56,48 @@ describe('demo seed', () => {
     expect(database.prepare("SELECT COUNT(*) AS count FROM guide_search WHERE guide_search MATCH '\"销售订单\"*'").get())
       .toEqual({ count: 1 });
   });
+
+  it('backfills an archived guide as a deleted workspace identity without changing IDs', async () => {
+    database = createDatabase(':memory:');
+    migrateDatabase(database);
+    await seedDatabase(database);
+    database.exec(`
+      INSERT INTO guides (
+        id, owner_id, title, summary, tags_json, status, visibility, revision,
+        draft_document, published_version_id, created_at, updated_at
+      )
+      SELECT 'archived-guide', owner_id, '归档指南', summary, tags_json, 'ARCHIVED',
+             visibility, revision, draft_document, NULL, created_at, updated_at
+      FROM guides WHERE id = 'demo-material-check';
+
+      INSERT INTO guide_versions (
+        id, guide_id, version, title, summary, tags_json, document_json,
+        search_text, published_by, published_at
+      )
+      SELECT 'archived-version', 'archived-guide', 1, '归档指南', summary, tags_json,
+             document_json, search_text, published_by, published_at
+      FROM guide_versions WHERE guide_id = 'demo-material-check';
+
+      UPDATE guides SET published_version_id = 'archived-version' WHERE id = 'archived-guide';
+    `);
+    const guideIds = database.prepare('SELECT id FROM guides ORDER BY id').all();
+    const versionIds = database.prepare('SELECT id FROM guide_versions ORDER BY id').all();
+
+    await seedDatabase(database);
+
+    expect(database.prepare('SELECT id FROM guides ORDER BY id').all()).toEqual(guideIds);
+    expect(database.prepare('SELECT id FROM guide_versions ORDER BY id').all()).toEqual(versionIds);
+    expect(database.prepare(
+      `SELECT entity_id, workspace_id, deleted_at, deleted_by
+       FROM workspace_items
+       WHERE kind = 'GUIDE' AND entity_id = 'archived-guide'`,
+    ).all()).toEqual([
+      {
+        entity_id: 'archived-guide',
+        workspace_id: 'workspace-general',
+        deleted_at: expect.any(String),
+        deleted_by: 'demo-author',
+      },
+    ]);
+  });
 });

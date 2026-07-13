@@ -64,6 +64,9 @@ export class WorkspaceService {
     permission: Exclude<WorkspacePermission, 'OWNER'>,
   ) {
     this.requireOwner(actorId, workspaceId);
+    if (getWorkspacePermission(this.database, workspaceId, userId) === 'OWNER') {
+      throw httpError(400, 'OWNER_CANNOT_BE_CHANGED', '不能更改工作区所有者权限');
+    }
     const user = this.database.prepare('SELECT id FROM users WHERE id = ?').get(userId);
     if (!user) throw httpError(400, 'USER_NOT_FOUND', '用户不存在');
     const member = addWorkspaceMember(this.database, workspaceId, userId, permission);
