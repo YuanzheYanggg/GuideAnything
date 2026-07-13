@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
 import {
   Archive,
   ArrowCounterClockwise,
@@ -48,8 +48,22 @@ export function ResourceTable({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const focusOriginRef = useRef<HTMLElement | null>(null);
 
-  const requestConfirmation = (action: ConfirmAction) => {
+  const restoreOriginFocus = () => {
+    const origin = focusOriginRef.current;
+    focusOriginRef.current = null;
+    if (origin?.isConnected) origin.focus();
+  };
+
+  const closeDialog = () => {
+    if (pendingId) return;
+    setConfirmAction(null);
+    restoreOriginFocus();
+  };
+
+  const requestConfirmation = (action: ConfirmAction, origin: HTMLElement | null) => {
+    focusOriginRef.current = origin;
     setOpenMenuId(null);
     setConfirmAction(action);
   };
@@ -61,37 +75,43 @@ export function ResourceTable({
       if (confirmAction.type === 'trash') await onTrash(confirmAction.item);
       else await onPermanentRemove(confirmAction.item);
       setConfirmAction(null);
+      restoreOriginFocus();
     } catch {
       // The page owns the visible server error and keeps the item in local state.
       setConfirmAction(null);
+      restoreOriginFocus();
     } finally {
       setPendingId(null);
     }
   };
 
   return <>
-    <div className="resource-table" role="list" aria-label="资源列表">
-      <div className="resource-table-head" aria-hidden="true">
-        <span>资源</span><span>工作区</span><span>类型</span><span>更新时间</span><span>操作</span>
+    <div className="resource-table" role="table" aria-label="资源列表">
+      <div role="rowgroup">
+        <div className="resource-table-head" role="row">
+          <span role="columnheader">资源</span><span role="columnheader">工作区</span><span role="columnheader">类型</span><span role="columnheader">更新时间</span><span role="columnheader">操作</span>
+        </div>
       </div>
-      {items.map((item) => <ResourceRow
-        key={item.id}
-        item={item}
-        mode={mode}
-        menuOpen={openMenuId === item.id}
-        pending={pendingId === item.id}
-        onToggleMenu={() => setOpenMenuId((current) => current === item.id ? null : item.id)}
-        onCloseMenu={() => setOpenMenuId(null)}
-        onOpen={onOpen}
-        onFavorite={onFavorite}
-        onRestore={onRestore}
-        onConfirm={requestConfirmation}
-      />)}
+      <div role="rowgroup">
+        {items.map((item) => <ResourceRow
+          key={item.id}
+          item={item}
+          mode={mode}
+          menuOpen={openMenuId === item.id}
+          pending={pendingId === item.id}
+          onToggleMenu={() => setOpenMenuId((current) => current === item.id ? null : item.id)}
+          onCloseMenu={() => setOpenMenuId(null)}
+          onOpen={onOpen}
+          onFavorite={onFavorite}
+          onRestore={onRestore}
+          onConfirm={requestConfirmation}
+        />)}
+      </div>
     </div>
     {confirmAction ? <ConfirmDialog
       action={confirmAction}
       pending={pendingId === confirmAction.item.id}
-      onCancel={() => setConfirmAction(null)}
+      onCancel={closeDialog}
       onConfirm={confirm}
     /> : null}
   </>;
@@ -118,12 +138,13 @@ function ResourceRow({
   onOpen: ResourceTableProps['onOpen'];
   onFavorite: ResourceTableProps['onFavorite'];
   onRestore: ResourceTableProps['onRestore'];
-  onConfirm: (action: ConfirmAction) => void;
+  onConfirm: (action: ConfirmAction, origin: HTMLElement | null) => void;
 }) {
   const meta = kindMeta[item.kind];
   const KindIcon = meta.icon;
   const openLabel = resourceOpenLabel(item);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const menuGroupRef = useRef<HTMLDivElement>(null);
   const [directPending, setDirectPending] = useState(false);
   const busy = pending || directPending;
   const runDirect = async (operation: () => Promise<void>) => {
@@ -138,29 +159,41 @@ function ResourceRow({
       menuButtonRef.current?.focus();
     }
   };
+  const actionMenuBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) onCloseMenu();
+  };
 
-  return <article className="resource-row" role="listitem">
-    <div className="resource-identity">
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!menuGroupRef.current?.contains(event.target as Node)) onCloseMenu();
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
+  }, [menuOpen, onCloseMenu]);
+
+  return <article className="resource-row" role="row">
+    <div className="resource-identity" role="cell">
       <span className={`resource-kind resource-kind-${item.kind.toLowerCase()}`} title={meta.label}><KindIcon size={20} /></span>
       <div>
         {openLabel ? <button className="resource-title" type="button" onClick={() => onOpen(item)}>{item.title}</button> : <strong className="resource-title-static">{item.title}</strong>}
         <span>{item.summary || '暂无摘要'}</span>
       </div>
     </div>
-    <span className="resource-workspace">{item.workspaceName}</span>
-    <span className="resource-type">{meta.label}</span>
-    <time dateTime={item.updatedAt}>{formatDate(item.updatedAt)}</time>
-    <div className="resource-actions">
+    <span className="resource-workspace" role="cell">{item.workspaceName}</span>
+    <span className="resource-type" role="cell">{meta.label}</span>
+    <time role="cell" dateTime={item.updatedAt}>{formatDate(item.updatedAt)}</time>
+    <div className="resource-actions" role="cell">
       {openLabel ? <button className="resource-action-button" type="button" onClick={() => onOpen(item)}>{openLabel} {item.title}</button> : null}
       {mode === 'trash'
         ? <button className="resource-icon-action" type="button" disabled={busy} aria-label={`恢复 ${item.title}`} onClick={() => { void runDirect(() => onRestore(item)); }}><ArrowCounterClockwise size={18} /></button>
         : <button className={`resource-icon-action${item.favorite ? ' is-active' : ''}`} type="button" disabled={busy} aria-label={`${item.favorite ? '取消收藏' : '收藏'} ${item.title}`} onClick={() => { void runDirect(() => onFavorite(item, !item.favorite)); }}><Star size={18} weight={item.favorite ? 'fill' : 'regular'} /></button>}
-      <div className="action-menu" onKeyDown={actionMenuKeyDown}>
+      <div ref={menuGroupRef} className="action-menu" onKeyDown={actionMenuKeyDown} onBlur={actionMenuBlur}>
         <button ref={menuButtonRef} className="resource-icon-action" type="button" disabled={busy} aria-label={`更多操作 ${item.title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={onToggleMenu}><DotsThree size={20} weight="bold" /></button>
         {menuOpen ? <div className="action-menu-popover" role="menu">
           {mode === 'trash'
-            ? <button autoFocus type="button" role="menuitem" onClick={() => onConfirm({ type: 'remove', item })}>永久移除</button>
-            : <button autoFocus type="button" role="menuitem" onClick={() => onConfirm({ type: 'trash', item })}><Trash size={16} />移到回收站</button>}
+            ? <button autoFocus type="button" role="menuitem" onClick={() => onConfirm({ type: 'remove', item }, menuButtonRef.current)}>永久移除</button>
+            : <button autoFocus type="button" role="menuitem" onClick={() => onConfirm({ type: 'trash', item }, menuButtonRef.current)}><Trash size={16} />移到回收站</button>}
         </div> : null}
       </div>
     </div>
@@ -174,18 +207,44 @@ function ConfirmDialog({ action, pending, onCancel, onConfirm }: {
   onConfirm: () => Promise<void>;
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
   const permanent = action.type === 'remove';
   const title = permanent ? `永久移除${action.item.title}？` : `将${action.item.title}移到回收站？`;
 
   useEffect(() => { cancelRef.current?.focus(); }, []);
+  useEffect(() => { if (pending) dialogRef.current?.focus(); }, [pending]);
 
-  return <div className="confirm-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape' && !pending) {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    if (pending) {
+      event.preventDefault();
+      dialogRef.current?.focus();
+      return;
+    }
+    if (event.shiftKey && document.activeElement === cancelRef.current) {
+      event.preventDefault();
+      confirmRef.current?.focus();
+    } else if (!event.shiftKey && document.activeElement === confirmRef.current) {
+      event.preventDefault();
+      cancelRef.current?.focus();
+    }
+  };
+
+  return <div className="confirm-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !pending) onCancel(); }}>
     <section
+      ref={dialogRef}
       className="confirm-dialog"
       role="dialog"
+      tabIndex={-1}
       aria-modal="true"
       aria-labelledby="resource-confirm-title"
-      onKeyDown={(event) => { if (event.key === 'Escape' && !pending) onCancel(); }}
+      onKeyDown={handleKeyDown}
     >
       <span className="confirm-dialog-icon"><Trash size={22} /></span>
       <h2 id="resource-confirm-title">{title}</h2>
@@ -194,7 +253,7 @@ function ConfirmDialog({ action, pending, onCancel, onConfirm }: {
         : '资源会移到回收站，可在回收站中恢复。'}</p>
       <div>
         <button ref={cancelRef} className="secondary-button" type="button" disabled={pending} onClick={onCancel}>取消</button>
-        <button className="primary-button confirm-danger" type="button" disabled={pending} onClick={() => void onConfirm()}>{pending ? '处理中…' : permanent ? '确认永久移除' : '确认移到回收站'}</button>
+        <button ref={confirmRef} className="primary-button confirm-danger" type="button" disabled={pending} onClick={() => void onConfirm()}>{pending ? '处理中…' : permanent ? '确认永久移除' : '确认移到回收站'}</button>
       </div>
     </section>
   </div>;

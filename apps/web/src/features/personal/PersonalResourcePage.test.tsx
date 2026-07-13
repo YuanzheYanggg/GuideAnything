@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -40,6 +40,16 @@ function createPersonalApi(input: {
     restoreItem: vi.fn().mockImplementation(async (id: string) => guideResource({ id })),
     permanentlyRemoveItem: vi.fn().mockResolvedValue(undefined),
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 describe('PersonalResourcePage', () => {
@@ -155,5 +165,142 @@ describe('PersonalResourcePage', () => {
     expect(restore).toBeDisabled();
     finishRestore?.(guideResource({ id: 'item-pending' }));
     await waitFor(() => expect(screen.queryByText('处理中指南')).not.toBeInTheDocument());
+  });
+
+  it('clears favorites immediately when a shared-route load fails', async () => {
+    const sharedLoad = deferred<WorkspaceItemSummary[]>();
+    const api = createPersonalApi({
+      favorites: [guideResource({ id: 'item-old', title: '旧收藏' })],
+    });
+    vi.mocked(api.listShared).mockReturnValueOnce(sharedLoad.promise);
+    const view = render(<PersonalResourcePage kind="favorites" api={api} onOpen={vi.fn()} />);
+    expect(await screen.findByText('旧收藏')).toBeVisible();
+
+    view.rerender(<PersonalResourcePage kind="shared" api={api} onOpen={vi.fn()} />);
+    expect(screen.queryByText('旧收藏')).not.toBeInTheDocument();
+    await act(async () => { sharedLoad.reject(new Error('共享载入失败')); });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('共享载入失败');
+    expect(screen.queryByText('旧收藏')).not.toBeInTheDocument();
+  });
+
+  it('ignores a late mutation success from the previous route generation', async () => {
+    const mutation = deferred<WorkspaceItemSummary>();
+    const sharedItem = guideResource({ id: 'same-item', title: '共享中的同一资源', favorite: true });
+    const api = createPersonalApi({
+      favorites: [guideResource({ id: 'same-item', title: '收藏中的资源', favorite: true })],
+      shared: [sharedItem],
+    });
+    vi.mocked(api.unfavorite).mockReturnValueOnce(mutation.promise);
+    const view = render(<PersonalResourcePage kind="favorites" api={api} onOpen={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: '取消收藏 收藏中的资源' }));
+
+    view.rerender(<PersonalResourcePage kind="shared" api={api} onOpen={vi.fn()} />);
+    expect(await screen.findByText('共享中的同一资源')).toBeVisible();
+    await act(async () => { mutation.resolve(sharedItem); });
+
+    expect(screen.getByText('共享中的同一资源')).toBeVisible();
+  });
+
+  it('ignores a late mutation rejection from the previous route generation', async () => {
+    const mutation = deferred<WorkspaceItemSummary>();
+    const api = createPersonalApi({
+      favorites: [guideResource({ title: '离开前的收藏', favorite: true })],
+      shared: [guideResource({ id: 'shared-new', title: '新共享资源' })],
+    });
+    vi.mocked(api.unfavorite).mockReturnValueOnce(mutation.promise);
+    const view = render(<PersonalResourcePage kind="favorites" api={api} onOpen={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: '取消收藏 离开前的收藏' }));
+
+    view.rerender(<PersonalResourcePage kind="shared" api={api} onOpen={vi.fn()} />);
+    expect(await screen.findByText('新共享资源')).toBeVisible();
+    await act(async () => { mutation.reject(new Error('旧页面操作失败')); });
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText('新共享资源')).toBeVisible();
+  });
+
+  it('traps dialog focus and restores the originating menu trigger on cancel', async () => {
+    const user = userEvent.setup();
+    const api = createPersonalApi({ trash: [guideResource({ title: '焦点资源' })] });
+    render(<PersonalResourcePage kind="trash" api={api} onOpen={vi.fn()} />);
+    const trigger = await screen.findByRole('button', { name: '更多操作 焦点资源' });
+    await user.click(trigger);
+    await user.click(screen.getByRole('menuitem', { name: '永久移除' }));
+
+    const dialog = screen.getByRole('dialog');
+    const cancel = within(dialog).getByRole('button', { name: '取消' });
+    const confirm = within(dialog).getByRole('button', { name: '确认永久移除' });
+    expect(cancel).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(confirm).toHaveFocus();
+    await user.tab();
+    expect(cancel).toHaveFocus();
+    await user.click(cancel);
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole('menuitem', { name: '永久移除' }));
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole('menuitem', { name: '永久移除' }));
+    fireEvent.mouseDown(screen.getByRole('dialog').parentElement!);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('keeps a pending destructive dialog visible and locked until completion', async () => {
+    const user = userEvent.setup();
+    const removal = deferred<void>();
+    const api = createPersonalApi({ trash: [guideResource({ title: '锁定资源' })] });
+    vi.mocked(api.permanentlyRemoveItem).mockReturnValueOnce(removal.promise);
+    render(<PersonalResourcePage kind="trash" api={api} onOpen={vi.fn()} />);
+    await user.click(await screen.findByRole('button', { name: '更多操作 锁定资源' }));
+    await user.click(screen.getByRole('menuitem', { name: '永久移除' }));
+    await user.click(screen.getByRole('button', { name: '确认永久移除' }));
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('button', { name: '处理中…' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled();
+    expect(dialog).toHaveFocus();
+    await user.tab();
+    expect(dialog).toHaveFocus();
+    await user.keyboard('{Escape}');
+    fireEvent.mouseDown(dialog.parentElement!);
+    expect(screen.getByRole('dialog')).toBeVisible();
+
+    await act(async () => { removal.resolve(); });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('closes an action menu on outside pointer and when focus leaves its group', async () => {
+    const user = userEvent.setup();
+    const api = createPersonalApi({ recent: [guideResource({ title: '菜单资源' })] });
+    render(<PersonalResourcePage kind="recent" api={api} onOpen={vi.fn()} />);
+    const trigger = await screen.findByRole('button', { name: '更多操作 菜单资源' });
+
+    await user.click(trigger);
+    await user.click(document.body);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    await user.click(trigger);
+    await user.tab();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('exposes coherent resource table headers and row cells', async () => {
+    const api = createPersonalApi({ recent: [guideResource({ title: '语义资源' })] });
+    render(<PersonalResourcePage kind="recent" api={api} onOpen={vi.fn()} />);
+
+    const table = await screen.findByRole('table', { name: '资源列表' });
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      '资源', '工作区', '类型', '更新时间', '操作',
+    ]);
+    expect(within(table).getAllByRole('row')).toHaveLength(2);
+    expect(within(table).getAllByRole('cell')).toHaveLength(5);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useOutletContext } from 'react-router-dom';
 
 import { ResourceTable } from '../resources/ResourceTable';
@@ -21,14 +21,14 @@ interface PersonalResourcePageProps {
 }
 
 export function PersonalResourcePage({ kind, api: apiProp, onOpen: onOpenProp }: PersonalResourcePageProps) {
-  if (apiProp) return <PersonalResourcePageContent kind={kind} api={apiProp} onOpen={onOpenProp ?? (() => undefined)} />;
+  if (apiProp) return <PersonalResourcePageContent key={kind} kind={kind} api={apiProp} onOpen={onOpenProp ?? (() => undefined)} />;
   return <RoutedPersonalResourcePage kind={kind} />;
 }
 
 function RoutedPersonalResourcePage({ kind }: { kind: PersonalPageKind }) {
   const { personalApi } = useOutletContext<WorkspaceOutletContext>();
   const navigate = useNavigate();
-  return <PersonalResourcePageContent kind={kind} api={personalApi} onOpen={(item) => {
+  return <PersonalResourcePageContent key={kind} kind={kind} api={personalApi} onOpen={(item) => {
     const route = resourceRoute(item);
     if (route) navigate(route);
   }} />;
@@ -42,10 +42,12 @@ function PersonalResourcePageContent({ kind, api, onOpen }: {
   const [items, setItems] = useState<WorkspaceItemSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const generationRef = useRef(0);
   const [title, description, emptyCopy] = pageConfig[kind];
 
   useEffect(() => {
-    let active = true;
+    const generation = ++generationRef.current;
+    setItems([]);
     setLoading(true);
     setError('');
     const loader = {
@@ -55,18 +57,22 @@ function PersonalResourcePageContent({ kind, api, onOpen }: {
       trash: api.listTrash,
     }[kind];
     loader()
-      .then((result) => { if (active) setItems(result); })
-      .catch((reason: unknown) => { if (active) setError(errorMessage(reason, '资源载入失败')); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+      .then((result) => { if (generationRef.current === generation) setItems(result); })
+      .catch((reason: unknown) => { if (generationRef.current === generation) setError(errorMessage(reason, '资源载入失败')); })
+      .finally(() => { if (generationRef.current === generation) setLoading(false); });
+    return () => {
+      if (generationRef.current === generation) generationRef.current += 1;
+    };
   }, [api, kind]);
 
   const mutate = async (item: WorkspaceItemSummary, operation: () => Promise<unknown>, update: () => void) => {
+    const generation = generationRef.current;
     setError('');
     try {
       await operation();
-      update();
+      if (generationRef.current === generation) update();
     } catch (reason) {
+      if (generationRef.current !== generation) return;
       setError(errorMessage(reason, '操作失败'));
       throw reason;
     }
