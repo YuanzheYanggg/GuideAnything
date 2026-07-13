@@ -32,7 +32,7 @@ describe('App routes', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: '收藏夹' })).toBeVisible();
-    expect(screen.getByRole('button', { name: '收藏夹' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: '收藏夹' })).toHaveAttribute('aria-current', 'page');
   });
 
   it('opens a workspace URL and keeps it after reload', async () => {

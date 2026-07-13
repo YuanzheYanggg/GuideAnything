@@ -7,13 +7,17 @@ export function mockAuthenticatedWorkspaceApi(input: {
   workspaces?: WorkspaceSummary[];
   favorites?: WorkspaceItemSummary[];
 }) {
+  const counts = { GUIDE: 0, SOURCE: 0, AGENT: 0, ONTOLOGY: 0, CONVERSATION: 0, ARTIFACT: 0 };
   vi.spyOn(ApiClient.prototype, 'hasToken', 'get').mockReturnValue(true);
   vi.spyOn(ApiClient.prototype, 'me').mockResolvedValue({
     id: 'user-author', displayName: '王作者', email: 'author@guide.local', role: 'AUTHOR',
   });
   vi.spyOn(ApiClient.prototype, 'workspaceApi').mockReturnValue({
     list: vi.fn().mockResolvedValue(input.workspaces ?? []),
-    get: vi.fn(),
+    get: vi.fn(async (id) => ({
+      workspace: (input.workspaces ?? []).find((workspace) => workspace.id === id)!,
+      counts,
+    })),
     listItems: vi.fn().mockResolvedValue([]),
     activity: vi.fn().mockResolvedValue([]),
   });

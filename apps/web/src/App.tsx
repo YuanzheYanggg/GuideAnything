@@ -2,10 +2,8 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   BrowserRouter,
   Navigate,
-  Outlet,
   Route,
   Routes,
-  useLocation,
   useNavigate,
   useParams,
 } from 'react-router-dom';
@@ -14,7 +12,10 @@ import { LoginPage, type LoginCredentials } from './features/auth/LoginPage';
 import type { AuthUser } from './features/auth/types';
 import { LibraryPage } from './features/library/LibraryPage';
 import { AppearanceProvider } from './features/theme/AppearanceToggle';
-import type { PersonalApi, WorkspaceApi, WorkspaceSummary } from './features/workspace/types';
+import { ReservedModulePage } from './features/workspace/ReservedModulePage';
+import { WorkspaceDirectoryPage } from './features/workspace/WorkspaceDirectoryPage';
+import { WorkspaceOverviewPage } from './features/workspace/WorkspaceOverviewPage';
+import { WorkspaceShell } from './features/workspace/WorkspaceShell';
 import { apiClient } from './lib/api';
 
 const GuideEditor = lazy(() => import('./features/editor/GuideEditor').then((module) => ({ default: module.GuideEditor })));
@@ -50,16 +51,16 @@ function AppContent() {
   if (!user) return <LoginPage onLogin={login} />;
 
   return <Routes>
-    <Route element={<AuthenticatedWorkspaceLayout user={user} workspaceApi={workspaceApi} personalApi={personalApi} onLogout={logout} />}>
+    <Route element={<WorkspaceShell user={user} workspaceApi={workspaceApi} personalApi={personalApi} onLogout={logout} />}>
       <Route path="/" element={<Navigate to="/library" replace />} />
-      <Route path="/library" element={<LibraryRoute user={user} onLogout={logout} />} />
+      <Route path="/library" element={<LibraryRoute user={user} />} />
       <Route path="/favorites" element={<PersonalResourcePage kind="favorites" />} />
       <Route path="/recent" element={<PersonalResourcePage kind="recent" />} />
       <Route path="/shared" element={<PersonalResourcePage kind="shared" />} />
       <Route path="/trash" element={<PersonalResourcePage kind="trash" />} />
-      <Route path="/workspaces" element={<WorkspaceDirectoryPage />} />
+      <Route path="/workspaces" element={<WorkspaceDirectoryPage workspaceApi={workspaceApi} />} />
       <Route path="/workspaces/:workspaceId" element={<WorkspaceOverviewPage workspaceApi={workspaceApi} />} />
-      <Route path="/workspaces/:workspaceId/guides" element={<LibraryRoute user={user} onLogout={logout} />} />
+      <Route path="/workspaces/:workspaceId/guides" element={<LibraryRoute user={user} />} />
       <Route path="/workspaces/:workspaceId/:module" element={<ReservedModulePage />} />
     </Route>
     <Route path="/guides/:guideId/edit" element={<GuideEditorRoute />} />
@@ -67,14 +68,13 @@ function AppContent() {
     <Route path="*" element={<Navigate to="/library" replace />} />
   </Routes>;
 
-  function LibraryRoute({ user: routeUser, onLogout }: { user: AuthUser; onLogout: () => void }) {
+  function LibraryRoute({ user: routeUser }: { user: AuthUser }) {
     const navigate = useNavigate();
     return <LibraryPage
       user={routeUser}
       api={libraryApi}
       onEdit={(guideId) => navigate(`/guides/${guideId}/edit`)}
       onLearn={(versionId) => navigate(`/versions/${versionId}/learn`)}
-      onLogout={onLogout}
     />;
   }
 
@@ -97,44 +97,6 @@ function AppContent() {
   }
 }
 
-function AuthenticatedWorkspaceLayout({
-  user,
-  workspaceApi,
-  personalApi,
-  onLogout,
-}: {
-  user: AuthUser;
-  workspaceApi: WorkspaceApi;
-  personalApi: PersonalApi;
-  onLogout: () => void;
-}) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  void user;
-  void workspaceApi;
-  void personalApi;
-  const destinations = [
-    ['/library', '指南库'],
-    ['/favorites', '收藏夹'],
-    ['/recent', '最近查看'],
-    ['/shared', '与我共享'],
-    ['/trash', '回收站'],
-    ['/workspaces', '工作区'],
-  ] as const;
-  return <>
-    <nav aria-label="工作台路由">
-      {destinations.map(([path, label]) => <button
-        key={path}
-        type="button"
-        aria-current={location.pathname === path ? 'page' : undefined}
-        onClick={() => navigate(path)}
-      >{label}</button>)}
-      <button type="button" onClick={onLogout}>退出登录</button>
-    </nav>
-    <Outlet />
-  </>;
-}
-
 const personalTitles = {
   favorites: '收藏夹',
   recent: '最近查看',
@@ -144,30 +106,6 @@ const personalTitles = {
 
 function PersonalResourcePage({ kind }: { kind: keyof typeof personalTitles }) {
   return <main><h1>{personalTitles[kind]}</h1></main>;
-}
-
-function WorkspaceDirectoryPage() {
-  return <main><h1>工作区</h1></main>;
-}
-
-function WorkspaceOverviewPage({ workspaceApi }: { workspaceApi: WorkspaceApi }) {
-  const { workspaceId } = useParams();
-  const [workspace, setWorkspace] = useState<WorkspaceSummary | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    workspaceApi.list().then((items) => {
-      if (active) setWorkspace(items.find((item) => item.id === workspaceId) ?? null);
-    });
-    return () => { active = false; };
-  }, [workspaceApi, workspaceId]);
-
-  return <main><h1>{workspace?.name ?? '正在载入工作区…'}</h1></main>;
-}
-
-function ReservedModulePage() {
-  const { module } = useParams();
-  return <main><h1>{module ?? '工作区模块'}</h1></main>;
 }
 
 function LoadingState({ label }: { label: string }) {
