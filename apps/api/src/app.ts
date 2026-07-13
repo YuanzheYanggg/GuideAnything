@@ -8,6 +8,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { registerAuthRoutes } from './modules/auth/routes';
 import { registerGuideRoutes } from './modules/guides/routes';
 import { registerMediaRoutes } from './modules/media/routes';
+import { registerPersonalRoutes } from './modules/personal/routes';
 import { registerSearchRoutes } from './modules/search/routes';
 import { registerWorkspaceRoutes } from './modules/workspaces/routes';
 import { createAuthenticateRequest } from './plugins/auth';
@@ -56,6 +57,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   await registerAuthRoutes(app, options.database);
   await registerGuideRoutes(app, options.database);
   await registerMediaRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
+  await registerPersonalRoutes(app, options.database);
   await registerSearchRoutes(app, options.database);
   await registerWorkspaceRoutes(app, options.database);
   await app.ready();

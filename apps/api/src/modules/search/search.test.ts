@@ -4,10 +4,49 @@ import {
   addTestWorkspaceMember,
   authorization,
   createTestContext,
+  createWorkspaceGuideFixture,
   sampleDocument,
   seedTestWorkspace,
   type TestContext,
 } from '../../test/test-app';
+
+it('removes trashed guides from search and restores them to the index', async () => {
+  const context = await createWorkspaceGuideFixture();
+  try {
+    const search = () => context.app.inject({
+      method: 'GET',
+      url: `/api/search?q=${encodeURIComponent('可检索测试指南')}`,
+      headers: authorization(context.tokens.author),
+    });
+    expect((await search()).json().items).toEqual([
+      expect.objectContaining({
+        guideId: context.guideId,
+        workspaceItemId: context.workspaceItemId,
+      }),
+    ]);
+    const trashed = await context.app.inject({
+      method: 'POST',
+      url: `/api/workspace-items/${context.workspaceItemId}/trash`,
+      headers: authorization(context.tokens.author),
+    });
+    expect(trashed.statusCode).toBe(200);
+    expect((await search()).json().items).toEqual([]);
+    const restored = await context.app.inject({
+      method: 'POST',
+      url: `/api/workspace-items/${context.workspaceItemId}/restore`,
+      headers: authorization(context.tokens.author),
+    });
+    expect(restored.statusCode).toBe(200);
+    expect((await search()).json().items).toEqual([
+      expect.objectContaining({
+        guideId: context.guideId,
+        workspaceItemId: context.workspaceItemId,
+      }),
+    ]);
+  } finally {
+    await context.close();
+  }
+});
 
 describe('published guide search', () => {
   let context: TestContext;
