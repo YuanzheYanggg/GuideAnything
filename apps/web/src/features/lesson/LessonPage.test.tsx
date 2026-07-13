@@ -1,5 +1,5 @@
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -49,5 +49,45 @@ describe('LessonPage', () => {
     const api = { getVersion: vi.fn().mockResolvedValue({ ...version, document: { ...version.document, steps: [] } }) };
     render(<LessonPage versionId="empty" api={api} onBack={vi.fn()} />);
     expect(await screen.findByText('这个发布版本还没有编排教学步骤')).toBeVisible();
+  });
+
+  it('opens a pinned subguide from the lesson canvas and returns to the parent guide', async () => {
+    const user = userEvent.setup();
+    const childVersion: GuideVersionSnapshot = {
+      ...version,
+      id: 'version-material',
+      guideId: 'guide-material',
+      title: '物料主数据检查',
+      document: {
+        ...version.document,
+        nodes: [{ id: 'material-start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '检查物料主数据', description: '确认物料销售视图。', shape: 'start' } }],
+        edges: [],
+        steps: [{ id: 'material-step-1', order: 0, title: '检查物料主数据', nodeId: 'material-start' }],
+        entryNodeId: 'material-start',
+        exitNodeIds: ['material-start'],
+      },
+    };
+    const parentVersion: GuideVersionSnapshot = {
+      ...version,
+      document: {
+        ...version.document,
+        nodes: [
+          ...version.document.nodes,
+          { id: 'subguide-node', type: 'subguide', position: { x: 320, y: 160 }, zIndex: 2, data: { guideId: childVersion.guideId, guideVersionId: childVersion.id, title: childVersion.title, version: childVersion.version, expanded: false } },
+        ],
+        steps: [...version.document.steps, { id: 'step-subguide', order: 2, title: '打开物料主数据检查', nodeId: 'subguide-node' }],
+      },
+    };
+    const api = { getVersion: vi.fn((id: string) => Promise.resolve(id === childVersion.id ? childVersion : parentVersion)) };
+    render(<LessonPage versionId={parentVersion.id} api={api} onBack={vi.fn()} />);
+
+    await screen.findByRole('heading', { name: 'ERP 销售订单创建' });
+    fireEvent.click(screen.getByText('物料主数据检查', { selector: 'strong' }));
+    expect(await screen.findByRole('heading', { name: '物料主数据检查' })).toBeVisible();
+    expect(screen.getByText('步骤 1 / 1')).toBeVisible();
+    expect(api.getVersion).toHaveBeenCalledWith(childVersion.id);
+
+    await user.click(screen.getByRole('button', { name: '返回上一级指南' }));
+    expect(await screen.findByRole('heading', { name: 'ERP 销售订单创建' })).toBeVisible();
   });
 });

@@ -12,7 +12,7 @@ import {
   type NodeTypes,
   type ReactFlowInstance,
 } from '@xyflow/react';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 
 import { MarkdownNodeView } from '../nodes/MarkdownNode';
 import { VideoNodeView } from '../nodes/VideoNode';
@@ -25,7 +25,22 @@ export interface LessonApi {
 
 const LessonMapNode = memo(function LessonMapNode({ data, type }: NodeProps) {
   const value = data as Record<string, unknown>;
-  return <div className={`lesson-map-node lesson-map-${type}`}><span>{typeLabel(type)}</span><strong>{nodeSummary(type, value)}</strong></div>;
+  const isSubguide = type === 'subguide';
+  const activate = () => {
+    if (isSubguide && typeof value.onOpenSubguide === 'function') value.onOpenSubguide();
+  };
+  return <div
+    className={`lesson-map-node lesson-map-${type}`}
+    role={isSubguide ? 'button' : undefined}
+    tabIndex={isSubguide ? 0 : undefined}
+    aria-label={isSubguide ? `打开子指南 ${nodeSummary(type, value)}` : undefined}
+    onKeyDown={isSubguide ? (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        activate();
+      }
+    } : undefined}
+  ><span>{typeLabel(type)}</span><strong>{nodeSummary(type, value)}</strong></div>;
 });
 
 const nodeTypes: NodeTypes = {
@@ -35,29 +50,66 @@ const nodeTypes: NodeTypes = {
 const edgeOptions = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: 'var(--ga-accent)', strokeWidth: 2 } };
 
 export function LessonPage({ versionId, api, onBack }: { versionId: string; api: LessonApi; onBack: () => void }) {
-  const [version, setVersion] = useState<GuideVersionSnapshot | null>(null);
+  const [versionHistory, setVersionHistory] = useState<GuideVersionSnapshot[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [instance, setInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
+  const [subguideLoading, setSubguideLoading] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
     let active = true;
-    api.getVersion(versionId).then((result) => { if (active) setVersion(result); }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '发布版本载入失败'));
+    setVersionHistory([]);
+    setCurrentIndex(0);
+    setError('');
+    api.getVersion(versionId)
+      .then((result) => { if (active) setVersionHistory([result]); })
+      .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '发布版本载入失败'); });
     return () => { active = false; };
   }, [api, versionId]);
 
+  const version = versionHistory[versionHistory.length - 1] ?? null;
   const steps = useMemo(() => version ? [...version.document.steps].sort((a, b) => a.order - b.order) : [], [version]);
   const currentStep = steps[currentIndex];
   const currentNode = version?.document.nodes.find((node) => node.id === currentStep?.nodeId);
+  const openSubguide = useCallback(async (guideVersionId: string) => {
+    if (subguideLoading) return;
+    if (versionHistory.some((item) => item.id === guideVersionId)) {
+      setError('这个子指南已经在当前学习路径中，无法再次打开。');
+      return;
+    }
+    setSubguideLoading(true);
+    setError('');
+    try {
+      const childVersion = await api.getVersion(guideVersionId);
+      setVersionHistory((history) => [...history, childVersion]);
+      setCurrentIndex(0);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : '子指南载入失败');
+    } finally {
+      setSubguideLoading(false);
+    }
+  }, [api, subguideLoading, versionHistory]);
+  const handleBack = useCallback(() => {
+    setError('');
+    if (versionHistory.length > 1) {
+      setVersionHistory((history) => history.slice(0, -1));
+      setCurrentIndex(0);
+    } else {
+      onBack();
+    }
+  }, [onBack, versionHistory.length]);
   const flowNodes = useMemo<Node[]>(() => version ? version.document.nodes.map((node) => ({
     id: node.id,
     type: node.type,
     position: node.position,
-    data: node.data as unknown as Record<string, unknown>,
+    data: {
+      ...(node.data as unknown as Record<string, unknown>),
+      ...(node.type === 'subguide' ? { onOpenSubguide: () => void openSubguide(node.data.guideVersionId) } : {}),
+    },
     ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
     zIndex: node.zIndex,
     selected: node.id === currentStep?.nodeId,
-  })) : [], [currentStep?.nodeId, version]);
+  })) : [], [currentStep?.nodeId, openSubguide, version]);
   const flowEdges = useMemo<Edge[]>(() => version ? version.document.edges as Edge[] : [], [version]);
 
   useEffect(() => {
@@ -69,11 +121,11 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
 
   return <main className="lesson-page">
     <header className="lesson-header">
-      <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库">←</button>
+      <button className="icon-button" type="button" onClick={handleBack} aria-label={versionHistory.length > 1 ? '返回上一级指南' : '返回资料库'}>←</button>
       <div><span className="eyebrow">LEARNING MODE · v{version.version}</span><h1>{version.title}</h1></div>
       <div className="lesson-header-actions"><AppearanceToggle /><div className="lesson-progress"><span>{steps.length ? `步骤 ${currentIndex + 1} / ${steps.length}` : '尚未编排步骤'}</span><div><i style={{ width: `${steps.length ? ((currentIndex + 1) / steps.length) * 100 : 0}%` }} /></div></div></div>
     </header>
-    {steps.length === 0 ? <section className="lesson-empty"><strong>这个发布版本还没有编排教学步骤</strong><p>仍可在画布中查看流程结构；请联系作者补充学习路径。</p><button className="secondary-button" onClick={onBack}>返回资料库</button></section> : <div className="lesson-layout">
+    {steps.length === 0 ? <section className="lesson-empty"><strong>这个发布版本还没有编排教学步骤</strong><p>仍可在画布中查看流程结构；请联系作者补充学习路径。</p><button className="secondary-button" onClick={handleBack}>{versionHistory.length > 1 ? '返回上一级指南' : '返回资料库'}</button></section> : <div className="lesson-layout">
       <aside className="lesson-steps" aria-label="教学步骤">
         <span className="eyebrow">STEP BY STEP</span>
         {steps.map((step, index) => <button key={step.id} type="button" className={index === currentIndex ? 'active' : ''} onClick={() => setCurrentIndex(index)}><span>{index + 1}</span><p>{step.title}</p></button>)}
@@ -89,6 +141,11 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
           nodesConnectable={false}
           elementsSelectable
           onlyRenderVisibleElements
+          onNodeClick={(_, node) => {
+            if (node.type !== 'subguide') return;
+            const guideVersionId = (node.data as { guideVersionId?: unknown }).guideVersionId;
+            if (typeof guideVersionId === 'string') void openSubguide(guideVersionId);
+          }}
           fitView
           minZoom={0.15}
           maxZoom={2}
@@ -99,6 +156,7 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
         </ReactFlow>
       </section>
       <aside key={currentStep?.id} className="lesson-content" aria-label="当前步骤内容" aria-live="polite" data-step-id={currentStep?.id}>
+        {subguideLoading ? <p className="status-line">正在打开子指南…</p> : null}
         <div className="lesson-step-meta"><span>步骤 {currentIndex + 1}</span><small>{typeLabel(currentNode?.type)}</small></div>
         <h2>{currentStep?.title}</h2>
         {currentStep?.body ? <p className="lesson-body">{currentStep.body}</p> : null}

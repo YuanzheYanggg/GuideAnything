@@ -531,3 +531,5 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 :root[data-theme="light"] .workspace-sidebar-footer .appearance-toggle { background: rgb(246 249 253 / .7); }
 :root[data-theme="light"] .workspace-sidebar-footer .appearance-toggle button { color: #5f6c80; }
 :root[data-theme="light"] .workspace-sidebar-footer .appearance-toggle button.is-selected { color: #172033; background: rgb(255 255 255 / .72); box-shadow: 0 1px 4px rgb(37 55 79 / .12); }
+.lesson-map-subguide { cursor: pointer; }
+.lesson-map-subguide:focus-visible { outline: 3px solid var(--ga-accent); outline-offset: 3px; }
