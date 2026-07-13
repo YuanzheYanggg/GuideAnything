@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
@@ -44,9 +44,48 @@ describe('App routes', () => {
     expect(await screen.findByRole('heading', { name: '物料管理' })).toBeVisible();
     expect(window.location.pathname).toBe('/workspaces/workspace-materials');
   });
+
+  it('consumes workspace create intent before creating so reload cannot duplicate it', async () => {
+    window.history.replaceState(null, '', '/workspaces/workspace-materials/guides?create=1');
+    mockAuthenticatedWorkspaceApi({ workspaces: [workspace] });
+    const createGuide = vi.fn(() => new Promise<{ id: string }>(() => undefined));
+    vi.spyOn(ApiClient.prototype, 'libraryApi').mockReturnValue({
+      listEditableWorkspaces: vi.fn().mockResolvedValue([workspace]),
+      listDrafts: vi.fn().mockResolvedValue([]),
+      search: vi.fn().mockResolvedValue([]),
+      createGuide,
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(createGuide).toHaveBeenCalledWith('workspace-materials'));
+    expect(window.location.pathname).toBe('/workspaces/workspace-materials/guides');
+    expect(window.location.search).toBe('');
+  });
 });
 
 describe('workspace API clients', () => {
+  it('scopes library requests and includes the target workspace when creating', async () => {
+    const client = new ApiClient();
+    const request = vi.spyOn(client, 'request').mockImplementation(async (path) => {
+      if (path === '/workspaces') return { items: [workspace] } as never;
+      if (path === '/guides' ) return { guide: { id: 'guide-new' } } as never;
+      return { items: [] } as never;
+    });
+    const api = client.libraryApi();
+
+    await api.listDrafts(workspace.id);
+    await api.search('物料', workspace.id);
+    await api.createGuide(workspace.id);
+    await expect(api.listEditableWorkspaces()).resolves.toEqual([workspace]);
+    expect(request).toHaveBeenNthCalledWith(1, '/guides?workspaceId=workspace-materials');
+    expect(request).toHaveBeenNthCalledWith(2, '/search?q=%E7%89%A9%E6%96%99&workspaceId=workspace-materials');
+    expect(request).toHaveBeenNthCalledWith(3, '/guides', {
+      method: 'POST',
+      body: JSON.stringify({ workspaceId: workspace.id, title: '未命名 ERP 教学指南', summary: '', tags: ['ERP'] }),
+    });
+  });
+
   it('unwraps workspace collection responses and preserves item filters', async () => {
     const client = new ApiClient();
     const counts = { GUIDE: 0, SOURCE: 0, AGENT: 0, ONTOLOGY: 0, CONVERSATION: 0, ARTIFACT: 0 };

@@ -2,6 +2,7 @@ import type { WorkspaceItemSummary, WorkspaceSummary } from '@guideanything/cont
 import { vi } from 'vitest';
 
 import { ApiClient } from '../lib/api';
+import type { PersonalApi } from '../features/workspace/types';
 
 export function mockAuthenticatedWorkspaceApi(input: {
   workspaces?: WorkspaceSummary[];
@@ -33,4 +34,19 @@ export function mockAuthenticatedWorkspaceApi(input: {
     restoreItem: vi.fn(),
     permanentlyRemoveItem: vi.fn(),
   });
+}
+
+export function createPersonalApiMock(): PersonalApi {
+  return {
+    listFavorites: vi.fn().mockResolvedValue([]),
+    listRecent: vi.fn().mockResolvedValue([]),
+    listShared: vi.fn().mockResolvedValue([]),
+    listTrash: vi.fn().mockResolvedValue([]),
+    favorite: vi.fn(),
+    unfavorite: vi.fn(),
+    recordRecent: vi.fn(),
+    trashItem: vi.fn(),
+    restoreItem: vi.fn(),
+    permanentlyRemoveItem: vi.fn(),
+  };
 }

@@ -1,20 +1,17 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
-import {
-  BookOpen,
-  BookmarkSimple,
-  DotsThree,
-  FileText,
-  MagnifyingGlass,
-  Play,
-  SlidersHorizontal,
-  type Icon,
-} from '@phosphor-icons/react';
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { BookOpen, FileText, MagnifyingGlass, SlidersHorizontal } from '@phosphor-icons/react';
 
 import type { AuthUser } from '../auth/types';
+import { ResourceTable } from '../resources/ResourceTable';
+import type { PersonalApi, WorkspaceItemSummary, WorkspaceSummary } from '../workspace/types';
 
 export interface SearchItem {
   versionId: string;
   guideId: string;
+  workspaceId: string;
+  workspaceItemId: string;
+  workspaceName: string;
+  favorite: boolean;
   title: string;
   summary: string;
   tags: string[];
@@ -25,58 +22,140 @@ export interface SearchItem {
 
 export interface DraftItem {
   id: string;
+  workspaceId: string;
+  workspaceItemId: string;
   title: string;
   summary: string;
   tags: string[];
   status: string;
   revision: number;
+  authorName: string;
+  updatedAt: string;
 }
 
 export interface LibraryApi {
-  listDrafts: () => Promise<DraftItem[]>;
-  search: (query: string) => Promise<SearchItem[]>;
-  createGuide: () => Promise<{ id: string }>;
+  listDrafts: (workspaceId?: string) => Promise<DraftItem[]>;
+  search: (query: string, workspaceId?: string) => Promise<SearchItem[]>;
+  createGuide: (workspaceId: string) => Promise<{ id: string }>;
+  listEditableWorkspaces: () => Promise<WorkspaceSummary[]>;
 }
 
 interface LibraryPageProps {
   user: AuthUser;
   api: LibraryApi;
+  personalApi: PersonalApi;
+  workspaceId?: string;
+  createRequested?: boolean;
+  onCreateIntentConsumed?: () => void;
   onEdit: (guideId: string) => void;
   onLearn: (versionId: string) => void;
 }
 
-type GuideKind = 'finance' | 'materials' | 'sales' | 'production' | 'people' | 'general';
-
-export function LibraryPage({ user, api, onEdit, onLearn }: LibraryPageProps) {
+export function LibraryPage({
+  user,
+  api,
+  personalApi,
+  workspaceId,
+  createRequested = false,
+  onCreateIntentConsumed,
+  onEdit,
+  onLearn,
+}: LibraryPageProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchItem[] | null>(null);
   const [published, setPublished] = useState<SearchItem[]>([]);
   const [drafts, setDrafts] = useState<DraftItem[]>([]);
+  const [editableWorkspaces, setEditableWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filter, setFilter] = useState('全部');
   const [loadingPublished, setLoadingPublished] = useState(true);
   const [loadingDrafts, setLoadingDrafts] = useState(user.role !== 'LEARNER');
   const [searching, setSearching] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  const createIntentHandled = useRef(false);
 
   useEffect(() => {
     let active = true;
-    api.search('')
-      .then((items) => { if (active) setPublished(items); })
-      .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '指南载入失败'); })
-      .finally(() => { if (active) setLoadingPublished(false); });
+    api.listEditableWorkspaces()
+      .then((items) => { if (active) setEditableWorkspaces(items.filter((item) => item.permission !== 'VIEW')); })
+      .catch(() => { /* Creation retries if the user invokes it. */ })
+      .finally(() => { if (active) setWorkspacesLoaded(true); });
     return () => { active = false; };
   }, [api]);
 
   useEffect(() => {
+    let active = true;
+    setLoadingPublished(true);
+    api.search('', workspaceId)
+      .then((items) => { if (active) setPublished(items); })
+      .catch((reason: unknown) => { if (active) setError(errorMessage(reason, '指南载入失败')); })
+      .finally(() => { if (active) setLoadingPublished(false); });
+    return () => { active = false; };
+  }, [api, workspaceId]);
+
+  useEffect(() => {
     if (user.role === 'LEARNER') return;
     let active = true;
-    api.listDrafts()
+    setLoadingDrafts(true);
+    api.listDrafts(workspaceId)
       .then((items) => { if (active) setDrafts(items); })
-      .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '草稿载入失败'); })
+      .catch((reason: unknown) => { if (active) setError(errorMessage(reason, '草稿载入失败')); })
       .finally(() => { if (active) setLoadingDrafts(false); });
     return () => { active = false; };
-  }, [api, user.role]);
+  }, [api, user.role, workspaceId]);
+
+  const createInside = async (targetWorkspaceId: string) => {
+    setPickerOpen(false);
+    setCreating(true);
+    setError('');
+    try {
+      const guide = await api.createGuide(targetWorkspaceId);
+      onEdit(guide.id);
+    } catch (reason) {
+      setError(errorMessage(reason, '创建指南失败'));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const create = async () => {
+    if (workspaceId) {
+      await createInside(workspaceId);
+      return;
+    }
+    let candidates = editableWorkspaces;
+    if (!workspacesLoaded) {
+      try {
+        candidates = (await api.listEditableWorkspaces()).filter((item) => item.permission !== 'VIEW');
+        setEditableWorkspaces(candidates);
+        setWorkspacesLoaded(true);
+      } catch (reason) {
+        setError(errorMessage(reason, '工作区载入失败'));
+        return;
+      }
+    }
+    if (candidates.length === 1) {
+      await createInside(candidates[0]!.id);
+      return;
+    }
+    if (candidates.length > 1) {
+      setPickerOpen(true);
+      return;
+    }
+    setError('没有可创建指南的工作区');
+  };
+
+  useEffect(() => {
+    if (!createRequested || !workspaceId || createIntentHandled.current) return;
+    createIntentHandled.current = true;
+    onCreateIntentConsumed?.();
+    void createInside(workspaceId);
+  // createInside intentionally follows the route intent once for this mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createRequested, workspaceId, onCreateIntentConsumed]);
 
   const submitSearch = async (event: FormEvent) => {
     event.preventDefault();
@@ -88,119 +167,121 @@ export function LibraryPage({ user, api, onEdit, onLearn }: LibraryPageProps) {
     setError('');
     setFilter('全部');
     try {
-      setResults(await api.search(query.trim()));
+      setResults(await api.search(query.trim(), workspaceId));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '检索失败，请稍后重试');
+      setError(errorMessage(reason, '检索失败，请稍后重试'));
     } finally {
       setSearching(false);
-    }
-  };
-
-  const create = async () => {
-    setError('');
-    try {
-      const guide = await api.createGuide();
-      onEdit(guide.id);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '创建指南失败');
     }
   };
 
   const activeItems = results ?? published;
   const filterOptions = useMemo(() => ['全部', ...Array.from(new Set(activeItems.flatMap((item) => item.tags))).slice(0, 5)], [activeItems]);
   const visibleItems = filter === '全部' ? activeItems : activeItems.filter((item) => item.tags.includes(filter) || item.title.includes(filter));
-  const countLabel = visibleItems.length;
+  const workspaceMap = useMemo(() => new Map(editableWorkspaces.map((item) => [item.id, item])), [editableWorkspaces]);
+  const publishedResources = visibleItems.map((item): WorkspaceItemSummary => ({
+    id: item.workspaceItemId,
+    workspaceId: item.workspaceId,
+    workspaceName: item.workspaceName,
+    kind: 'GUIDE',
+    entityId: item.guideId,
+    title: item.title,
+    summary: item.summary,
+    updatedAt: item.publishedAt ?? '',
+    favorite: item.favorite,
+    permission: workspaceMap.get(item.workspaceId)?.permission ?? 'VIEW',
+    authorName: item.authorName,
+    publishedVersionId: item.versionId,
+  }));
+  const draftResources = drafts.map((draft): WorkspaceItemSummary => ({
+    id: draft.workspaceItemId,
+    workspaceId: draft.workspaceId,
+    workspaceName: workspaceMap.get(draft.workspaceId)?.name ?? '工作区',
+    kind: 'GUIDE',
+    entityId: draft.id,
+    title: draft.title,
+    summary: draft.summary,
+    updatedAt: draft.updatedAt,
+    favorite: false,
+    permission: workspaceMap.get(draft.workspaceId)?.permission ?? 'EDIT',
+    authorName: draft.authorName,
+  }));
 
-  return (
-      <div className="library-workspace-page" aria-labelledby="library-heading">
-        <div className="workspace-heading">
-          <h1 id="library-heading">指南库</h1>
-          {user.role === 'AUTHOR' ? <button className="workspace-create-button" type="button" onClick={create}><span aria-hidden="true">+</span>新建指南</button> : null}
-        </div>
+  const removeResource = (item: WorkspaceItemSummary) => {
+    setPublished((current) => current.filter((entry) => entry.workspaceItemId !== item.id));
+    setResults((current) => current?.filter((entry) => entry.workspaceItemId !== item.id) ?? null);
+    setDrafts((current) => current.filter((entry) => entry.workspaceItemId !== item.id));
+  };
+  const updateFavorite = (item: WorkspaceItemSummary, favorite: boolean) => {
+    const update = (entries: SearchItem[]) => entries.map((entry) => entry.workspaceItemId === item.id ? { ...entry, favorite } : entry);
+    setPublished(update);
+    setResults((current) => current ? update(current) : current);
+  };
+  const mutate = async (operation: () => Promise<unknown>, update: () => void) => {
+    setError('');
+    try {
+      await operation();
+      update();
+    } catch (reason) {
+      setError(errorMessage(reason, '操作失败'));
+      throw reason;
+    }
+  };
+  const tableProps = {
+    mode: 'default' as const,
+    onOpen: (item: WorkspaceItemSummary) => item.publishedVersionId ? onLearn(item.publishedVersionId) : onEdit(item.entityId),
+    onFavorite: (item: WorkspaceItemSummary, favorite: boolean) => mutate(
+      () => favorite ? personalApi.favorite(item.id) : personalApi.unfavorite(item.id),
+      () => updateFavorite(item, favorite),
+    ),
+    onTrash: (item: WorkspaceItemSummary) => mutate(() => personalApi.trashItem(item.id), () => removeResource(item)),
+    onRestore: async () => undefined,
+    onPermanentRemove: async () => undefined,
+  };
 
-        <div className="workspace-search-wrap">
-          <form className="workspace-search" onSubmit={submitSearch}>
-            <button className="workspace-search-submit" type="submit" aria-label="搜索指南" disabled={searching}><MagnifyingGlass size={22} /></button>
-            <label className="sr-only" htmlFor="guide-search">搜索指南</label>
-            <input id="guide-search" type="search" placeholder="搜索指南" value={query} onChange={(event) => setQuery(event.target.value)} />
-            <button className={`workspace-filter-button ${filterOpen ? 'is-open' : ''}`} type="button" aria-label="筛选指南" aria-expanded={filterOpen} onClick={() => setFilterOpen((open) => !open)}><SlidersHorizontal size={20} /></button>
-          </form>
-          {filterOpen ? <div className="workspace-filter-popover" role="dialog" aria-label="指南筛选">
-            {filterOptions.map((option) => <button key={option} className={filter === option ? 'is-selected' : ''} type="button" onClick={() => { setFilter(option); setFilterOpen(false); }}>{option}</button>)}
-          </div> : null}
-        </div>
-
-        <section className="workspace-list-section" aria-labelledby="published-heading">
-          <div className="workspace-section-heading"><h2 id="published-heading" aria-label="已发布指南"><BookOpen size={21} />已发布指南 <span>{countLabel}</span></h2></div>
-          {loadingPublished ? <p className="workspace-status">正在载入指南…</p> : null}
-          {searching ? <p className="workspace-status">正在检索已发布指南…</p> : null}
-          {error ? <p className="error-message" role="alert">{error}</p> : null}
-          {!loadingPublished && !searching && visibleItems.length === 0 ? <div className="empty-state"><strong>{results ? '没有找到匹配的已发布指南' : '还没有已发布指南'}</strong><span>换一个业务对象、事务码或字段名称试试。</span></div> : null}
-          {!loadingPublished && !searching && visibleItems.length > 0 ? <div className="guide-table" role="list">
-            <div className="guide-table-head" aria-hidden="true"><span>名称</span><span>领域</span><span>更新者</span><span>更新时间</span><span /></div>
-            {visibleItems.map((item) => <GuideTableRow key={item.versionId} item={item} onLearn={onLearn} />)}
-          </div> : null}
-        </section>
-
-        {user.role !== 'LEARNER' ? <section className="workspace-list-section workspace-drafts" aria-labelledby="draft-heading">
-          <div className="workspace-section-heading"><h2 id="draft-heading" aria-label="我的草稿与协作"><FileText size={21} />草稿 <span>{drafts.length}</span></h2></div>
-          {loadingDrafts ? <p className="workspace-status">正在载入工作区…</p> : null}
-          {!loadingDrafts && drafts.length === 0 ? <div className="empty-state"><strong>还没有可编辑的指南</strong><span>创建第一条 ERP 教学流程开始。</span></div> : null}
-          {!loadingDrafts && drafts.length > 0 ? <div className="guide-table draft-table" role="list">{drafts.map((draft) => <DraftTableRow key={draft.id} draft={draft} onEdit={onEdit} />)}</div> : null}
-        </section> : null}
-      </div>
-  );
-}
-
-function GuideTableRow({ item, onLearn }: { item: SearchItem; onLearn: (versionId: string) => void }) {
-  const kind = guideKind(item);
-  const IconComponent = guideIcon(kind);
-  return <article className="guide-table-row" role="listitem">
-    <div className="guide-row-title">
-      <span className={`guide-kind-icon kind-${kind}`}><IconComponent size={20} weight="regular" /></span>
-      <div><button className="guide-title-button" type="button" onClick={() => onLearn(item.versionId)} aria-label={`开始学习 ${item.title}`}>{item.title}</button><p>{item.summary || '暂无摘要'}</p></div>
+  return <div className="library-workspace-page" aria-labelledby="library-heading">
+    <div className="workspace-heading">
+      <h1 id="library-heading">指南库</h1>
+      {user.role !== 'LEARNER' ? <button className="workspace-create-button" type="button" disabled={creating} onClick={() => void create()}><span aria-hidden="true">+</span>{creating ? '正在创建指南…' : '新建指南'}</button> : null}
     </div>
-    <span className={`guide-domain-pill domain-${kind}`}>{item.tags[0] ?? 'ERP'}</span>
-    <span className="guide-owner"><span className={`guide-owner-avatar avatar-${kind}`}>{item.authorName.slice(0, 1)}</span>{item.authorName}</span>
-    <time dateTime={item.publishedAt}>{formatPublishedDate(item.publishedAt)}</time>
-    <button className="guide-row-menu" type="button" aria-label={`更多操作 ${item.title}`}><DotsThree size={22} weight="bold" /></button>
-  </article>;
+
+    <div className="workspace-search-wrap">
+      <form className="workspace-search" onSubmit={submitSearch}>
+        <button className="workspace-search-submit" type="submit" aria-label="搜索指南" disabled={searching}><MagnifyingGlass size={22} /></button>
+        <label className="sr-only" htmlFor="guide-search">搜索指南</label>
+        <input id="guide-search" type="search" placeholder="搜索指南" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <button className={`workspace-filter-button ${filterOpen ? 'is-open' : ''}`} type="button" aria-label="筛选指南" aria-expanded={filterOpen} onClick={() => setFilterOpen((open) => !open)}><SlidersHorizontal size={20} /></button>
+      </form>
+      {filterOpen ? <div className="workspace-filter-popover" role="dialog" aria-label="指南筛选">{filterOptions.map((option) => <button key={option} className={filter === option ? 'is-selected' : ''} type="button" onClick={() => { setFilter(option); setFilterOpen(false); }}>{option}</button>)}</div> : null}
+    </div>
+
+    <section className="workspace-list-section" aria-labelledby="published-heading">
+      <div className="workspace-section-heading"><h2 id="published-heading" aria-label="已发布指南"><BookOpen size={21} />已发布指南 <span>{publishedResources.length}</span></h2></div>
+      {loadingPublished ? <p className="workspace-status">正在载入指南…</p> : null}
+      {searching ? <p className="workspace-status">正在检索已发布指南…</p> : null}
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+      {!loadingPublished && !searching && publishedResources.length === 0 ? <div className="empty-state"><strong>{results ? '没有找到匹配的已发布指南' : '还没有已发布指南'}</strong><span>换一个业务对象、事务码或字段名称试试。</span></div> : null}
+      {!loadingPublished && !searching && publishedResources.length > 0 ? <ResourceTable {...tableProps} items={publishedResources} /> : null}
+    </section>
+
+    {user.role !== 'LEARNER' ? <section className="workspace-list-section workspace-drafts" aria-labelledby="draft-heading">
+      <div className="workspace-section-heading"><h2 id="draft-heading" aria-label="我的草稿与协作"><FileText size={21} />草稿 <span>{draftResources.length}</span></h2></div>
+      {loadingDrafts ? <p className="workspace-status">正在载入工作区…</p> : null}
+      {!loadingDrafts && draftResources.length === 0 ? <div className="empty-state"><strong>还没有可编辑的指南</strong><span>创建第一条 ERP 教学流程开始。</span></div> : null}
+      {!loadingDrafts && draftResources.length > 0 ? <ResourceTable {...tableProps} items={draftResources} /> : null}
+    </section> : null}
+
+    {pickerOpen ? <div className="confirm-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPickerOpen(false); }}>
+      <section className="workspace-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-picker-title">
+        <h2 id="workspace-picker-title">选择创建位置</h2>
+        <p>新指南将继承所选工作区的成员与权限。</p>
+        <div>{editableWorkspaces.map((item) => <button key={item.id} type="button" onClick={() => void createInside(item.id)}>在{item.name}中新建</button>)}</div>
+        <button className="secondary-button" type="button" onClick={() => setPickerOpen(false)}>取消</button>
+      </section>
+    </div> : null}
+  </div>;
 }
 
-function DraftTableRow({ draft, onEdit }: { draft: DraftItem; onEdit: (guideId: string) => void }) {
-  const kind = guideKind({ title: draft.title, tags: draft.tags });
-  const IconComponent = guideIcon(kind);
-  return <article className="guide-table-row draft-row" role="listitem">
-    <div className="guide-row-title"><span className={`guide-kind-icon kind-${kind} draft-kind`}><IconComponent size={20} weight="regular" /></span><div><button className="guide-title-button" type="button" onClick={() => onEdit(draft.id)} aria-label={`打开草稿 ${draft.title}`}>{draft.title} <span className="draft-suffix">（草稿）</span></button><p>{draft.summary || '等待补充摘要'}</p></div></div>
-    <span className={`guide-domain-pill domain-${kind}`}>{draft.tags[0] ?? 'ERP'}</span>
-    <span className="guide-owner"><span className={`guide-owner-avatar avatar-${kind}`}>A</span> {draft.status === 'PUBLISHED' ? '已发布' : 'Alex Chen'}</span>
-    <time>{draft.revision ? `修订 ${draft.revision}` : '—'}</time>
-    <button className="guide-row-menu" type="button" aria-label={`编辑 ${draft.title}`} onClick={() => onEdit(draft.id)}><DotsThree size={22} weight="bold" /></button>
-  </article>;
-}
-
-function guideKind(item: Pick<SearchItem, 'title' | 'tags'>): GuideKind {
-  const value = `${item.title} ${item.tags.join(' ')}`;
-  if (/物料|主数据/u.test(value)) return 'materials';
-  if (/销售|订单|分销/u.test(value)) return 'sales';
-  if (/生产|计划|供应/u.test(value)) return 'production';
-  if (/人力|员工|入职/u.test(value)) return 'people';
-  if (/财务|结账|发票/u.test(value)) return 'finance';
-  return 'general';
-}
-
-function guideIcon(kind: GuideKind): Icon {
-  if (kind === 'sales') return Play;
-  if (kind === 'materials') return FileText;
-  if (kind === 'production') return BookmarkSimple;
-  if (kind === 'people') return Play;
-  if (kind === 'finance') return FileText;
-  return BookOpen;
-}
-
-function formatPublishedDate(value?: string): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return '—';
-  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+function errorMessage(reason: unknown, fallback: string): string {
+  return reason instanceof Error && reason.message ? reason.message : fallback;
 }

@@ -93,6 +93,12 @@ describe('published guide search', () => {
         favorite: false,
       });
     }
+    const outsideWorkspace = await context.app.inject({
+      method: 'GET', url: '/api/search?q=%E9%94%80%E5%94%AE%E8%AE%A2%E5%8D%95&workspaceId=workspace-other',
+      headers: authorization(context.tokens.learner),
+    });
+    expect(outsideWorkspace.statusCode).toBe(200);
+    expect(outsideWorkspace.json().items).toEqual([]);
 
     context.database.prepare(
       `INSERT INTO user_favorites (user_id, item_id, created_at) VALUES (?, ?, ?)`,

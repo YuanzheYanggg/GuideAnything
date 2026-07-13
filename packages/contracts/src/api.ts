@@ -8,6 +8,7 @@ export const GuideStatusSchema = z.enum(['DRAFT', 'PUBLISHED', 'ARCHIVED']);
 export const GuideVersionSnapshotSchema = z.object({
   id: z.string().min(1),
   guideId: z.string().min(1),
+  workspaceItemId: z.string().min(1).optional(),
   version: z.number().int().positive(),
   title: z.string().min(1).max(200),
   summary: z.string().max(2_000),

@@ -4,9 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { LessonPage } from './LessonPage';
+import { createPersonalApiMock } from '../../test/workspace-api-mocks';
 
 const version: GuideVersionSnapshot = {
-  id: 'version-lesson', guideId: 'guide-lesson', version: 2, title: 'ERP 销售订单创建', summary: 'VA01 教学', tags: ['ERP'],
+  id: 'version-lesson', guideId: 'guide-lesson', workspaceItemId: 'item-guide-1', version: 2, title: 'ERP 销售订单创建', summary: 'VA01 教学', tags: ['ERP'],
   document: {
     schemaVersion: 1,
     nodes: [
@@ -23,6 +24,15 @@ const version: GuideVersionSnapshot = {
 };
 
 describe('LessonPage', () => {
+  it('records the root version as recent after a successful load', async () => {
+    const personalApi = createPersonalApiMock();
+    render(<LessonPage versionId="version-lesson" api={{ getVersion: vi.fn().mockResolvedValue(version) }} personalApi={personalApi} onBack={vi.fn()} />);
+    await screen.findByRole('heading', { name: 'ERP 销售订单创建' });
+    expect(personalApi.recordRecent).toHaveBeenCalledWith(
+      'item-guide-1',
+      expect.objectContaining({ mode: 'lesson', versionId: 'version-lesson' }),
+    );
+  });
   it('navigates ordered steps and seeks video keypoints', async () => {
     const user = userEvent.setup();
     const api = { getVersion: vi.fn().mockResolvedValue(version) };
@@ -79,15 +89,43 @@ describe('LessonPage', () => {
       },
     };
     const api = { getVersion: vi.fn((id: string) => Promise.resolve(id === childVersion.id ? childVersion : parentVersion)) };
-    render(<LessonPage versionId={parentVersion.id} api={api} onBack={vi.fn()} />);
+    const personalApi = createPersonalApiMock();
+    render(<LessonPage versionId={parentVersion.id} api={api} personalApi={personalApi} onBack={vi.fn()} />);
 
     await screen.findByRole('heading', { name: 'ERP 销售订单创建' });
     fireEvent.click(screen.getByText('物料主数据检查', { selector: 'strong' }));
     expect(await screen.findByRole('heading', { name: '物料主数据检查' })).toBeVisible();
     expect(screen.getByText('步骤 1 / 1')).toBeVisible();
     expect(api.getVersion).toHaveBeenCalledWith(childVersion.id);
+    expect(personalApi.recordRecent).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole('button', { name: '返回上一级指南' }));
     expect(await screen.findByRole('heading', { name: 'ERP 销售订单创建' })).toBeVisible();
+  });
+
+  it('records a subguide only when it belongs to another workspace item', async () => {
+    const childVersion: GuideVersionSnapshot = {
+      ...version,
+      id: 'version-child',
+      guideId: 'guide-child',
+      workspaceItemId: 'item-guide-child',
+      title: '独立子指南',
+      document: { ...version.document, steps: [] },
+    };
+    const parentVersion: GuideVersionSnapshot = {
+      ...version,
+      document: {
+        ...version.document,
+        nodes: [{ id: 'subguide-node', type: 'subguide', position: { x: 0, y: 0 }, zIndex: 0, data: { guideId: childVersion.guideId, guideVersionId: childVersion.id, title: childVersion.title, version: childVersion.version, expanded: false } }],
+        edges: [], steps: [{ id: 'step-child', order: 0, title: '打开独立子指南', nodeId: 'subguide-node' }], entryNodeId: 'subguide-node', exitNodeIds: ['subguide-node'],
+      },
+    };
+    const personalApi = createPersonalApiMock();
+    const api = { getVersion: vi.fn((id: string) => Promise.resolve(id === childVersion.id ? childVersion : parentVersion)) };
+    render(<LessonPage versionId={parentVersion.id} api={api} personalApi={personalApi} onBack={vi.fn()} />);
+    await screen.findByRole('heading', { name: parentVersion.title });
+    fireEvent.click(screen.getAllByText(childVersion.title, { selector: 'strong' })[0]!);
+    await screen.findByText('这个发布版本还没有编排教学步骤');
+    expect(personalApi.recordRecent).toHaveBeenNthCalledWith(2, 'item-guide-child', { mode: 'lesson', versionId: 'version-child' });
   });
 });

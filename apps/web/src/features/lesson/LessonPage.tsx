@@ -18,6 +18,7 @@ import { MarkdownNodeView } from '../nodes/MarkdownNode';
 import { VideoNodeView } from '../nodes/VideoNode';
 import { useMediaSource } from '../nodes/useMediaSource';
 import { AppearanceToggle } from '../theme/AppearanceToggle';
+import type { PersonalApi } from '../workspace/types';
 
 export interface LessonApi {
   getVersion: (versionId: string) => Promise<GuideVersionSnapshot>;
@@ -49,7 +50,7 @@ const nodeTypes: NodeTypes = {
 };
 const edgeOptions = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: 'var(--ga-accent)', strokeWidth: 2 } };
 
-export function LessonPage({ versionId, api, onBack }: { versionId: string; api: LessonApi; onBack: () => void }) {
+export function LessonPage({ versionId, api, personalApi, onBack }: { versionId: string; api: LessonApi; personalApi?: PersonalApi; onBack: () => void }) {
   const [versionHistory, setVersionHistory] = useState<GuideVersionSnapshot[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [instance, setInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
@@ -62,10 +63,14 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
     setCurrentIndex(0);
     setError('');
     api.getVersion(versionId)
-      .then((result) => { if (active) setVersionHistory([result]); })
+      .then((result) => {
+        if (!active) return;
+        setVersionHistory([result]);
+        if (personalApi && result.workspaceItemId) void personalApi.recordRecent(result.workspaceItemId, { mode: 'lesson', versionId: result.id });
+      })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '发布版本载入失败'); });
     return () => { active = false; };
-  }, [api, versionId]);
+  }, [api, personalApi, versionId]);
 
   const version = versionHistory[versionHistory.length - 1] ?? null;
   const steps = useMemo(() => version ? [...version.document.steps].sort((a, b) => a.order - b.order) : [], [version]);
@@ -81,6 +86,10 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
     setError('');
     try {
       const childVersion = await api.getVersion(guideVersionId);
+      const knownItemIds = new Set(versionHistory.flatMap((item) => item.workspaceItemId ? [item.workspaceItemId] : []));
+      if (personalApi && childVersion.workspaceItemId && !knownItemIds.has(childVersion.workspaceItemId)) {
+        void personalApi.recordRecent(childVersion.workspaceItemId, { mode: 'lesson', versionId: childVersion.id });
+      }
       setVersionHistory((history) => [...history, childVersion]);
       setCurrentIndex(0);
     } catch (reason: unknown) {
@@ -88,7 +97,7 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
     } finally {
       setSubguideLoading(false);
     }
-  }, [api, subguideLoading, versionHistory]);
+  }, [api, personalApi, subguideLoading, versionHistory]);
   const handleBack = useCallback(() => {
     setError('');
     if (versionHistory.length > 1) {

@@ -6,6 +6,7 @@ import {
   Routes,
   useNavigate,
   useParams,
+  useSearchParams,
 } from 'react-router-dom';
 
 import { LoginPage, type LoginCredentials } from './features/auth/LoginPage';
@@ -71,9 +72,19 @@ function AppContent() {
 
   function LibraryRoute({ user: routeUser }: { user: AuthUser }) {
     const navigate = useNavigate();
+    const { workspaceId } = useParams();
+    const [searchParams, setSearchParams] = useSearchParams();
     return <LibraryPage
       user={routeUser}
       api={libraryApi}
+      personalApi={personalApi}
+      {...(workspaceId ? { workspaceId } : {})}
+      createRequested={searchParams.get('create') === '1'}
+      onCreateIntentConsumed={() => {
+        const next = new URLSearchParams(searchParams);
+        next.delete('create');
+        setSearchParams(next, { replace: true });
+      }}
       onEdit={(guideId) => navigate(`/guides/${guideId}/edit`)}
       onLearn={(versionId) => navigate(`/versions/${versionId}/learn`)}
     />;
@@ -84,7 +95,7 @@ function AppContent() {
     const { guideId } = useParams();
     if (!guideId) return <Navigate to="/library" replace />;
     return <Suspense fallback={<LoadingState label="正在载入画布编辑器…" />}>
-      <GuideEditor guideId={guideId} api={editorApi} onBack={() => navigate('/library')} />
+      <GuideEditor guideId={guideId} api={editorApi} personalApi={personalApi} onBack={() => navigate('/library')} />
     </Suspense>;
   }
 
@@ -93,7 +104,7 @@ function AppContent() {
     const { versionId } = useParams();
     if (!versionId) return <Navigate to="/library" replace />;
     return <Suspense fallback={<LoadingState label="正在载入教学模式…" />}>
-      <LessonPage versionId={versionId} api={{ getVersion: editorApi.getVersion }} onBack={() => navigate('/library')} />
+      <LessonPage versionId={versionId} api={{ getVersion: editorApi.getVersion }} personalApi={personalApi} onBack={() => navigate('/library')} />
     </Suspense>;
   }
 }

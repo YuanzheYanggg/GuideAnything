@@ -43,6 +43,7 @@ interface GuideRow {
 interface VersionRow {
   id: string;
   guide_id: string;
+  workspace_item_id: string | null;
   version: number;
   title: string;
   summary: string;
@@ -313,6 +314,7 @@ export function publishGuide(
   return {
     id,
     guideId,
+    workspaceItemId: guide.workspaceItemId,
     version,
     title: guide.title,
     summary: guide.summary,
@@ -324,8 +326,11 @@ export function publishGuide(
 
 export function getVersion(database: DatabaseSync, versionId: string): (GuideVersionSnapshot & { publishedAt: string }) | null {
   const row = database.prepare(
-    `SELECT id, guide_id, version, title, summary, tags_json, document_json, published_at
-     FROM guide_versions WHERE id = ?`,
+    `SELECT version.id, version.guide_id, item.id AS workspace_item_id, version.version,
+            version.title, version.summary, version.tags_json, version.document_json, version.published_at
+     FROM guide_versions version
+     LEFT JOIN workspace_items item ON item.kind = 'GUIDE' AND item.entity_id = version.guide_id
+     WHERE version.id = ?`,
   ).get(versionId) as unknown as VersionRow | undefined;
   return row ? mapVersion(row) : null;
 }
@@ -353,6 +358,7 @@ function mapVersion(row: VersionRow): GuideVersionSnapshot & { publishedAt: stri
   return {
     id: row.id,
     guideId: row.guide_id,
+    ...(row.workspace_item_id ? { workspaceItemId: row.workspace_item_id } : {}),
     version: row.version,
     title: row.title,
     summary: row.summary,

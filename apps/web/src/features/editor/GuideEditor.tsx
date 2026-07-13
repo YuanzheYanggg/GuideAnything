@@ -28,9 +28,12 @@ import { MarkdownNode } from '../nodes/MarkdownNode';
 import { SubguideNode } from '../nodes/SubguideNode';
 import { VideoNode } from '../nodes/VideoNode';
 import { AppearanceToggle } from '../theme/AppearanceToggle';
+import type { PersonalApi } from '../workspace/types';
 
 export interface GuideDraftDetail {
   id: string;
+  workspaceId: string;
+  workspaceItemId: string;
   ownerId: string;
   authorName: string;
   title: string;
@@ -74,7 +77,7 @@ const defaultEdgeOptions = { type: 'smoothstep', markerEnd: { type: MarkerType.A
 const snapGrid: [number, number] = [20, 20];
 const multiSelectionKeyCode = ['Meta', 'Control'];
 
-export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: EditorApi; onBack: () => void }) {
+export function GuideEditor({ guideId, api, personalApi, onBack }: { guideId: string; api: EditorApi; personalApi?: PersonalApi; onBack: () => void }) {
   const [guide, setGuide] = useState<GuideDraftDetail | null>(null);
   const [document, setDocument] = useState<CanvasDocument | null>(null);
   const [flowNodes, setFlowNodes] = useState<Node[]>([]);
@@ -106,9 +109,10 @@ export function GuideEditor({ guideId, api, onBack }: { guideId: string; api: Ed
       setTags(loaded.tags);
       setSaveState('已保存');
       historyRef.current = new HistoryStack(normalized, 80);
+      if (personalApi) void personalApi.recordRecent(loaded.workspaceItemId, { mode: 'edit', guideId: loaded.id });
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '指南载入失败'));
     return () => { active = false; };
-  }, [api, guideId]);
+  }, [api, guideId, personalApi]);
 
   const commit = useCallback((next: CanvasDocument) => {
     const validated = reconcileSubguideEdges(CanvasDocumentSchema.parse(next));

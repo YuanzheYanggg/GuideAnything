@@ -44,12 +44,14 @@ export class ApiClient {
 
   libraryApi(): LibraryApi {
     return {
-      listDrafts: async () => (await this.request<{ items: DraftItem[] }>('/guides')).items,
-      search: async (query: string) => (await this.request<{ items: SearchItem[] }>(`/search?q=${encodeURIComponent(query)}`)).items,
-      createGuide: async () => (await this.request<{ guide: { id: string } }>('/guides', {
+      listDrafts: async (workspaceId) => (await this.request<{ items: DraftItem[] }>(`/guides${workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''}`)).items,
+      search: async (query: string, workspaceId) => (await this.request<{ items: SearchItem[] }>(`/search?q=${encodeURIComponent(query)}${workspaceId ? `&workspaceId=${encodeURIComponent(workspaceId)}` : ''}`)).items,
+      createGuide: async (workspaceId) => (await this.request<{ guide: { id: string } }>('/guides', {
         method: 'POST',
-        body: JSON.stringify({ title: '未命名 ERP 教学指南', summary: '', tags: ['ERP'] }),
+        body: JSON.stringify({ workspaceId, title: '未命名 ERP 教学指南', summary: '', tags: ['ERP'] }),
       })).guide,
+      listEditableWorkspaces: async () => (await this.request<{ items: WorkspaceSummary[] }>('/workspaces')).items
+        .filter((workspace) => workspace.permission === 'OWNER' || workspace.permission === 'EDIT'),
     };
   }
 

@@ -218,14 +218,14 @@ function ResourceRow({
       {mode === 'trash'
         ? <button className="resource-icon-action" data-resource-focus-target type="button" disabled={busy} aria-label={`恢复 ${item.title}`} onClick={() => { void runDirect(() => onRestore(item)); }}><ArrowCounterClockwise size={18} /></button>
         : <button className={`resource-icon-action${item.favorite ? ' is-active' : ''}`} data-resource-focus-target type="button" disabled={busy} aria-label={`${item.favorite ? '取消收藏' : '收藏'} ${item.title}`} onClick={() => { void runDirect(() => onFavorite(item, !item.favorite)); }}><Star size={18} weight={item.favorite ? 'fill' : 'regular'} /></button>}
-      <div ref={menuGroupRef} className="action-menu" onKeyDown={actionMenuKeyDown} onBlur={actionMenuBlur}>
+      {item.permission !== 'VIEW' ? <div ref={menuGroupRef} className="action-menu" onKeyDown={actionMenuKeyDown} onBlur={actionMenuBlur}>
         <button ref={menuButtonRef} className="resource-icon-action" type="button" disabled={busy} aria-label={`更多操作 ${item.title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={onToggleMenu}><DotsThree size={20} weight="bold" /></button>
         {menuOpen ? <div className="action-menu-popover" role="menu">
           {mode === 'trash'
             ? <button autoFocus type="button" role="menuitem" onClick={() => onConfirm({ type: 'remove', item }, menuButtonRef.current)}>永久移除</button>
             : <button autoFocus type="button" role="menuitem" onClick={() => onConfirm({ type: 'trash', item }, menuButtonRef.current)}><Trash size={16} />移到回收站</button>}
         </div> : null}
-      </div>
+      </div> : null}
     </div>
   </article>;
 }
