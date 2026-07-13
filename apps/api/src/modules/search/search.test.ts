@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  addTestWorkspaceMember,
   authorization,
   createTestContext,
   sampleDocument,
@@ -19,6 +20,7 @@ describe('published guide search', () => {
       slug: 'search',
       name: '检索工作区',
     });
+    addTestWorkspaceMember(context.database, workspaceId, context.userIds.learner, 'VIEW');
   });
   afterEach(async () => context.close());
 
@@ -65,6 +67,18 @@ describe('published guide search', () => {
     expect(authorSearch.statusCode).toBe(200);
     expect(authorSearch.json().items[0]).toMatchObject({ favorite: false });
 
+    const unrelated = await searchAs(context, '销售订单', context.tokens.otherAuthor);
+    expect(unrelated.items).toEqual([]);
+
+    const invited = await context.app.inject({
+      method: 'POST',
+      url: `/api/guides/${guideId}/collaborators`,
+      headers: authorization(context.tokens.author),
+      payload: { userId: context.userIds.editor },
+    });
+    expect(invited.statusCode).toBe(201);
+    expect((await searchAs(context, '销售订单', context.tokens.editor)).items[0]).toMatchObject({ guideId });
+
     context.database.prepare(
       `UPDATE workspace_items SET deleted_at = ?, deleted_by = ? WHERE entity_id = ?`,
     ).run(new Date().toISOString(), context.userIds.author, guideId);
@@ -103,6 +117,9 @@ describe('published guide search', () => {
     expect(next.json().nextOffset).toBeNull();
     expect([response.json().items[0].guideId, next.json().items[0].guideId]).toEqual(expect.arrayContaining([guideId, secondGuideId]));
 
+    const unrelated = await searchAs(context, '', context.tokens.otherAuthor);
+    expect(unrelated.items).toEqual([]);
+
     context.database.prepare(`UPDATE workspaces SET status = 'ARCHIVED' WHERE id = ?`).run(workspaceId);
     const archived = await context.app.inject({
       method: 'GET', url: '/api/search?q=', headers: authorization(context.tokens.learner),
@@ -113,10 +130,14 @@ describe('published guide search', () => {
 });
 
 async function search(context: TestContext, query: string) {
+  return searchAs(context, query, context.tokens.learner);
+}
+
+async function searchAs(context: TestContext, query: string, token: string) {
   const response = await context.app.inject({
     method: 'GET',
     url: `/api/search?q=${encodeURIComponent(query)}`,
-    headers: authorization(context.tokens.learner),
+    headers: authorization(token),
   });
   expect(response.statusCode).toBe(200);
   return response.json() as {

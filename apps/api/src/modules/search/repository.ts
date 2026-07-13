@@ -36,6 +36,18 @@ export interface SearchPage {
   nextOffset: number | null;
 }
 
+const REQUESTER_CAN_ACCESS = `(
+  g.owner_id = ?
+  OR EXISTS (
+    SELECT 1 FROM workspace_members member
+    WHERE member.workspace_id = workspace.id AND member.user_id = ?
+  )
+  OR EXISTS (
+    SELECT 1 FROM guide_collaborators collaborator
+    WHERE collaborator.guide_id = g.id AND collaborator.user_id = ?
+  )
+)`;
+
 export function searchPublishedGuides(
   database: DatabaseSync,
   userId: string,
@@ -63,9 +75,10 @@ export function searchPublishedGuides(
        JOIN workspaces workspace ON workspace.id = item.workspace_id
        LEFT JOIN user_favorites favorite ON favorite.item_id = item.id AND favorite.user_id = ?
        WHERE guide_search MATCH ? AND item.deleted_at IS NULL AND workspace.status = 'ACTIVE'
+         AND ${REQUESTER_CAN_ACCESS}
        ORDER BY rank, v.published_at DESC
        LIMIT ? OFFSET ?`,
-    ).all(userId, matchQuery, limit + 1, offset)
+    ).all(userId, matchQuery, userId, userId, userId, limit + 1, offset)
     : database.prepare(
       `SELECT gs.version_id, gs.guide_id, gs.title, gs.summary, v.tags_json,
               v.version, u.display_name AS author_name, v.published_at AS published_at,
@@ -79,9 +92,10 @@ export function searchPublishedGuides(
        JOIN workspaces workspace ON workspace.id = item.workspace_id
        LEFT JOIN user_favorites favorite ON favorite.item_id = item.id AND favorite.user_id = ?
        WHERE item.deleted_at IS NULL AND workspace.status = 'ACTIVE'
+         AND ${REQUESTER_CAN_ACCESS}
        ORDER BY v.published_at DESC, v.version DESC
        LIMIT ? OFFSET ?`,
-    ).all(userId, limit + 1, offset)) as unknown as SearchRow[];
+    ).all(userId, userId, userId, userId, limit + 1, offset)) as unknown as SearchRow[];
   const hasMore = rows.length > limit;
   return {
     items: rows.slice(0, limit).map((row) => ({
