@@ -49,7 +49,7 @@ export async function registerGuideRoutes(app: FastifyInstance, database: Databa
   app.get('/api/guides/:id', { preHandler: app.authenticateRequest }, async (request, reply) => {
     const params = parseOrReply(IdParamsSchema, request.params, reply);
     if (!params) return;
-    return { guide: service.readDraft(request.authUser!.id, params.id) };
+    return { guide: service.readDraft(request.authUser!, params.id) };
   });
 
   app.patch('/api/guides/:id', { preHandler: app.authenticateRequest }, async (request, reply) => {
@@ -63,20 +63,20 @@ export async function registerGuideRoutes(app: FastifyInstance, database: Databa
       ...(input.document === undefined ? {} : { document: input.document }),
     };
     const { revision } = input;
-    return { guide: service.save(request.authUser!.id, params.id, revision, changes) };
+    return { guide: service.save(request.authUser!, params.id, revision, changes) };
   });
 
   app.post('/api/guides/:id/publish', { preHandler: app.authenticateRequest }, async (request, reply) => {
     const params = parseOrReply(IdParamsSchema, request.params, reply);
     if (!params) return;
-    return reply.code(201).send({ version: service.publish(request.authUser!.id, params.id) });
+    return reply.code(201).send({ version: service.publish(request.authUser!, params.id) });
   });
 
   app.post('/api/guides/:id/collaborators', { preHandler: app.authenticateRequest }, async (request, reply) => {
     const params = parseOrReply(IdParamsSchema, request.params, reply);
     const input = parseOrReply(CollaboratorSchema, request.body, reply);
     if (!params || !input) return;
-    service.invite(request.authUser!.id, params.id, input.userId);
+    service.invite(request.authUser!, params.id, input.userId);
     return reply.code(201).send({ permission: 'EDIT', userId: input.userId });
   });
 

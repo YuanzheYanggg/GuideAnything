@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { hashPassword } from '../modules/auth/service';
 import { getVersion, publishGuide } from '../modules/guides/repository';
 import { ensureDefaultWorkspaces } from '../modules/workspaces/repository';
+import { DEFAULT_WORKSPACES, upgradeWorkspaceV1 } from './workspace-upgrade';
 
 const DEMO_PASSWORD = 'Guide123!';
 const AUTHOR_ID = 'demo-author';
@@ -11,15 +12,6 @@ const EDITOR_ID = 'demo-editor';
 const LEARNER_ID = 'demo-learner';
 const MATERIAL_GUIDE_ID = 'demo-material-check';
 const SALES_GUIDE_ID = 'demo-sales-order';
-
-const DEFAULT_WORKSPACES = [
-  ['workspace-finance', 'finance', '财务管理', 'ChartLineUp', 'finance'],
-  ['workspace-materials', 'materials', '物料管理', 'FileText', 'materials'],
-  ['workspace-sales', 'sales', '销售与分销', 'ChartLineUp', 'sales'],
-  ['workspace-production', 'production', '生产计划', 'SquaresFour', 'production'],
-  ['workspace-people', 'people', '人力资源', 'UsersThree', 'people'],
-  ['workspace-general', 'general', '通用工作区', 'SquaresFour', 'general'],
-] as const;
 
 export async function seedDatabase(database: DatabaseSync): Promise<void> {
   await seedUsers(database);
@@ -34,7 +26,7 @@ export async function seedDatabase(database: DatabaseSync): Promise<void> {
     ['ERP', '物料', '主数据'],
     materialCheckDocument(),
   );
-  backfillGuideWorkspaceItems(database);
+  upgradeWorkspaceV1(database);
   const materialVersion = ensurePublished(database, MATERIAL_GUIDE_ID);
 
   insertGuideIfMissing(
@@ -46,7 +38,7 @@ export async function seedDatabase(database: DatabaseSync): Promise<void> {
     ['ERP', '销售订单', 'VA01', 'SAP'],
     salesOrderDocument(materialVersion.id, materialVersion.version),
   );
-  backfillGuideWorkspaceItems(database);
+  upgradeWorkspaceV1(database);
   ensurePublished(database, SALES_GUIDE_ID);
 
   database.prepare(
@@ -74,52 +66,10 @@ function seedWorkspaces(database: DatabaseSync): void {
   );
   const now = new Date().toISOString();
   for (const [workspaceId] of DEFAULT_WORKSPACES) {
-    upsertMember.run(workspaceId, AUTHOR_ID, 'OWNER', now);
+    const workspace = database.prepare('SELECT owner_id FROM workspaces WHERE id = ?').get(workspaceId) as { owner_id: string };
+    upsertMember.run(workspaceId, AUTHOR_ID, workspace.owner_id === AUTHOR_ID ? 'OWNER' : 'EDIT', now);
     upsertMember.run(workspaceId, EDITOR_ID, 'EDIT', now);
     upsertMember.run(workspaceId, LEARNER_ID, 'VIEW', now);
-  }
-}
-
-function backfillGuideWorkspaceItems(database: DatabaseSync): void {
-  const guides = database.prepare(
-    `SELECT id, owner_id, title, summary, status, created_at, updated_at
-     FROM guides`,
-  ).all() as unknown as Array<{
-    id: string;
-    owner_id: string;
-    title: string;
-    summary: string;
-    status: string;
-    created_at: string;
-    updated_at: string;
-  }>;
-  const insert = database.prepare(
-    `INSERT INTO workspace_items (
-      id, workspace_id, kind, entity_id, title, summary, created_by,
-      deleted_at, deleted_by, created_at, updated_at
-    ) VALUES (?, ?, 'GUIDE', ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (kind, entity_id) DO UPDATE SET
-      title = excluded.title,
-      summary = excluded.summary`,
-  );
-  for (const guide of guides) {
-    const workspaceId = guide.id === MATERIAL_GUIDE_ID
-      ? 'workspace-materials'
-      : guide.id === SALES_GUIDE_ID
-        ? 'workspace-sales'
-        : 'workspace-general';
-    insert.run(
-      `workspace-item-guide-${guide.id}`,
-      workspaceId,
-      guide.id,
-      guide.title,
-      guide.summary,
-      guide.owner_id,
-      guide.status === 'ARCHIVED' ? guide.updated_at : null,
-      guide.status === 'ARCHIVED' ? guide.owner_id : null,
-      guide.created_at,
-      guide.updated_at,
-    );
   }
 }
 

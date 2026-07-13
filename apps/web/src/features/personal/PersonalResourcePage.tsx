@@ -105,7 +105,7 @@ function PersonalResourcePageContent({ kind, api, onOpen }: {
 
 function resourceRoute(item: WorkspaceItemSummary): string | null {
   if (item.kind !== 'GUIDE') return null;
-  if ((item.permission === 'OWNER' || item.permission === 'EDIT') && !item.publishedVersionId) return `/guides/${item.entityId}/edit`;
+  if (item.canEdit && !item.publishedVersionId) return `/guides/${item.entityId}/edit`;
   if (item.publishedVersionId) return `/versions/${item.publishedVersionId}/learn`;
   return null;
 }

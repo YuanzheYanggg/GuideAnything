@@ -176,6 +176,24 @@ export function getGuideAccess(database: DatabaseSync, guideId: string, userId: 
   return row?.access ?? null;
 }
 
+export function canSeeGuideMetadata(
+  database: DatabaseSync,
+  guideId: string,
+  user: { id: string; role: string },
+): boolean {
+  return Boolean(database.prepare(
+    `SELECT 1 FROM guides g
+     JOIN workspace_items item ON item.kind = 'GUIDE' AND item.entity_id = g.id AND item.deleted_at IS NULL
+     JOIN workspaces workspace ON workspace.id = item.workspace_id AND workspace.status = 'ACTIVE'
+     LEFT JOIN workspace_members member ON member.workspace_id = workspace.id AND member.user_id = ?
+     LEFT JOIN guide_collaborators collaborator ON collaborator.guide_id = g.id AND collaborator.user_id = ?
+     WHERE g.id = ? AND g.status != 'ARCHIVED'
+       AND (g.owner_id = ? OR collaborator.user_id IS NOT NULL
+         OR (member.user_id IS NOT NULL AND (? != 'LEARNER'
+           OR (g.status = 'PUBLISHED' AND g.published_version_id IS NOT NULL))))`,
+  ).get(user.id, user.id, guideId, user.id, user.role));
+}
+
 export function updateGuide(
   database: DatabaseSync,
   guideId: string,

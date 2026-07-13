@@ -43,11 +43,11 @@ describe('guide permissions', () => {
     })).statusCode).toBe(403);
     expect((await context.app.inject({
       method: 'GET', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.learner),
-    })).statusCode).toBe(403);
+    })).statusCode).toBe(404);
     expect((await context.app.inject({
       method: 'PATCH', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.otherAuthor),
       payload: { revision: 0, document: sampleDocument() },
-    })).statusCode).toBe(403);
+    })).statusCode).toBe(404);
 
     const invited = await context.app.inject({
       method: 'POST',
@@ -88,6 +88,31 @@ describe('guide permissions', () => {
       `SELECT action FROM workspace_activity
        WHERE workspace_id = ? AND action = 'COLLABORATOR_ADDED'`,
     ).get(workspaceId)).toEqual({ action: 'COLLABORATOR_ADDED' });
+  });
+
+  it('uses 404 for invisible guides and 403 for visible members without action permission', async () => {
+    const created = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { workspaceId, title: '权限边界草稿' },
+    });
+    const guideId = created.json().guide.id as string;
+    for (const [method, suffix] of [['GET', ''], ['PATCH', ''], ['POST', '/publish'], ['POST', '/collaborators']] as const) {
+      const response = await context.app.inject({
+        method, url: `/api/guides/${guideId}${suffix}`, headers: authorization(context.tokens.otherAuthor),
+        ...(method === 'PATCH' ? { payload: { revision: 0, title: '越权' } } : {}),
+        ...(suffix === '/collaborators' ? { payload: { userId: context.userIds.editor } } : {}),
+      });
+      expect(response.statusCode).toBe(404);
+    }
+    expect((await context.app.inject({
+      method: 'GET', url: '/api/guides/missing-guide', headers: authorization(context.tokens.author),
+    })).statusCode).toBe(404);
+    expect((await context.app.inject({
+      method: 'GET', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.editor),
+    })).statusCode).toBe(403);
+    expect((await context.app.inject({
+      method: 'POST', url: `/api/guides/${guideId}/publish`, headers: authorization(context.tokens.editor),
+    })).statusCode).toBe(403);
   });
 
   it('allows author or editor roles with owner or edit workspace permission to create', async () => {

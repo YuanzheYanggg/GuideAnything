@@ -3,10 +3,12 @@ import { loadConfig } from './config';
 import { createDatabase } from './db/client';
 import { migrateDatabase } from './db/migrate';
 import { seedDatabase } from './db/seed';
+import { upgradeWorkspaceV1 } from './db/workspace-upgrade';
 
 const config = loadConfig();
 const database = createDatabase(config.databasePath);
 migrateDatabase(database);
+upgradeWorkspaceV1(database);
 if (config.seedDemo) await seedDatabase(database);
 
 const app = await buildApp({

@@ -9,6 +9,34 @@ import {
 } from '../../test/test-app';
 
 describe('personal workspace state', () => {
+  it('does not let workspace permission substitute for draft guide access', async () => {
+    const context = await createTestContext();
+    try {
+      const workspace = seedTestWorkspace(context.database, context.userIds.author, {
+        id: 'workspace-draft-access', slug: 'draft-access', name: '草稿访问',
+      });
+      addTestWorkspaceMember(context.database, workspace.id, context.userIds.editor, 'EDIT');
+      const created = await context.app.inject({
+        method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+        payload: { workspaceId: workspace.id, title: '作者私有草稿' },
+      });
+      const guide = created.json().guide as { id: string; workspaceItemId: string };
+      expect((await context.app.inject({
+        method: 'PUT', url: `/api/me/favorites/${guide.workspaceItemId}`,
+        headers: authorization(context.tokens.editor),
+      })).statusCode).toBe(404);
+      await context.app.inject({
+        method: 'POST', url: `/api/guides/${guide.id}/collaborators`,
+        headers: authorization(context.tokens.author), payload: { userId: context.userIds.editor },
+      });
+      const allowed = await context.app.inject({
+        method: 'PUT', url: `/api/me/favorites/${guide.workspaceItemId}`,
+        headers: authorization(context.tokens.editor),
+      });
+      expect(allowed.statusCode).toBe(200);
+      expect(allowed.json().item).toMatchObject({ canEdit: true, permission: 'EDIT' });
+    } finally { await context.close(); }
+  });
   it('persists favorites idempotently and keeps them private', async () => {
     const context = await createWorkspaceGuideFixture();
     try {
@@ -188,7 +216,8 @@ describe('personal workspace state', () => {
         expect.objectContaining({
           id: context.workspaceItemId,
           entityId: context.guideId,
-          permission: 'EDIT',
+          permission: 'VIEW',
+          canEdit: true,
         }),
       ]);
     } finally {

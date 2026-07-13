@@ -5,6 +5,7 @@ import { httpError } from '../../lib/http-error';
 import { getWorkspacePermission } from '../workspaces/repository';
 import {
   addCollaborator,
+  canSeeGuideMetadata,
   createGuide,
   getGuide,
   getGuideAccess,
@@ -36,33 +37,35 @@ export class GuideService {
     return listGuides(this.database, userId, options);
   }
 
-  readDraft(userId: string, guideId: string) {
-    this.requireEditAccess(userId, guideId);
+  readDraft(user: { id: string; role: string }, guideId: string) {
+    this.requireEditAccess(user, guideId);
     return getGuide(this.database, guideId)!;
   }
 
   save(
-    userId: string,
+    user: { id: string; role: string },
     guideId: string,
     revision: number,
     input: { title?: string; summary?: string; tags?: string[]; document?: CanvasDocument },
   ) {
-    this.requireEditAccess(userId, guideId);
-    return updateGuide(this.database, guideId, userId, revision, input);
+    this.requireEditAccess(user, guideId);
+    return updateGuide(this.database, guideId, user.id, revision, input);
   }
 
-  publish(userId: string, guideId: string) {
-    if (getGuideAccess(this.database, guideId, userId) !== 'OWNER') {
+  publish(user: { id: string; role: string }, guideId: string) {
+    if (getGuideAccess(this.database, guideId, user.id) !== 'OWNER') {
+      if (!canSeeGuideMetadata(this.database, guideId, user)) throw httpError(404, 'GUIDE_NOT_FOUND', '指南不存在');
       throw httpError(403, 'FORBIDDEN', '只有指南作者可以发布');
     }
-    return publishGuide(this.database, guideId, userId);
+    return publishGuide(this.database, guideId, user.id);
   }
 
-  invite(userId: string, guideId: string, collaboratorId: string) {
-    if (getGuideAccess(this.database, guideId, userId) !== 'OWNER') {
+  invite(user: { id: string; role: string }, guideId: string, collaboratorId: string) {
+    if (getGuideAccess(this.database, guideId, user.id) !== 'OWNER') {
+      if (!canSeeGuideMetadata(this.database, guideId, user)) throw httpError(404, 'GUIDE_NOT_FOUND', '指南不存在');
       throw httpError(403, 'FORBIDDEN', '只有指南作者可以管理协作者');
     }
-    addCollaborator(this.database, guideId, userId, collaboratorId);
+    addCollaborator(this.database, guideId, user.id, collaboratorId);
   }
 
   readVersion(versionId: string) {
@@ -71,10 +74,10 @@ export class GuideService {
     return version;
   }
 
-  private requireEditAccess(userId: string, guideId: string): void {
-    const access = getGuideAccess(this.database, guideId, userId);
+  private requireEditAccess(user: { id: string; role: string }, guideId: string): void {
+    const access = getGuideAccess(this.database, guideId, user.id);
     if (!access) {
-      if (!getGuide(this.database, guideId)) throw httpError(404, 'GUIDE_NOT_FOUND', '指南不存在');
+      if (!canSeeGuideMetadata(this.database, guideId, user)) throw httpError(404, 'GUIDE_NOT_FOUND', '指南不存在');
       throw httpError(403, 'FORBIDDEN', '没有查看或编辑此草稿的权限');
     }
   }

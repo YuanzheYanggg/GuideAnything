@@ -21,11 +21,20 @@ describe('workspace API', () => {
       name: '私有空间',
     });
     addTestWorkspaceMember(context.database, workspace.id, context.userIds.learner, 'VIEW');
+    const now = new Date().toISOString();
+    context.database.prepare(
+      `INSERT INTO guides (id,owner_id,title,summary,tags_json,status,visibility,revision,draft_document,created_at,updated_at)
+       VALUES ('guide-one',?,'物料指南','','[]','PUBLISHED','INTERNAL',0,'{}',?,?)`,
+    ).run(context.userIds.author, now, now);
     context.database.prepare(
       `INSERT INTO workspace_items (
         id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
       ) VALUES ('item-guide', ?, 'GUIDE', 'guide-one', '物料指南', '', ?, ?, ?)`,
-    ).run(workspace.id, context.userIds.author, new Date().toISOString(), new Date().toISOString());
+    ).run(workspace.id, context.userIds.author, now, now);
+    context.database.prepare(`INSERT INTO guide_versions
+      (id,guide_id,version,title,summary,tags_json,document_json,search_text,published_by,published_at)
+      VALUES ('version-one','guide-one',1,'物料指南','','[]','{}','',?,?)`).run(context.userIds.author, now);
+    context.database.prepare(`UPDATE guides SET published_version_id='version-one' WHERE id='guide-one'`).run();
 
     const response = await context.app.inject({
       method: 'GET',
@@ -60,6 +69,34 @@ describe('workspace API', () => {
     });
 
     expect(response.statusCode).toBe(404);
+    await context.close();
+  });
+
+  it('hides draft guide rows and counts from learner workspace members', async () => {
+    const context = await createTestContext();
+    const workspace = seedTestWorkspace(context.database, context.userIds.author, {
+      id: 'workspace-learner-visibility', slug: 'learner-visibility', name: '学习者可见性',
+    });
+    addTestWorkspaceMember(context.database, workspace.id, context.userIds.learner, 'VIEW');
+    for (const title of ['已发布指南', '内部草稿']) {
+      const created = await context.app.inject({
+        method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+        payload: { workspaceId: workspace.id, title },
+      });
+      if (title === '已发布指南') await context.app.inject({
+        method: 'POST', url: `/api/guides/${created.json().guide.id}/publish`,
+        headers: authorization(context.tokens.author),
+      });
+    }
+    const detail = await context.app.inject({
+      method: 'GET', url: `/api/workspaces/${workspace.id}`, headers: authorization(context.tokens.learner),
+    });
+    const items = await context.app.inject({
+      method: 'GET', url: `/api/workspaces/${workspace.id}/items`, headers: authorization(context.tokens.learner),
+    });
+    expect(detail.json().counts.GUIDE).toBe(1);
+    expect(detail.json().workspace.guideCount).toBe(1);
+    expect(items.json().items.map((item: { title: string }) => item.title)).toEqual(['已发布指南']);
     await context.close();
   });
 

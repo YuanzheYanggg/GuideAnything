@@ -247,6 +247,7 @@ export function LibraryPage({
     updatedAt: item.publishedAt ?? '',
     favorite: item.favorite,
     permission: workspaceMap.get(item.workspaceId)?.permission ?? 'VIEW',
+    canEdit: false,
     canManageLifecycle: item.canManageLifecycle,
     authorName: item.authorName,
     publishedVersionId: item.versionId,
@@ -262,6 +263,7 @@ export function LibraryPage({
     updatedAt: draft.updatedAt,
     favorite: draft.favorite,
     permission: workspaceMap.get(draft.workspaceId)?.permission ?? 'EDIT',
+    canEdit: true,
     canManageLifecycle: draft.canManageLifecycle,
     authorName: draft.authorName,
   }));

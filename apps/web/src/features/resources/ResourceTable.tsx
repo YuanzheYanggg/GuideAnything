@@ -291,7 +291,7 @@ function ConfirmDialog({ action, pending, onCancel, onConfirm }: {
 
 function resourceOpenLabel(item: WorkspaceItemSummary): '编辑' | '学习' | null {
   if (item.kind !== 'GUIDE') return null;
-  if ((item.permission === 'OWNER' || item.permission === 'EDIT') && !item.publishedVersionId) return '编辑';
+  if (item.canEdit && !item.publishedVersionId) return '编辑';
   if (item.publishedVersionId) return '学习';
   return null;
 }

@@ -33,7 +33,7 @@ export class WorkspaceService {
   read(userId: string, workspaceId: string) {
     return {
       workspace: this.requireReadAccess(userId, workspaceId),
-      counts: countWorkspaceItems(this.database, workspaceId),
+      counts: countWorkspaceItems(this.database, workspaceId, userId),
     };
   }
 

@@ -13,7 +13,6 @@ export function WorkspaceDirectoryPage() {
       <span className="page-count">{workspaces.length} 个工作区</span>
     </header>
     {loading ? <LoadingState label="正在载入工作区…" /> : null}
-    {error ? <p className="workspace-error" role="alert">{error}</p> : null}
     {!loading && !error && workspaces.length === 0 ? <div className="workspace-empty"><strong>还没有可访问的工作区</strong><span>请联系工作区所有者添加成员权限。</span></div> : null}
     {!loading && !error && workspaces.length > 0 ? <div className="workspace-directory-grid">
       {workspaces.map((workspace) => <Link className={`workspace-card domain-card-${workspace.colorKey}`} to={`/workspaces/${workspace.id}`} key={workspace.id}>

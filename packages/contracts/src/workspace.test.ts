@@ -14,5 +14,6 @@ it('validates a generic guide workspace item', () => {
     updatedAt: '2026-07-13T00:00:00.000Z',
     favorite: true,
     permission: 'EDIT',
+    canEdit: true,
   }).kind).toBe('GUIDE');
 });

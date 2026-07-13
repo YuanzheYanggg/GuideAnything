@@ -25,6 +25,7 @@ interface ItemSummaryRow {
   view_count: number | null;
   favorite: number;
   permission: WorkspacePermission;
+  can_edit: number;
   can_manage_lifecycle: number;
 }
 
@@ -48,11 +49,8 @@ const ITEM_SUMMARY_SELECT = `
          CASE WHEN favorite.item_id IS NULL THEN 0 ELSE 1 END AS favorite,
          CASE WHEN guide.owner_id = ? OR member.permission = 'OWNER'
                    OR (item.kind != 'GUIDE' AND item.created_by = ?) THEN 1 ELSE 0 END AS can_manage_lifecycle,
-         CASE
-           WHEN member.permission = 'OWNER' THEN 'OWNER'
-           WHEN guide.owner_id = ? OR collaborator.user_id IS NOT NULL OR member.permission = 'EDIT' THEN 'EDIT'
-           ELSE 'VIEW'
-         END AS permission
+         CASE WHEN guide.owner_id = ? OR collaborator.user_id IS NOT NULL THEN 1 ELSE 0 END AS can_edit,
+         COALESCE(member.permission, 'VIEW') AS permission
   FROM workspace_items item
   JOIN workspaces workspace ON workspace.id = item.workspace_id AND workspace.status = 'ACTIVE'
   LEFT JOIN workspace_members member
@@ -72,27 +70,24 @@ const ITEM_SUMMARY_SELECT = `
 const requesterArgs = (userId: string) => [userId, userId, userId, userId, userId, userId, userId];
 
 const REQUESTER_CAN_ACCESS = `(
-  member.user_id IS NOT NULL
-  OR guide.owner_id = ?
-  OR collaborator.user_id IS NOT NULL
+  (item.kind != 'GUIDE' AND member.user_id IS NOT NULL)
+  OR (item.kind = 'GUIDE' AND (
+    guide.owner_id = ? OR collaborator.user_id IS NOT NULL
+    OR (member.user_id IS NOT NULL AND guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL)
+  ))
 )`;
 
 export function listFavorites(
   database: DatabaseSync,
   userId: string,
-  userRole: UserRole,
+  _userRole: UserRole,
 ): WorkspaceItemSummary[] {
   const rows = database.prepare(
     `${ITEM_SUMMARY_SELECT}
      WHERE item.deleted_at IS NULL AND favorite.item_id IS NOT NULL
        AND ${REQUESTER_CAN_ACCESS}
-       AND (
-         item.kind != 'GUIDE'
-         OR (guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL)
-         OR ? != 'LEARNER'
-       )
      ORDER BY favorite.created_at DESC`,
-  ).all(...requesterArgs(userId), userId, userRole) as unknown as ItemSummaryRow[];
+  ).all(...requesterArgs(userId), userId) as unknown as ItemSummaryRow[];
   return rows.map(mapItemSummary);
 }
 
@@ -128,19 +123,14 @@ export function recordRecentView(
 export function listRecentViews(
   database: DatabaseSync,
   userId: string,
-  userRole: UserRole,
+  _userRole: UserRole,
 ): WorkspaceItemSummary[] {
   const rows = database.prepare(
     `${ITEM_SUMMARY_SELECT}
      WHERE item.deleted_at IS NULL AND recent.item_id IS NOT NULL
        AND ${REQUESTER_CAN_ACCESS}
-       AND (
-         item.kind != 'GUIDE'
-         OR (guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL)
-         OR ? != 'LEARNER'
-       )
      ORDER BY recent.last_viewed_at DESC`,
-  ).all(...requesterArgs(userId), userId, userRole) as unknown as ItemSummaryRow[];
+  ).all(...requesterArgs(userId), userId) as unknown as ItemSummaryRow[];
   return rows.map(mapItemSummary);
 }
 
@@ -211,13 +201,10 @@ export function requesterCanAccessItem(
      LEFT JOIN guide_collaborators collaborator
        ON collaborator.guide_id = guide.id AND collaborator.user_id = ?
      WHERE item.id = ? AND item.deleted_at IS NULL
-       AND (member.user_id IS NOT NULL OR guide.owner_id = ? OR collaborator.user_id IS NOT NULL)
-       AND (
-         item.kind != 'GUIDE'
-         OR (guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL)
-         OR ? != 'LEARNER'
-       )`,
-  ).get(userId, userId, itemId, userId, userRole);
+       AND ((item.kind != 'GUIDE' AND member.user_id IS NOT NULL)
+         OR (item.kind = 'GUIDE' AND (guide.owner_id = ? OR collaborator.user_id IS NOT NULL
+           OR (member.user_id IS NOT NULL AND guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL))))`,
+  ).get(userId, userId, itemId, userId);
   return Boolean(row);
 }
 
@@ -363,6 +350,7 @@ function mapItemSummary(row: ItemSummaryRow): WorkspaceItemSummary {
     updatedAt: row.updated_at,
     favorite: row.favorite === 1,
     permission: row.permission,
+    canEdit: row.can_edit === 1,
     canManageLifecycle: row.can_manage_lifecycle === 1,
     deletedAt: row.deleted_at,
     deletedByName: row.deleted_by_name,

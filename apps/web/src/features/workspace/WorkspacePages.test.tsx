@@ -154,22 +154,22 @@ describe('workspace pages', () => {
       {
         id: 'item-owner', workspaceId: 'workspace-materials', workspaceName: '物料管理', kind: 'GUIDE',
         entityId: 'guide-owner', title: '所有者指南', summary: '', updatedAt: workspaceDefaults.updatedAt,
-        favorite: true, permission: 'OWNER', publishedVersionId: null,
+        favorite: true, permission: 'OWNER', canEdit: true, publishedVersionId: null,
       },
       {
         id: 'item-edit', workspaceId: 'workspace-materials', workspaceName: '物料管理', kind: 'GUIDE',
         entityId: 'guide-edit', title: '可编辑指南', summary: '', updatedAt: workspaceDefaults.updatedAt,
-        favorite: true, permission: 'EDIT', publishedVersionId: null,
+        favorite: true, permission: 'EDIT', canEdit: true, publishedVersionId: null,
       },
       {
         id: 'item-view', workspaceId: 'workspace-materials', workspaceName: '物料管理', kind: 'GUIDE',
         entityId: 'guide-view', title: '可学习指南', summary: '', updatedAt: workspaceDefaults.updatedAt,
-        favorite: true, permission: 'VIEW', publishedVersionId: 'version-view',
+        favorite: true, permission: 'VIEW', canEdit: false, publishedVersionId: 'version-view',
       },
       {
         id: 'item-source', workspaceId: 'workspace-materials', workspaceName: '物料管理', kind: 'SOURCE',
         entityId: 'source-future', title: '未来资料源', summary: '', updatedAt: workspaceDefaults.updatedAt,
-        favorite: true, permission: 'VIEW',
+        favorite: true, permission: 'VIEW', canEdit: false,
       },
     ];
     renderWorkspaceRoutes({
@@ -193,5 +193,18 @@ describe('workspace pages', () => {
     expect(await screen.findByRole('heading', { name: 'Agent' })).toBeVisible();
     expect(screen.getByText('尚未配置 Agent Runtime')).toBeVisible();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('renders a single alert when workspace loading fails', async () => {
+    const workspaceApi: WorkspaceApi = {
+      list: vi.fn().mockRejectedValue(new Error('工作区载入失败')),
+      get: vi.fn(), listItems: vi.fn(), activity: vi.fn(),
+    };
+    render(<AppearanceProvider><MemoryRouter initialEntries={['/workspaces']}><Routes>
+      <Route element={<WorkspaceShell user={authorUser} workspaceApi={workspaceApi} personalApi={createEmptyPersonalApi()} onLogout={vi.fn()} />}>
+        <Route path="/workspaces" element={<WorkspaceDirectoryPage />} />
+      </Route>
+    </Routes></MemoryRouter></AppearanceProvider>);
+    expect(await screen.findAllByRole('alert')).toHaveLength(1);
   });
 });

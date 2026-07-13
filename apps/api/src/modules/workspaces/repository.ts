@@ -41,12 +41,16 @@ interface WorkspaceRow {
 const WORKSPACE_SUMMARY_SELECT = `
   SELECT w.id, w.slug, w.name, w.description, w.icon_key, w.color_key,
          w.owner_id, owner.display_name AS owner_name, member.permission,
-         COUNT(CASE WHEN item.kind = 'GUIDE' AND item.deleted_at IS NULL THEN 1 END) AS guide_count,
+         COUNT(CASE WHEN item.kind = 'GUIDE' AND item.deleted_at IS NULL
+                     AND (requester.role != 'LEARNER' OR (guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL))
+                    THEN 1 END) AS guide_count,
          w.updated_at
   FROM workspaces w
   JOIN workspace_members member ON member.workspace_id = w.id AND member.user_id = ?
   JOIN users owner ON owner.id = w.owner_id
+  JOIN users requester ON requester.id = member.user_id
   LEFT JOIN workspace_items item ON item.workspace_id = w.id
+  LEFT JOIN guides guide ON item.kind = 'GUIDE' AND guide.id = item.entity_id
 `;
 
 export function createWorkspace(
@@ -85,13 +89,7 @@ export function ensureDefaultWorkspaces(
     `INSERT INTO workspaces (
       id, slug, name, description, icon_key, color_key, owner_id, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (id) DO UPDATE SET
-      slug = excluded.slug,
-      name = excluded.name,
-      description = excluded.description,
-      icon_key = excluded.icon_key,
-      color_key = excluded.color_key,
-      owner_id = excluded.owner_id`,
+    ON CONFLICT (id) DO NOTHING`,
   );
   const upsertOwner = database.prepare(
     `INSERT INTO workspace_members (workspace_id, user_id, permission, created_at)
@@ -110,7 +108,8 @@ export function ensureDefaultWorkspaces(
       now,
       now,
     );
-    upsertOwner.run(workspace.id, ownerId, now);
+    const owner = database.prepare('SELECT owner_id FROM workspaces WHERE id = ?').get(workspace.id) as { owner_id: string };
+    upsertOwner.run(workspace.id, owner.owner_id, now);
   }
 }
 
@@ -187,19 +186,24 @@ export function listWorkspaceItems(
             g.published_version_id, recent.last_viewed_at, recent.view_count,
             CASE WHEN favorite.item_id IS NULL THEN 0 ELSE 1 END AS favorite,
             CASE WHEN g.owner_id = ? OR member.permission = 'OWNER' THEN 1 ELSE 0 END AS can_manage_lifecycle,
+            CASE WHEN g.owner_id = ? OR collaborator.user_id IS NOT NULL THEN 1 ELSE 0 END AS can_edit,
             member.permission
      FROM workspace_items item
      JOIN workspaces w ON w.id = item.workspace_id AND w.status = 'ACTIVE'
      JOIN workspace_members member ON member.workspace_id = w.id AND member.user_id = ?
      JOIN users creator ON creator.id = item.created_by
+     JOIN users requester ON requester.id = member.user_id
      LEFT JOIN users deleted_by ON deleted_by.id = item.deleted_by
      LEFT JOIN guides g ON item.kind = 'GUIDE' AND g.id = item.entity_id
+     LEFT JOIN guide_collaborators collaborator ON collaborator.guide_id = g.id AND collaborator.user_id = ?
      LEFT JOIN user_favorites favorite ON favorite.item_id = item.id AND favorite.user_id = ?
      LEFT JOIN recent_views recent ON recent.item_id = item.id AND recent.user_id = ?
      WHERE item.workspace_id = ? AND item.deleted_at IS NULL
        AND (? IS NULL OR item.kind = ?)
+       AND (item.kind != 'GUIDE' OR requester.role != 'LEARNER'
+            OR (g.status = 'PUBLISHED' AND g.published_version_id IS NOT NULL))
      ORDER BY item.updated_at DESC`,
-  ).all(userId, userId, userId, userId, workspaceId, kind ?? null, kind ?? null) as unknown as Array<{
+  ).all(userId, userId, userId, userId, userId, userId, workspaceId, kind ?? null, kind ?? null) as unknown as Array<{
     id: string;
     workspace_id: string;
     workspace_name: string;
@@ -217,6 +221,7 @@ export function listWorkspaceItems(
     favorite: number;
     permission: WorkspacePermission;
     can_manage_lifecycle: number;
+    can_edit: number;
   }>;
   return rows.map((row) => ({
     id: row.id,
@@ -229,6 +234,7 @@ export function listWorkspaceItems(
     updatedAt: row.updated_at,
     favorite: row.favorite === 1,
     permission: row.permission,
+    canEdit: row.can_edit === 1,
     canManageLifecycle: row.can_manage_lifecycle === 1,
     deletedAt: row.deleted_at,
     deletedByName: row.deleted_by_name,
@@ -242,6 +248,7 @@ export function listWorkspaceItems(
 export function countWorkspaceItems(
   database: DatabaseSync,
   workspaceId: string,
+  userId: string,
 ): Record<WorkspaceItemKind, number> {
   const counts: Record<WorkspaceItemKind, number> = {
     GUIDE: 0,
@@ -252,11 +259,16 @@ export function countWorkspaceItems(
     ARTIFACT: 0,
   };
   const rows = database.prepare(
-    `SELECT kind, COUNT(*) AS count
-     FROM workspace_items
-     WHERE workspace_id = ? AND deleted_at IS NULL
+    `SELECT item.kind, COUNT(*) AS count
+     FROM workspace_items item
+     JOIN workspace_members member ON member.workspace_id = item.workspace_id AND member.user_id = ?
+     JOIN users requester ON requester.id = member.user_id
+     LEFT JOIN guides guide ON item.kind = 'GUIDE' AND guide.id = item.entity_id
+     WHERE item.workspace_id = ? AND item.deleted_at IS NULL
+       AND (item.kind != 'GUIDE' OR requester.role != 'LEARNER'
+            OR (guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL))
      GROUP BY kind`,
-  ).all(workspaceId) as unknown as Array<{ kind: WorkspaceItemKind; count: number }>;
+  ).all(userId, workspaceId) as unknown as Array<{ kind: WorkspaceItemKind; count: number }>;
   for (const row of rows) counts[row.kind] = row.count;
   return counts;
 }

@@ -120,7 +120,7 @@ function FavoriteResource({ item }: { item: WorkspaceItemSummary }) {
 
 function favoriteRoute(item: WorkspaceItemSummary): string | null {
   if (item.kind !== 'GUIDE') return null;
-  if (item.permission === 'OWNER' || item.permission === 'EDIT') return `/guides/${item.entityId}/edit`;
+  if (item.canEdit) return `/guides/${item.entityId}/edit`;
   if (item.publishedVersionId) return `/versions/${item.publishedVersionId}/learn`;
   return null;
 }

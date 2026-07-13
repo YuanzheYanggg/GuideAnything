@@ -57,7 +57,7 @@ describe('demo seed', () => {
       .toEqual({ count: 1 });
   });
 
-  it('backfills an archived guide as a deleted workspace identity without changing IDs', async () => {
+  it('does not resurrect an archived guide while preserving guide and version IDs', async () => {
     database = createDatabase(':memory:');
     migrateDatabase(database);
     await seedDatabase(database);
@@ -91,13 +91,27 @@ describe('demo seed', () => {
       `SELECT entity_id, workspace_id, deleted_at, deleted_by
        FROM workspace_items
        WHERE kind = 'GUIDE' AND entity_id = 'archived-guide'`,
-    ).all()).toEqual([
-      {
-        entity_id: 'archived-guide',
-        workspace_id: 'workspace-general',
-        deleted_at: expect.any(String),
-        deleted_by: 'demo-author',
-      },
-    ]);
+    ).all()).toEqual([]);
+  });
+
+  it('does not replace an existing default workspace owner with the demo author', async () => {
+    database = createDatabase(':memory:');
+    migrateDatabase(database);
+    const now = new Date().toISOString();
+    database.prepare(`INSERT INTO users (id,email,password_hash,display_name,role,created_at)
+      VALUES ('legacy-owner','legacy-owner@example.com','hash','原负责人','AUTHOR',?)`).run(now);
+    database.prepare(`INSERT INTO workspaces
+      (id,slug,name,description,icon_key,color_key,owner_id,created_at,updated_at)
+      VALUES ('workspace-materials','materials','物料管理','','FileText','materials','legacy-owner',?,?)`).run(now, now);
+    database.prepare(`INSERT INTO workspace_members (workspace_id,user_id,permission,created_at)
+      VALUES ('workspace-materials','legacy-owner','OWNER',?)`).run(now);
+
+    await seedDatabase(database);
+
+    expect(database.prepare(`SELECT owner_id FROM workspaces WHERE id='workspace-materials'`).get())
+      .toEqual({ owner_id: 'legacy-owner' });
+    expect(database.prepare(`SELECT permission FROM workspace_members
+      WHERE workspace_id='workspace-materials' AND user_id='demo-author'`).get())
+      .toEqual({ permission: 'EDIT' });
   });
 });
