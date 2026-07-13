@@ -26,6 +26,13 @@ export interface ResourceTableProps {
 }
 
 type ConfirmAction = { type: 'trash' | 'remove'; item: WorkspaceItemSummary };
+type FocusPlan = {
+  origin: HTMLElement | null;
+  next: HTMLElement | null;
+  previous: HTMLElement | null;
+  table: HTMLElement | null;
+  heading: HTMLElement | null;
+};
 
 const kindMeta: Record<WorkspaceItemKind, { label: string; icon: Icon }> = {
   GUIDE: { label: '指南', icon: BookOpen },
@@ -48,12 +55,25 @@ export function ResourceTable({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
-  const focusOriginRef = useRef<HTMLElement | null>(null);
+  const tableRef = useRef<HTMLDivElement>(null);
+  const focusPlanRef = useRef<FocusPlan | null>(null);
 
-  const restoreOriginFocus = () => {
-    const origin = focusOriginRef.current;
-    focusOriginRef.current = null;
-    if (origin?.isConnected) origin.focus();
+  const restoreOriginFocus = (defer = false) => {
+    const origin = focusPlanRef.current?.origin;
+    focusPlanRef.current = null;
+    const focus = () => { if (origin?.isConnected) origin.focus(); };
+    if (defer) window.setTimeout(focus, 0);
+    else focus();
+  };
+
+  const restoreSuccessFocus = () => {
+    const plan = focusPlanRef.current;
+    focusPlanRef.current = null;
+    window.setTimeout(() => {
+      const target = [plan?.origin, plan?.next, plan?.previous, plan?.table, plan?.heading]
+        .find((candidate): candidate is HTMLElement => Boolean(candidate?.isConnected));
+      target?.focus();
+    }, 0);
   };
 
   const closeDialog = () => {
@@ -63,7 +83,17 @@ export function ResourceTable({
   };
 
   const requestConfirmation = (action: ConfirmAction, origin: HTMLElement | null) => {
-    focusOriginRef.current = origin;
+    const rows = [...(tableRef.current?.querySelectorAll<HTMLElement>('.resource-row') ?? [])];
+    const row = origin?.closest<HTMLElement>('.resource-row') ?? null;
+    const rowIndex = row ? rows.indexOf(row) : -1;
+    const rowFocusTarget = (candidate: HTMLElement | undefined) => candidate?.querySelector<HTMLElement>('[data-resource-focus-target]') ?? null;
+    focusPlanRef.current = {
+      origin,
+      next: rowIndex >= 0 ? rowFocusTarget(rows[rowIndex + 1]) : null,
+      previous: rowIndex > 0 ? rowFocusTarget(rows[rowIndex - 1]) : null,
+      table: tableRef.current,
+      heading: tableRef.current?.closest('.personal-resource-page')?.querySelector<HTMLElement>('h1') ?? null,
+    };
     setOpenMenuId(null);
     setConfirmAction(action);
   };
@@ -75,18 +105,18 @@ export function ResourceTable({
       if (confirmAction.type === 'trash') await onTrash(confirmAction.item);
       else await onPermanentRemove(confirmAction.item);
       setConfirmAction(null);
-      restoreOriginFocus();
+      restoreSuccessFocus();
     } catch {
       // The page owns the visible server error and keeps the item in local state.
       setConfirmAction(null);
-      restoreOriginFocus();
+      restoreOriginFocus(true);
     } finally {
       setPendingId(null);
     }
   };
 
   return <>
-    <div className="resource-table" role="table" aria-label="资源列表">
+    <div ref={tableRef} className="resource-table" role="table" tabIndex={-1} aria-label="资源列表">
       <div role="rowgroup">
         <div className="resource-table-head" role="row">
           <span role="columnheader">资源</span><span role="columnheader">工作区</span><span role="columnheader">类型</span><span role="columnheader">更新时间</span><span role="columnheader">操作</span>
@@ -184,10 +214,10 @@ function ResourceRow({
     <span className="resource-type" role="cell">{meta.label}</span>
     <time role="cell" dateTime={item.updatedAt}>{formatDate(item.updatedAt)}</time>
     <div className="resource-actions" role="cell">
-      {openLabel ? <button className="resource-action-button" type="button" onClick={() => onOpen(item)}>{openLabel} {item.title}</button> : null}
+      {openLabel ? <button className="resource-action-button" data-resource-focus-target type="button" onClick={() => onOpen(item)}>{openLabel} {item.title}</button> : null}
       {mode === 'trash'
-        ? <button className="resource-icon-action" type="button" disabled={busy} aria-label={`恢复 ${item.title}`} onClick={() => { void runDirect(() => onRestore(item)); }}><ArrowCounterClockwise size={18} /></button>
-        : <button className={`resource-icon-action${item.favorite ? ' is-active' : ''}`} type="button" disabled={busy} aria-label={`${item.favorite ? '取消收藏' : '收藏'} ${item.title}`} onClick={() => { void runDirect(() => onFavorite(item, !item.favorite)); }}><Star size={18} weight={item.favorite ? 'fill' : 'regular'} /></button>}
+        ? <button className="resource-icon-action" data-resource-focus-target type="button" disabled={busy} aria-label={`恢复 ${item.title}`} onClick={() => { void runDirect(() => onRestore(item)); }}><ArrowCounterClockwise size={18} /></button>
+        : <button className={`resource-icon-action${item.favorite ? ' is-active' : ''}`} data-resource-focus-target type="button" disabled={busy} aria-label={`${item.favorite ? '取消收藏' : '收藏'} ${item.title}`} onClick={() => { void runDirect(() => onFavorite(item, !item.favorite)); }}><Star size={18} weight={item.favorite ? 'fill' : 'regular'} /></button>}
       <div ref={menuGroupRef} className="action-menu" onKeyDown={actionMenuKeyDown} onBlur={actionMenuBlur}>
         <button ref={menuButtonRef} className="resource-icon-action" type="button" disabled={busy} aria-label={`更多操作 ${item.title}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={onToggleMenu}><DotsThree size={20} weight="bold" /></button>
         {menuOpen ? <div className="action-menu-popover" role="menu">

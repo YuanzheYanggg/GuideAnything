@@ -81,7 +81,7 @@ function PersonalResourcePageContent({ kind, api, onOpen }: {
   const remove = (id: string) => setItems((current) => current.filter((item) => item.id !== id));
   return <section className="personal-resource-page page-stack">
     <header className="page-heading">
-      <div><span className="page-kicker">PERSONAL</span><h1>{title}</h1><p>{description}</p></div>
+      <div><span className="page-kicker">PERSONAL</span><h1 tabIndex={-1}>{title}</h1><p>{description}</p></div>
       {!loading ? <span className="page-count">{items.length} 项</span> : null}
     </header>
 

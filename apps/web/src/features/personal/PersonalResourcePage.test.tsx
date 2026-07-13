@@ -278,6 +278,50 @@ describe('PersonalResourcePage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
+  it('focuses a surviving row action after successful destructive removal', async () => {
+    const user = userEvent.setup();
+    const api = createPersonalApi({
+      trash: [
+        guideResource({ id: 'remove-first', title: '移除第一项' }),
+        guideResource({ id: 'keep-second', title: '保留第二项' }),
+      ],
+    });
+    render(<PersonalResourcePage kind="trash" api={api} onOpen={vi.fn()} />);
+    await user.click(await screen.findByRole('button', { name: '更多操作 移除第一项' }));
+    await user.click(screen.getByRole('menuitem', { name: '永久移除' }));
+    await user.click(screen.getByRole('button', { name: '确认永久移除' }));
+
+    await waitFor(() => expect(screen.queryByText('移除第一项')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: '学习 保留第二项' })).toHaveFocus());
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it('focuses the page heading when destructive removal empties the table', async () => {
+    const user = userEvent.setup();
+    const api = createPersonalApi({ trash: [guideResource({ title: '最后一项' })] });
+    render(<PersonalResourcePage kind="trash" api={api} onOpen={vi.fn()} />);
+    await user.click(await screen.findByRole('button', { name: '更多操作 最后一项' }));
+    await user.click(screen.getByRole('menuitem', { name: '永久移除' }));
+    await user.click(screen.getByRole('button', { name: '确认永久移除' }));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: '回收站' })).toHaveFocus());
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it('restores the originating trigger when destructive removal fails', async () => {
+    const user = userEvent.setup();
+    const api = createPersonalApi({ trash: [guideResource({ title: '保留焦点' })] });
+    vi.mocked(api.permanentlyRemoveItem).mockRejectedValueOnce(new Error('移除失败'));
+    render(<PersonalResourcePage kind="trash" api={api} onOpen={vi.fn()} />);
+    const trigger = await screen.findByRole('button', { name: '更多操作 保留焦点' });
+    await user.click(trigger);
+    await user.click(screen.getByRole('menuitem', { name: '永久移除' }));
+    await user.click(screen.getByRole('button', { name: '确认永久移除' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('移除失败');
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
   it('closes an action menu on outside pointer and when focus leaves its group', async () => {
     const user = userEvent.setup();
     const api = createPersonalApi({ recent: [guideResource({ title: '菜单资源' })] });
