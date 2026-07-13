@@ -1,4 +1,4 @@
-import type { CanvasDocument, UserRole } from '@guideanything/contracts';
+import type { CanvasDocument, UserRole, WorkspacePermission } from '@guideanything/contracts';
 import type { FastifyInstance } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -66,6 +66,51 @@ export async function createTestContext(options: { uploadDir?: string } = {}): P
 
 export function authorization(token: string): { authorization: string } {
   return { authorization: `Bearer ${token}` };
+}
+
+export function seedTestWorkspace(
+  database: DatabaseSync,
+  ownerId: string,
+  input: {
+    id: string;
+    slug: string;
+    name: string;
+    description?: string;
+    iconKey?: string;
+    colorKey?: string;
+  },
+) {
+  const now = new Date().toISOString();
+  database.prepare(
+    `INSERT INTO workspaces (
+      id, slug, name, description, icon_key, color_key, owner_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.id,
+    input.slug,
+    input.name,
+    input.description ?? '',
+    input.iconKey ?? 'SquaresFour',
+    input.colorKey ?? 'general',
+    ownerId,
+    now,
+    now,
+  );
+  addTestWorkspaceMember(database, input.id, ownerId, 'OWNER');
+  return { ...input, id: input.id };
+}
+
+export function addTestWorkspaceMember(
+  database: DatabaseSync,
+  workspaceId: string,
+  userId: string,
+  permission: WorkspacePermission,
+): void {
+  database.prepare(
+    `INSERT INTO workspace_members (workspace_id, user_id, permission, created_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT (workspace_id, user_id) DO UPDATE SET permission = excluded.permission`,
+  ).run(workspaceId, userId, permission, new Date().toISOString());
 }
 
 export function sampleDocument(markdown = '# 创建销售订单\n填写客户与销售组织。'): CanvasDocument {

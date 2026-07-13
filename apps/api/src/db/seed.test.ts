@@ -14,10 +14,32 @@ describe('demo seed', () => {
     database = createDatabase(':memory:');
     migrateDatabase(database);
     await seedDatabase(database);
+    const versionIds = database.prepare(
+      'SELECT id FROM guide_versions ORDER BY guide_id, version',
+    ).all();
     await seedDatabase(database);
 
     expect(database.prepare('SELECT COUNT(*) AS count FROM users').get()).toEqual({ count: 3 });
     expect(database.prepare('SELECT COUNT(*) AS count FROM guide_versions').get()).toEqual({ count: 2 });
+    expect(database.prepare('SELECT id FROM guide_versions ORDER BY guide_id, version').all()).toEqual(versionIds);
+    expect(database.prepare('SELECT id FROM workspaces ORDER BY id').all()).toEqual([
+      { id: 'workspace-finance' },
+      { id: 'workspace-general' },
+      { id: 'workspace-materials' },
+      { id: 'workspace-people' },
+      { id: 'workspace-production' },
+      { id: 'workspace-sales' },
+    ]);
+    expect(database.prepare('SELECT COUNT(*) AS count FROM workspace_members').get()).toEqual({ count: 18 });
+    expect(database.prepare(
+      `SELECT entity_id, workspace_id
+       FROM workspace_items
+       WHERE kind = 'GUIDE'
+       ORDER BY entity_id`,
+    ).all()).toEqual([
+      { entity_id: 'demo-material-check', workspace_id: 'workspace-materials' },
+      { entity_id: 'demo-sales-order', workspace_id: 'workspace-sales' },
+    ]);
 
     const rows = database.prepare(
       'SELECT title, document_json FROM guide_versions ORDER BY title',

@@ -9,6 +9,7 @@ import { registerAuthRoutes } from './modules/auth/routes';
 import { registerGuideRoutes } from './modules/guides/routes';
 import { registerMediaRoutes } from './modules/media/routes';
 import { registerSearchRoutes } from './modules/search/routes';
+import { registerWorkspaceRoutes } from './modules/workspaces/routes';
 import { createAuthenticateRequest } from './plugins/auth';
 
 export interface BuildAppOptions {
@@ -25,7 +26,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   await app.register(cors, {
     origin: options.webOrigin ?? 'http://localhost:5173',
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   });
   await app.register(jwt, { secret: options.jwtSecret });
   await app.register(multipart, {
@@ -56,6 +57,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   await registerGuideRoutes(app, options.database);
   await registerMediaRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
   await registerSearchRoutes(app, options.database);
+  await registerWorkspaceRoutes(app, options.database);
   await app.ready();
   return app;
 }
