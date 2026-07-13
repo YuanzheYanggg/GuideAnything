@@ -8,6 +8,7 @@ interface SearchRow {
   tags_json: string;
   version: number;
   author_name: string;
+  published_at: string;
   rank: number;
 }
 
@@ -19,6 +20,7 @@ export interface SearchResult {
   tags: string[];
   version: number;
   authorName: string;
+  publishedAt: string;
 }
 
 export interface SearchPage {
@@ -35,7 +37,7 @@ export function searchPublishedGuides(database: DatabaseSync, query: string, lim
   const rows = (matchQuery
     ? database.prepare(
       `SELECT gs.version_id, gs.guide_id, gs.title, gs.summary, v.tags_json,
-              v.version, u.display_name AS author_name, bm25(guide_search) AS rank
+              v.version, u.display_name AS author_name, v.published_at AS published_at, bm25(guide_search) AS rank
        FROM guide_search gs
        JOIN guide_versions v ON v.id = gs.version_id
        JOIN guides g ON g.id = gs.guide_id
@@ -46,7 +48,7 @@ export function searchPublishedGuides(database: DatabaseSync, query: string, lim
     ).all(matchQuery, limit + 1, offset)
     : database.prepare(
       `SELECT gs.version_id, gs.guide_id, gs.title, gs.summary, v.tags_json,
-              v.version, u.display_name AS author_name, 0 AS rank
+              v.version, u.display_name AS author_name, v.published_at AS published_at, 0 AS rank
        FROM guide_search gs
        JOIN guide_versions v ON v.id = gs.version_id
        JOIN guides g ON g.id = gs.guide_id
@@ -64,6 +66,7 @@ export function searchPublishedGuides(database: DatabaseSync, query: string, lim
       tags: JSON.parse(row.tags_json) as string[],
       version: row.version,
       authorName: row.author_name,
+      publishedAt: row.published_at,
     })),
     nextOffset: hasMore ? offset + limit : null,
   };

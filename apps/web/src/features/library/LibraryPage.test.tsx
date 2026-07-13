@@ -18,9 +18,10 @@ describe('LibraryPage', () => {
   it('shows loading, search results, and learner actions', async () => {
     const user = userEvent.setup();
     let resolveSearch!: (items: typeof result[]) => void;
+    const search = vi.fn((query: string) => query ? new Promise<typeof result[]>((resolve) => { resolveSearch = resolve; }) : Promise.resolve([result]));
     const api: LibraryApi = {
       listDrafts: vi.fn().mockResolvedValue([]),
-      search: vi.fn().mockReturnValue(new Promise((resolve) => { resolveSearch = resolve; })),
+      search,
       createGuide: vi.fn(),
     };
     render(
@@ -32,6 +33,7 @@ describe('LibraryPage', () => {
       />,
     );
 
+    expect(await screen.findByRole('heading', { name: '已发布指南' })).toBeVisible();
     await user.type(screen.getByRole('searchbox'), '销售订单');
     await user.click(screen.getByRole('button', { name: '搜索指南' }));
     expect(screen.getByText('正在检索已发布指南…')).toBeVisible();
@@ -48,7 +50,7 @@ describe('LibraryPage', () => {
     const onEdit = vi.fn();
     const api: LibraryApi = {
       listDrafts: vi.fn().mockResolvedValue([{ ...result, id: 'guide-1', revision: 2, status: 'DRAFT' }]),
-      search: vi.fn().mockResolvedValue([]),
+      search: vi.fn((query: string) => Promise.resolve(query ? [] : [result])),
       createGuide: vi.fn().mockResolvedValue({ id: 'guide-new' }),
     };
     render(
@@ -60,7 +62,7 @@ describe('LibraryPage', () => {
       />,
     );
 
-    expect(await screen.findByText('我的草稿与协作')).toBeVisible();
+    expect(await screen.findByRole('heading', { name: '我的草稿与协作' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: '编辑 ERP 销售订单创建' }));
     expect(onEdit).toHaveBeenCalledWith('guide-1');
 

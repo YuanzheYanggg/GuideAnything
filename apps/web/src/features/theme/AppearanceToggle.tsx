@@ -59,7 +59,7 @@ export function AppearanceToggle() {
 
 function readStoredAppearance(): Appearance {
   const stored = localStorage.getItem(appearanceStorageKey);
-  return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+  return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'dark';
 }
 
 function resolveAppearance(appearance: Appearance): Exclude<Appearance, 'system'> {

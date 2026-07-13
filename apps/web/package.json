@@ -12,6 +12,7 @@
   "dependencies": {
     "@guideanything/canvas-core": "workspace:*",
     "@guideanything/contracts": "workspace:*",
+    "@phosphor-icons/react": "^2.1.10",
     "@xyflow/react": "12.11.2",
     "react": "19.2.7",
     "react-dom": "19.2.7",
