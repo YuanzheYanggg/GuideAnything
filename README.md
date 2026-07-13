@@ -171,6 +171,8 @@ sqlite3 data/guideanything.sqlite \
 
 ## 11. 设计与验收资料
 
+- [产品体验原则](PRODUCT.md)
+- [视觉设计系统](DESIGN.md)
 - [产品需求](docs/PRD.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [数据模型](docs/DATA_MODEL.md)

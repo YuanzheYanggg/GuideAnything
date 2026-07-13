@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-12T18:04:12Z",
+  "title": "Design System: GuideAnything",
+  "extensions": {
+    "colorMeta": {
+      "light-canvas": {
+        "role": "neutral",
+        "displayName": "Paper Canvas",
+        "canonical": "oklch(96.8% 0.004 260)",
+        "tonalRamp": ["#1D1E22", "#383A40", "#51545E", "#6E717A", "#92959D", "#BEC0C6", "#E4E4E8", "#F5F5F7"]
+      },
+      "light-material": {
+        "role": "surface",
+        "displayName": "Context Material",
+        "canonical": "oklch(99.2% 0.003 260 / 0.88)",
+        "tonalRamp": ["#22242A", "#3E4047", "#5D6068", "#7C7F87", "#A1A3AA", "#C8C9CE", "#E8E8EB", "#FCFCFD"]
+      },
+      "light-text": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "oklch(24.3% 0.007 260)",
+        "tonalRamp": ["#1D1D1F", "#2F3035", "#46484F", "#5E6069", "#797B84", "#9B9DA5", "#C8C9CF", "#F5F5F7"]
+      },
+      "light-accent": {
+        "role": "primary",
+        "displayName": "Measured Action Blue",
+        "canonical": "oklch(49.6% 0.175 255)",
+        "tonalRamp": ["#002D5A", "#003D7A", "#004F9E", "#0066CC", "#0A7AE8", "#4697F7", "#A9D0FF", "#EAF4FF"]
+      },
+      "dark-canvas": {
+        "role": "neutral",
+        "displayName": "Night Canvas",
+        "canonical": "oklch(17.4% 0.008 260)",
+        "tonalRamp": ["#111216", "#1C1D21", "#2A2C31", "#3A3D44", "#555861", "#7B7E87", "#B7B9C0", "#F5F5F7"]
+      },
+      "dark-material": {
+        "role": "surface",
+        "displayName": "Night Context Material",
+        "canonical": "oklch(23.4% 0.01 260 / 0.9)",
+        "tonalRamp": ["#16171B", "#1C1D21", "#24262B", "#303239", "#484B54", "#747780", "#B4B6BC", "#F5F5F7"]
+      },
+      "dark-text": {
+        "role": "neutral",
+        "displayName": "Night Paper",
+        "canonical": "oklch(96.7% 0.004 260)",
+        "tonalRamp": ["#24252A", "#45474F", "#656871", "#868993", "#A9ABB3", "#C7C7CC", "#E2E2E6", "#F5F5F7"]
+      },
+      "dark-accent": {
+        "role": "primary",
+        "displayName": "Night Action Blue",
+        "canonical": "oklch(61.6% 0.183 254)",
+        "tonalRamp": ["#003D7A", "#0053A6", "#006ED6", "#0A84FF", "#409CFF", "#78B7FF", "#B9D9FF", "#ECF6FF"]
+      },
+      "light-success": {
+        "role": "semantic",
+        "displayName": "Completion Green",
+        "canonical": "oklch(46.8% 0.115 151)",
+        "tonalRamp": ["#06361A", "#075021", "#0B662F", "#137A3E", "#2A9854", "#62BA7D", "#B7DFC1", "#ECF8EF"]
+      },
+      "light-warning": {
+        "role": "semantic",
+        "displayName": "Decision Amber",
+        "canonical": "oklch(45.1% 0.117 63)",
+        "tonalRamp": ["#382000", "#583300", "#704000", "#8A4B00", "#A96200", "#CD851D", "#F1CE94", "#FFF7E5"]
+      },
+      "light-danger": {
+        "role": "semantic",
+        "displayName": "Recovery Red",
+        "canonical": "oklch(43.2% 0.164 28)",
+        "tonalRamp": ["#4B0807", "#6C100C", "#8B1B15", "#B3261E", "#D8453B", "#EC766F", "#FFC4BF", "#FFF0EE"]
+      },
+      "dark-success": {
+        "role": "semantic",
+        "displayName": "Night Completion Green",
+        "canonical": "oklch(74.2% 0.154 151)",
+        "tonalRamp": ["#06361A", "#075021", "#0B662F", "#137A3E", "#2A9854", "#30D158", "#9FEBB0", "#E9FFF0"]
+      },
+      "dark-warning": {
+        "role": "semantic",
+        "displayName": "Night Decision Amber",
+        "canonical": "oklch(75.6% 0.158 70)",
+        "tonalRamp": ["#583300", "#704000", "#8A4B00", "#A96200", "#CD851D", "#FF9F0A", "#FFD28D", "#FFF7E5"]
+      },
+      "dark-danger": {
+        "role": "semantic",
+        "displayName": "Night Recovery Red",
+        "canonical": "oklch(69.4% 0.163 28)",
+        "tonalRamp": ["#6C100C", "#8B1B15", "#B3261E", "#D8453B", "#EC766F", "#FF6961", "#FFB7B1", "#FFF0EE"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Entry Display", "purpose": "Library and login orientation only." },
+      "headline": { "displayName": "Workspace Headline", "purpose": "Page and pane headings." },
+      "title": { "displayName": "Guide Title", "purpose": "Guides, dialogs, node titles, and inspector sections." },
+      "body": { "displayName": "Instructional Body", "purpose": "Readable learning and explanatory content." },
+      "label": { "displayName": "Operational Label", "purpose": "Controls, metadata, and compact supporting information." }
+    },
+    "shadows": [
+      { "name": "floating-light", "value": "0 12px 32px rgb(20 22 28 / 0.12)", "purpose": "Popovers, dialogs, and detached panels in light appearance only." },
+      { "name": "floating-dark", "value": "0 16px 36px rgb(0 0 0 / 0.28)", "purpose": "Popovers, dialogs, and detached panels in dark appearance only." },
+      { "name": "none", "value": "none", "purpose": "All ordinary cards, rows, nodes, and persistent content surfaces." }
+    ],
+    "motion": [
+      { "name": "feedback-fast", "value": "160ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Press and hover feedback." },
+      { "name": "state-standard", "value": "200ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Selection, material, and panel state changes." },
+      { "name": "overlay-enter", "value": "240ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Dialog, popover, and mobile inspector entrance." },
+      { "name": "reduced-motion", "value": "0ms", "purpose": "Nonessential animation when prefers-reduced-motion is enabled." }
+    ],
+    "breakpoints": [
+      { "name": "compact", "value": "720px" },
+      { "name": "workspace", "value": "1024px" },
+      { "name": "wide", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one clear next action in a local workflow, such as save, publish, create, or continue.",
+      "html": "<button class=\"ds-button-primary\" type=\"button\">发布指南</button>",
+      "css": ".ds-button-primary { min-height: 40px; padding: 0 16px; border: 1px solid transparent; border-radius: 10px; background: #0066CC; color: #FBFBFD; font: 600 13px/18px Inter, system-ui, sans-serif; transition: background 160ms cubic-bezier(.16,1,.3,1), transform 160ms cubic-bezier(.16,1,.3,1); } .ds-button-primary:hover { background: #004F9E; } .ds-button-primary:active { transform: translateY(1px); } .ds-button-primary:focus-visible { outline: 3px solid #0A84FF; outline-offset: 3px; } .ds-button-primary:disabled { opacity: .45; cursor: not-allowed; }"
+    },
+    {
+      "name": "Secondary Action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A visible but subordinate action for cancellation, preview, or low-risk utilities.",
+      "html": "<button class=\"ds-button-secondary\" type=\"button\">预览</button>",
+      "css": ".ds-button-secondary { min-height: 40px; padding: 0 16px; border: 1px solid #3C3C4340; border-radius: 10px; background: #FCFCFDF2; color: #1D1D1F; font: 600 13px/18px Inter, system-ui, sans-serif; transition: background 160ms cubic-bezier(.16,1,.3,1), border-color 160ms cubic-bezier(.16,1,.3,1); } .ds-button-secondary:hover { background: #F5F5F7; border-color: #3C3C4366; } .ds-button-secondary:active { background: #E4E4E8; } .ds-button-secondary:focus-visible { outline: 3px solid #0A84FF; outline-offset: 3px; }"
+    },
+    {
+      "name": "Search Field",
+      "kind": "input",
+      "refersTo": "input-default",
+      "description": "A clear, labelled search or editing field with an opaque reading surface.",
+      "html": "<label class=\"ds-field\"><span>搜索指南</span><input class=\"ds-input\" type=\"search\" placeholder=\"标题、标签或内容\"></label>",
+      "css": ".ds-field { display: grid; gap: 6px; color: #1D1D1F; font: 550 13px/18px Inter, system-ui, sans-serif; } .ds-input { min-height: 44px; padding: 0 12px; border: 1px solid #3C3C4340; border-radius: 10px; background: #FCFCFDF2; color: #1D1D1F; font: 400 15px/22px Inter, system-ui, sans-serif; } .ds-input::placeholder { color: #51545E; } .ds-input:hover { border-color: #3C3C4366; } .ds-input:focus { border-color: #0066CC; outline: 3px solid #0A84FF66; outline-offset: 1px; }"
+    },
+    {
+      "name": "Material App Bar",
+      "kind": "nav",
+      "refersTo": "material-bar",
+      "description": "Persistent top navigation that remains connected to the guide or canvas beneath it.",
+      "html": "<nav class=\"ds-app-bar\"><strong>GuideAnything</strong><button type=\"button\">新建指南</button></nav>",
+      "css": ".ds-app-bar { display: flex; align-items: center; justify-content: space-between; min-height: 56px; padding: 8px 12px; border: 1px solid #3C3C4340; border-radius: 16px; background: #FCFCFDE0; color: #1D1D1F; font: 600 13px/18px Inter, system-ui, sans-serif; backdrop-filter: blur(20px) saturate(140%); -webkit-backdrop-filter: blur(20px) saturate(140%); } .ds-app-bar button { min-height: 36px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: #0066CC; font: inherit; } .ds-app-bar button:hover { background: #0066CC14; } .ds-app-bar button:focus-visible { outline: 3px solid #0A84FF; outline-offset: 2px; }"
+    },
+    {
+      "name": "Appearance Segmented Control",
+      "kind": "custom",
+      "refersTo": "appearance-control",
+      "description": "A labelled System, Light, and Dark preference control. It never relies on icons alone.",
+      "html": "<div class=\"ds-segmented\" role=\"group\" aria-label=\"外观\"><button type=\"button\">系统</button><button class=\"is-selected\" type=\"button\">浅色</button><button type=\"button\">深色</button></div>",
+      "css": ".ds-segmented { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid #3C3C4340; border-radius: 12px; background: #FCFCFDE0; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); } .ds-segmented button { min-height: 32px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; color: #51545E; font: 550 13px/18px Inter, system-ui, sans-serif; } .ds-segmented button:hover { color: #1D1D1F; background: #3C3C4310; } .ds-segmented .is-selected { background: #FCFCFDF2; color: #1D1D1F; box-shadow: 0 1px 3px rgb(20 22 28 / .08); } .ds-segmented button:focus-visible { outline: 3px solid #0A84FF; outline-offset: 2px; }"
+    },
+    {
+      "name": "Guide Row",
+      "kind": "card",
+      "refersTo": "guide-row",
+      "description": "A searchable guide result or draft in one grouped surface, not a repeated marketing-card grid.",
+      "html": "<article class=\"ds-guide-row\"><div><strong>ERP 销售订单创建</strong><p>按步骤完成并发布销售订单。</p></div><button type=\"button\">开始学习</button></article>",
+      "css": ".ds-guide-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid #3C3C4340; border-radius: 16px; background: #FCFCFDF2; color: #1D1D1F; } .ds-guide-row strong { display: block; font: 600 15px/22px Inter, system-ui, sans-serif; } .ds-guide-row p { margin: 4px 0 0; color: #51545E; font: 400 13px/18px Inter, system-ui, sans-serif; } .ds-guide-row button { min-height: 36px; border: 0; border-radius: 10px; background: transparent; color: #0066CC; font: 600 13px/18px Inter, system-ui, sans-serif; } .ds-guide-row:hover { border-color: #3C3C4366; background: #FCFCFD; } .ds-guide-row:focus-within { outline: 3px solid #0A84FF66; outline-offset: 2px; }"
+    },
+    {
+      "name": "Canvas Node",
+      "kind": "custom",
+      "refersTo": "canvas-node",
+      "description": "A stable, opaque instruction unit whose selection state is clear without turning the canvas into a rainbow.",
+      "html": "<article class=\"ds-canvas-node\"><span>流程</span><strong>检查物料主数据</strong><p>确认物料编号、单位和库存地点。</p></article>",
+      "css": ".ds-canvas-node { width: 240px; padding: 16px; border: 1px solid #3C3C4340; border-radius: 16px; background: #FCFCFDF2; color: #1D1D1F; box-shadow: none; } .ds-canvas-node span { color: #51545E; font: 600 11px/14px Inter, system-ui, sans-serif; letter-spacing: .04em; } .ds-canvas-node strong { display: block; margin-top: 6px; font: 600 15px/22px Inter, system-ui, sans-serif; } .ds-canvas-node p { margin: 6px 0 0; color: #51545E; font: 400 13px/18px Inter, system-ui, sans-serif; } .ds-canvas-node:hover { border-color: #3C3C4366; } .ds-canvas-node:focus-visible, .ds-canvas-node.is-selected { outline: 3px solid #0A84FF; outline-offset: 3px; }"
+    },
+    {
+      "name": "Inspector Panel",
+      "kind": "custom",
+      "refersTo": "inspector-panel",
+      "description": "A supporting material panel that carries editing controls without hiding the canvas context.",
+      "html": "<aside class=\"ds-inspector\"><span>已选节点</span><h2>检查物料主数据</h2><label>标题<input value=\"检查物料主数据\"></label></aside>",
+      "css": ".ds-inspector { display: grid; gap: 12px; width: 320px; padding: 16px; border-left: 1px solid #3C3C4340; background: #FCFCFDE0; color: #1D1D1F; backdrop-filter: blur(20px) saturate(140%); -webkit-backdrop-filter: blur(20px) saturate(140%); } .ds-inspector > span { color: #51545E; font: 600 11px/14px Inter, system-ui, sans-serif; letter-spacing: .04em; } .ds-inspector h2 { margin: 0; font: 650 20px/26px Inter, system-ui, sans-serif; letter-spacing: -.01em; } .ds-inspector label { display: grid; gap: 6px; color: #51545E; font: 550 13px/18px Inter, system-ui, sans-serif; } .ds-inspector input { min-height: 44px; padding: 0 12px; border: 1px solid #3C3C4340; border-radius: 10px; background: #FCFCFDF2; color: #1D1D1F; font: 400 15px/22px Inter, system-ui, sans-serif; } .ds-inspector input:focus { border-color: #0066CC; outline: 3px solid #0A84FF66; outline-offset: 1px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Clear Pane Workspace",
+    "overview": "GuideAnything is a focused work surface, not a dashboard. A process map, a learning step, and a guide title are the primary visual objects. Navigation, inspectors, toolbars, popovers, and status feedback use translucent materials to stay near the work without severing the user from it. The system is native-feeling but platform-neutral: familiar web controls, one disciplined sans-serif family, generous but not wasteful spacing, and feedback that is immediate rather than theatrical.",
+    "keyCharacteristics": [
+      "Adaptive light, dark, and system-following appearances, with equal visual quality in both modes.",
+      "Selective material layers that keep the active canvas or lesson visible.",
+      "Dense authoring tools organized by rhythm, grouping, and progressive disclosure.",
+      "A single, calm action color reserved for intent, selection, focus, and progress.",
+      "Familiar, accessible interaction patterns with reduced-motion and higher-contrast fallbacks."
+    ],
+    "rules": [
+      { "name": "The Context Material Rule", "body": "Apply blur only when the user needs to see a foreground control while retaining awareness of the content behind it. Guide cards, lesson reading surfaces, node bodies, and form fields stay opaque or nearly opaque.", "section": "colors" },
+      { "name": "The Two-Appearance Rule", "body": "Every semantic color, border, icon, focus ring, and translucent material has a light and dark treatment. Test contrast against the actual backdrop, not a blank swatch; strengthen the material before reducing text contrast.", "section": "colors" },
+      { "name": "The Task-Type Rule", "body": "Text that controls work is compact and stable; text that teaches can breathe. Do not use fluid, viewport-dependent headline sizes inside a product workspace.", "section": "typography" },
+      { "name": "The Weight-Not-Glow Rule", "body": "Material opacity and tonal separation carry hierarchy. Blurred shadows, glow borders, and chromatic refraction are forbidden in the productive core of the application.", "section": "elevation" },
+      { "name": "The One-Action Rule", "body": "A user should be able to identify the next meaningful action in a region within a glance. If two actions feel equally primary, the flow needs a decision before more visual emphasis is added.", "section": "components" }
+    ],
+    "dos": [
+      "Do use the semantic light and dark token pairs together; theme changes are complete system changes, not background swaps.",
+      "Do keep material layers purposeful, localized, and stronger when they carry text or controls over media.",
+      "Do provide default, hover, focus-visible, active, disabled, loading, error, and success states for each interactive component.",
+      "Do use 44px touch targets for primary touch controls and preserve all existing keyboard workflows.",
+      "Do use skeletons that match content shape for page-level loading and direct status messages for save or publish feedback.",
+      "Do collapse structure, not information, on small screens: toolbars become overflow actions, inspectors become sheets, and the active learning step stays prominent."
+    ],
+    "donts": [
+      "Don't recreate the generic enterprise dashboards built from repeated cards, loud status colors, and metric-first hero panels named in PRODUCT.md.",
+      "Don't use the dark AI tool aesthetics named in PRODUCT.md: black voids, neon purple or cyan gradients, glowing borders, shader backgrounds, or ornamental motion.",
+      "Don't use decorative glassmorphism: no blur on every container, no uncontrolled translucent text, and no low-contrast frosted cards.",
+      "Don't imitate Apple through copied icons, device frames, traffic-light controls, faux system windows, or proprietary assets.",
+      "Don't use editorial serif display type in authoring controls, data, menus, or step-by-step teaching content.",
+      "Don't use gradient text, colored side-stripe borders, identical card grids, bounce effects, or a modal before inline or progressive disclosure has been considered."
+    ]
+  }
+}
