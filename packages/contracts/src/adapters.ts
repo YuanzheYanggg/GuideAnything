@@ -1,5 +1,25 @@
 import { z } from 'zod';
 
+export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
+export interface JsonObject { [key: string]: JsonValue }
+
+function isPlainJsonObject(input: unknown): input is Record<string, unknown> {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return false;
+  const prototype = Object.getPrototypeOf(input);
+  return (prototype === Object.prototype || prototype === null)
+    && Object.getOwnPropertySymbols(input).length === 0;
+}
+
+export const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
+  z.null(),
+  z.boolean(),
+  z.number().finite(),
+  z.string(),
+  z.array(JsonValueSchema),
+  z.custom<Record<string, unknown>>(isPlainJsonObject, { message: 'Expected a plain JSON object' })
+    .pipe(z.record(z.string(), JsonValueSchema)),
+]));
+
 export const AgentRiskSchema = z.enum(['READ', 'WRITE', 'EXECUTE']);
 export const AgentCapabilitySchema = z.object({
   id: z.string().min(1),
@@ -41,7 +61,7 @@ export const AgentEventSchema = z.object({
   id: z.string().min(1),
   sessionId: z.string().min(1),
   type: z.enum(['MESSAGE', 'TOOL_REQUEST', 'TOOL_RESULT', 'STATUS', 'ERROR']),
-  payload: z.record(z.string(), z.unknown()),
+  payload: z.record(z.string(), JsonValueSchema),
 });
 export const OntologyBuildSchema = z.object({
   id: z.string().min(1),

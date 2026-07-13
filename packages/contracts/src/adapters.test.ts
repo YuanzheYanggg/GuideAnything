@@ -10,6 +10,7 @@ import {
   OntologyResultSchema,
   SyncResultSchema,
 } from './adapters';
+import { JsonValueSchema, type JsonValue } from './index';
 
 it('keeps runtime capabilities explicit and serializable', () => {
   expect(AgentCapabilitySchema.parse({
@@ -53,6 +54,45 @@ it('validates agent session and event lifecycle values', () => {
     type: 'TOOL_REQUEST',
     payload: { capabilityId: 'run-command' },
   }).payload).toEqual({ capabilityId: 'run-command' });
+});
+
+it('keeps nested agent event payloads JSON serializable through the root export', () => {
+  const payload: Record<string, JsonValue> = {
+    approved: true,
+    attempts: 2,
+    note: null,
+    tool: {
+      id: 'run-command',
+      arguments: ['pnpm', { flags: ['test'], timeout: 30 }],
+    },
+  };
+  const event = AgentEventSchema.parse({
+    id: 'event-json',
+    sessionId: 'session-1',
+    type: 'TOOL_REQUEST',
+    payload,
+  });
+
+  expect(JsonValueSchema.parse(payload)).toEqual(payload);
+  expect(JSON.parse(JSON.stringify(event))).toEqual(event);
+});
+
+it.each([
+  ['bigint', 1n],
+  ['function', () => 'not-json'],
+  ['symbol', Symbol('not-json')],
+  ['undefined', undefined],
+  ['NaN', Number.NaN],
+  ['Infinity', Number.POSITIVE_INFINITY],
+  ['Date', new Date('2026-07-13T00:00:00.000Z')],
+  ['class instance', new (class RuntimeValue { value = 'not-plain'; })()],
+])('rejects %s values in agent event payloads', (_label, invalidValue) => {
+  expect(() => AgentEventSchema.parse({
+    id: 'event-invalid',
+    sessionId: 'session-1',
+    type: 'TOOL_RESULT',
+    payload: { invalidValue },
+  })).toThrow();
 });
 
 it('validates ontology build, query, and evidence results', () => {
