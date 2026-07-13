@@ -8,6 +8,7 @@ import { GuideService } from './service';
 
 const IdParamsSchema = z.object({ id: z.string().min(1).max(200) });
 const CreateGuideSchema = z.object({
+  workspaceId: z.string().min(1).max(200),
   title: z.string().trim().min(1).max(200),
   summary: z.string().trim().max(2_000).default(''),
   tags: z.array(z.string().trim().min(1).max(50)).max(20).default([]),
@@ -20,6 +21,10 @@ const SaveGuideSchema = z.object({
   document: CanvasDocumentSchema.optional(),
 });
 const CollaboratorSchema = z.object({ userId: z.string().min(1).max(200) });
+const GuideListQuerySchema = z.object({
+  workspaceId: z.string().min(1).max(200).optional(),
+  scope: z.enum(['owned', 'editable', 'shared']).optional(),
+});
 
 export async function registerGuideRoutes(app: FastifyInstance, database: DatabaseSync): Promise<void> {
   const service = new GuideService(database);
@@ -31,9 +36,15 @@ export async function registerGuideRoutes(app: FastifyInstance, database: Databa
     return reply.code(201).send({ guide });
   });
 
-  app.get('/api/guides', { preHandler: app.authenticateRequest }, async (request) => ({
-    items: service.list(request.authUser!.id),
-  }));
+  app.get('/api/guides', { preHandler: app.authenticateRequest }, async (request, reply) => {
+    const input = parseOrReply(GuideListQuerySchema, request.query, reply);
+    if (!input) return;
+    const options = {
+      ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+      ...(input.scope === undefined ? {} : { scope: input.scope }),
+    };
+    return { items: service.list(request.authUser!.id, options) };
+  });
 
   app.get('/api/guides/:id', { preHandler: app.authenticateRequest }, async (request, reply) => {
     const params = parseOrReply(IdParamsSchema, request.params, reply);

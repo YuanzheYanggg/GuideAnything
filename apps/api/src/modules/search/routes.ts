@@ -16,6 +16,12 @@ export async function registerSearchRoutes(app: FastifyInstance, database: Datab
     if (!input.success) {
       return reply.code(400).send({ code: 'VALIDATION_ERROR', message: '关键词不能超过 100 个字符' });
     }
-    return searchPublishedGuides(database, input.data.q, input.data.limit, input.data.offset);
+    return searchPublishedGuides(
+      database,
+      request.authUser!.id,
+      input.data.q,
+      input.data.limit,
+      input.data.offset,
+    );
   });
 }

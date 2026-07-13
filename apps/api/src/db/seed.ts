@@ -34,6 +34,7 @@ export async function seedDatabase(database: DatabaseSync): Promise<void> {
     ['ERP', '物料', '主数据'],
     materialCheckDocument(),
   );
+  backfillGuideWorkspaceItems(database);
   const materialVersion = ensurePublished(database, MATERIAL_GUIDE_ID);
 
   insertGuideIfMissing(
@@ -45,6 +46,7 @@ export async function seedDatabase(database: DatabaseSync): Promise<void> {
     ['ERP', '销售订单', 'VA01', 'SAP'],
     salesOrderDocument(materialVersion.id, materialVersion.version),
   );
+  backfillGuideWorkspaceItems(database);
   ensurePublished(database, SALES_GUIDE_ID);
 
   database.prepare(
@@ -52,8 +54,6 @@ export async function seedDatabase(database: DatabaseSync): Promise<void> {
      VALUES (?, ?, 'EDIT', ?)
      ON CONFLICT (guide_id, user_id) DO UPDATE SET permission = 'EDIT'`,
   ).run(SALES_GUIDE_ID, EDITOR_ID, new Date().toISOString());
-
-  backfillGuideWorkspaceItems(database);
 }
 
 function seedWorkspaces(database: DatabaseSync): void {

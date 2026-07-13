@@ -1,6 +1,7 @@
 import type { CanvasDocument, UserRole, WorkspacePermission } from '@guideanything/contracts';
 import type { FastifyInstance } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
+import { expect } from 'vitest';
 
 import { buildApp } from '../app';
 import { createDatabase } from '../db/client';
@@ -140,5 +141,42 @@ export function sampleDocument(markdown = '# 创建销售订单\n填写客户与
     ],
     entryNodeId: 'start',
     exitNodeIds: ['instructions'],
+  };
+}
+
+export async function createWorkspaceGuideFixture() {
+  const context = await createTestContext();
+  const workspace = seedTestWorkspace(context.database, context.userIds.author, {
+    id: 'workspace-fixture',
+    slug: 'fixture',
+    name: '测试工作区',
+  });
+  const created = await context.app.inject({
+    method: 'POST',
+    url: '/api/guides',
+    headers: authorization(context.tokens.author),
+    payload: { workspaceId: workspace.id, title: '可检索测试指南', summary: '', tags: ['测试'] },
+  });
+  expect(created.statusCode).toBe(201);
+  const guide = created.json().guide as { id: string; workspaceItemId: string };
+  const saved = await context.app.inject({
+    method: 'PATCH',
+    url: `/api/guides/${guide.id}`,
+    headers: authorization(context.tokens.author),
+    payload: { revision: 0, document: sampleDocument('# 可检索测试指南\n用于回收站检索测试。') },
+  });
+  expect(saved.statusCode).toBe(200);
+  const published = await context.app.inject({
+    method: 'POST',
+    url: `/api/guides/${guide.id}/publish`,
+    headers: authorization(context.tokens.author),
+  });
+  expect(published.statusCode).toBe(201);
+  return {
+    ...context,
+    workspaceId: workspace.id,
+    workspaceItemId: guide.workspaceItemId,
+    guideId: guide.id,
+    versionId: published.json().version.id as string,
   };
 }

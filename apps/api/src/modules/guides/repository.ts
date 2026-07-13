@@ -4,10 +4,13 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { httpError } from '../../lib/http-error';
+import { recordActivity } from '../workspaces/repository';
 
 export interface GuideDraft {
   id: string;
   ownerId: string;
+  workspaceId: string;
+  workspaceItemId: string;
   authorName: string;
   title: string;
   summary: string;
@@ -23,6 +26,8 @@ export interface GuideDraft {
 interface GuideRow {
   id: string;
   owner_id: string;
+  workspace_id: string;
+  workspace_item_id: string;
   author_name: string;
   title: string;
   summary: string;
@@ -51,45 +56,95 @@ export type GuideAccess = 'OWNER' | 'EDIT' | null;
 export function createGuide(
   database: DatabaseSync,
   ownerId: string,
+  workspaceId: string,
   input: { title: string; summary: string; tags: string[] },
 ): GuideDraft {
   const id = randomUUID();
+  const workspaceItemId = randomUUID();
   const now = new Date().toISOString();
   const document = emptyDocument();
-  database.prepare(
-    `INSERT INTO guides (
-      id, owner_id, title, summary, tags_json, status, visibility, revision,
-      draft_document, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'DRAFT', 'INTERNAL', 0, ?, ?, ?)`,
-  ).run(id, ownerId, input.title, input.summary, JSON.stringify(input.tags), JSON.stringify(document), now, now);
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    database.prepare(
+      `INSERT INTO guides (
+        id, owner_id, title, summary, tags_json, status, visibility, revision,
+        draft_document, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'DRAFT', 'INTERNAL', 0, ?, ?, ?)`,
+    ).run(id, ownerId, input.title, input.summary, JSON.stringify(input.tags), JSON.stringify(document), now, now);
+    database.prepare(
+      `INSERT INTO workspace_items (
+        id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+      ) VALUES (?, ?, 'GUIDE', ?, ?, ?, ?, ?, ?)`,
+    ).run(workspaceItemId, workspaceId, id, input.title, input.summary, ownerId, now, now);
+    recordActivity(database, {
+      workspaceId,
+      actorId: ownerId,
+      action: 'GUIDE_CREATED',
+      itemId: workspaceItemId,
+    });
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
   return getGuide(database, id)!;
 }
 
 export function getGuide(database: DatabaseSync, guideId: string): GuideDraft | null {
   const row = database.prepare(
-    `SELECT g.id, g.owner_id, u.display_name AS author_name, g.title, g.summary,
+    `SELECT g.id, g.owner_id, item.workspace_id, item.id AS workspace_item_id,
+            u.display_name AS author_name, g.title, g.summary,
             g.tags_json, g.status, g.revision, g.draft_document, g.published_version_id,
             v.version AS published_version, g.updated_at
      FROM guides g
      JOIN users u ON u.id = g.owner_id
+     JOIN workspace_items item ON item.kind = 'GUIDE' AND item.entity_id = g.id
+     JOIN workspaces workspace ON workspace.id = item.workspace_id
      LEFT JOIN guide_versions v ON v.id = g.published_version_id
-     WHERE g.id = ? AND g.status != 'ARCHIVED'`,
+     WHERE g.id = ? AND g.status != 'ARCHIVED'
+       AND item.deleted_at IS NULL AND workspace.status = 'ACTIVE'`,
   ).get(guideId) as unknown as GuideRow | undefined;
   return row ? mapGuide(row) : null;
 }
 
-export function listEditableGuides(database: DatabaseSync, userId: string): GuideDraft[] {
+export type GuideListScope = 'owned' | 'editable' | 'shared';
+
+export function listGuides(
+  database: DatabaseSync,
+  userId: string,
+  options: { workspaceId?: string; scope?: GuideListScope },
+): GuideDraft[] {
+  const scope = options.scope ?? 'editable';
   const rows = database.prepare(
-    `SELECT DISTINCT g.id, g.owner_id, u.display_name AS author_name, g.title, g.summary,
+    `SELECT DISTINCT g.id, g.owner_id, item.workspace_id, item.id AS workspace_item_id,
+            u.display_name AS author_name, g.title, g.summary,
             g.tags_json, g.status, g.revision, g.draft_document, g.published_version_id,
             v.version AS published_version, g.updated_at
      FROM guides g
      JOIN users u ON u.id = g.owner_id
+     JOIN workspace_items item ON item.kind = 'GUIDE' AND item.entity_id = g.id
+     JOIN workspaces workspace ON workspace.id = item.workspace_id AND workspace.status = 'ACTIVE'
      LEFT JOIN guide_collaborators c ON c.guide_id = g.id AND c.user_id = ?
      LEFT JOIN guide_versions v ON v.id = g.published_version_id
-     WHERE g.status != 'ARCHIVED' AND (g.owner_id = ? OR c.user_id IS NOT NULL)
+     WHERE g.status != 'ARCHIVED' AND item.deleted_at IS NULL
+       AND (? IS NULL OR item.workspace_id = ?)
+       AND (
+         (? = 'owned' AND g.owner_id = ?)
+         OR (? = 'shared' AND c.user_id IS NOT NULL AND g.owner_id != ?)
+         OR (? = 'editable' AND (g.owner_id = ? OR c.user_id IS NOT NULL))
+       )
      ORDER BY g.updated_at DESC`,
-  ).all(userId, userId) as unknown as GuideRow[];
+  ).all(
+    userId,
+    options.workspaceId ?? null,
+    options.workspaceId ?? null,
+    scope,
+    userId,
+    scope,
+    userId,
+    scope,
+    userId,
+  ) as unknown as GuideRow[];
   return rows.map(mapGuide);
 }
 
@@ -101,6 +156,8 @@ export function getGuideAccess(database: DatabaseSync, guideId: string, userId: 
        ELSE NULL
      END AS access
      FROM guides g
+     JOIN workspace_items item ON item.kind = 'GUIDE' AND item.entity_id = g.id AND item.deleted_at IS NULL
+     JOIN workspaces workspace ON workspace.id = item.workspace_id AND workspace.status = 'ACTIVE'
      LEFT JOIN guide_collaborators c ON c.guide_id = g.id AND c.user_id = ?
      WHERE g.id = ? AND g.status != 'ARCHIVED'`,
   ).get(userId, userId, guideId) as unknown as { access: GuideAccess } | undefined;
@@ -110,6 +167,7 @@ export function getGuideAccess(database: DatabaseSync, guideId: string, userId: 
 export function updateGuide(
   database: DatabaseSync,
   guideId: string,
+  actorId: string,
   revision: number,
   input: { title?: string; summary?: string; tags?: string[]; document?: CanvasDocument },
 ): GuideDraft {
@@ -122,21 +180,37 @@ export function updateGuide(
     document: input.document ?? current.document,
   };
   const now = new Date().toISOString();
-  const result = database.prepare(
-    `UPDATE guides
-     SET title = ?, summary = ?, tags_json = ?, draft_document = ?, revision = revision + 1, updated_at = ?
-     WHERE id = ? AND revision = ?`,
-  ).run(
-    next.title,
-    next.summary,
-    JSON.stringify(next.tags),
-    JSON.stringify(next.document),
-    now,
-    guideId,
-    revision,
-  );
-  if (result.changes === 0) {
-    throw httpError(409, 'REVISION_CONFLICT', '指南已被其他操作更新，请重新载入');
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const result = database.prepare(
+      `UPDATE guides
+       SET title = ?, summary = ?, tags_json = ?, draft_document = ?, revision = revision + 1, updated_at = ?
+       WHERE id = ? AND revision = ?`,
+    ).run(
+      next.title,
+      next.summary,
+      JSON.stringify(next.tags),
+      JSON.stringify(next.document),
+      now,
+      guideId,
+      revision,
+    );
+    if (result.changes === 0) {
+      throw httpError(409, 'REVISION_CONFLICT', '指南已被其他操作更新，请重新载入');
+    }
+    database.prepare(
+      `UPDATE workspace_items SET title = ?, summary = ?, updated_at = ? WHERE id = ?`,
+    ).run(next.title, next.summary, now, current.workspaceItemId);
+    recordActivity(database, {
+      workspaceId: current.workspaceId,
+      actorId,
+      action: 'GUIDE_UPDATED',
+      itemId: current.workspaceItemId,
+    });
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
   }
   return getGuide(database, guideId)!;
 }
@@ -144,6 +218,7 @@ export function updateGuide(
 export function addCollaborator(
   database: DatabaseSync,
   guideId: string,
+  actorId: string,
   userId: string,
 ): void {
   const user = database.prepare(`SELECT role FROM users WHERE id = ?`).get(userId) as
@@ -152,11 +227,27 @@ export function addCollaborator(
   if (!user || !['EDITOR', 'AUTHOR'].includes(user.role)) {
     throw httpError(400, 'INVALID_COLLABORATOR', '协作者必须是编辑者或作者');
   }
-  database.prepare(
-    `INSERT INTO guide_collaborators (guide_id, user_id, permission, created_at)
-     VALUES (?, ?, 'EDIT', ?)
-     ON CONFLICT (guide_id, user_id) DO UPDATE SET permission = 'EDIT'`,
-  ).run(guideId, userId, new Date().toISOString());
+  const guide = getGuide(database, guideId);
+  if (!guide) throw httpError(404, 'GUIDE_NOT_FOUND', '指南不存在');
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    database.prepare(
+      `INSERT INTO guide_collaborators (guide_id, user_id, permission, created_at)
+       VALUES (?, ?, 'EDIT', ?)
+       ON CONFLICT (guide_id, user_id) DO UPDATE SET permission = 'EDIT'`,
+    ).run(guideId, userId, new Date().toISOString());
+    recordActivity(database, {
+      workspaceId: guide.workspaceId,
+      actorId,
+      action: 'COLLABORATOR_ADDED',
+      itemId: guide.workspaceItemId,
+      metadata: { userId, permission: 'EDIT' },
+    });
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function publishGuide(
@@ -206,6 +297,13 @@ export function publishGuide(
       `INSERT INTO guide_search (version_id, guide_id, title, summary, tags, content)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(id, guideId, guide.title, guide.summary, guide.tags.join(' '), searchText);
+    recordActivity(database, {
+      workspaceId: guide.workspaceId,
+      actorId: publisherId,
+      action: 'GUIDE_PUBLISHED',
+      itemId: guide.workspaceItemId,
+      metadata: { versionId: id, version },
+    });
     database.exec('COMMIT');
   } catch (error) {
     database.exec('ROLLBACK');
@@ -236,6 +334,8 @@ function mapGuide(row: GuideRow): GuideDraft {
   return {
     id: row.id,
     ownerId: row.owner_id,
+    workspaceId: row.workspace_id,
+    workspaceItemId: row.workspace_item_id,
     authorName: row.author_name,
     title: row.title,
     summary: row.summary,
@@ -301,4 +401,3 @@ function extractSearchText(document: CanvasDocument): string {
   for (const step of document.steps) values.push(step.title, step.body ?? '');
   return values.filter(Boolean).join('\n');
 }
-
