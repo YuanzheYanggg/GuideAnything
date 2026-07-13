@@ -2,6 +2,14 @@ import type { AuthUser, Session } from '../features/auth/types';
 import type { DraftItem, LibraryApi, SearchItem } from '../features/library/LibraryPage';
 import type { EditorApi, GuideDraftDetail, SearchPage } from '../features/editor/GuideEditor';
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
+import type {
+  PersonalApi,
+  WorkspaceApi,
+  WorkspaceActivity,
+  WorkspaceItemKind,
+  WorkspaceItemSummary,
+  WorkspaceSummary,
+} from '../features/workspace/types';
 
 const tokenKey = 'guideanything-token';
 
@@ -59,6 +67,49 @@ export class ApiClient {
         const form = new FormData();
         form.append('file', file);
         return (await this.request<{ asset: { id: string; url: string; kind: 'IMAGE' | 'VIDEO' } }>('/media', { method: 'POST', body: form })).asset;
+      },
+    };
+  }
+
+  workspaceApi(): WorkspaceApi {
+    return {
+      list: async () => (await this.request<{ items: WorkspaceSummary[] }>('/workspaces')).items,
+      get: (id) => this.request<{
+        workspace: WorkspaceSummary;
+        counts: Record<WorkspaceItemKind, number>;
+      }>(`/workspaces/${id}`),
+      listItems: async (id, kind) => (await this.request<{ items: WorkspaceItemSummary[] }>(
+        `/workspaces/${id}/items${kind ? `?kind=${kind}` : ''}`,
+      )).items,
+      activity: async (id) => (await this.request<{ items: WorkspaceActivity[] }>(
+        `/workspaces/${id}/activity`,
+      )).items,
+    };
+  }
+
+  personalApi(): PersonalApi {
+    return {
+      listFavorites: async () => (await this.request<{ items: WorkspaceItemSummary[] }>('/me/favorites')).items,
+      listRecent: async () => (await this.request<{ items: WorkspaceItemSummary[] }>('/me/recent')).items,
+      listShared: async () => (await this.request<{ items: WorkspaceItemSummary[] }>('/me/shared')).items,
+      listTrash: async () => (await this.request<{ items: WorkspaceItemSummary[] }>('/me/trash')).items,
+      favorite: async (itemId) => (await this.request<{ item: WorkspaceItemSummary }>(
+        `/me/favorites/${itemId}`, { method: 'PUT' },
+      )).item,
+      unfavorite: async (itemId) => (await this.request<{ item: WorkspaceItemSummary }>(
+        `/me/favorites/${itemId}`, { method: 'DELETE' },
+      )).item,
+      recordRecent: async (itemId, context) => (await this.request<{ item: WorkspaceItemSummary }>(
+        `/me/recent/${itemId}`, { method: 'PUT', body: JSON.stringify({ context }) },
+      )).item,
+      trashItem: async (itemId) => (await this.request<{ item: WorkspaceItemSummary }>(
+        `/workspace-items/${itemId}/trash`, { method: 'POST' },
+      )).item,
+      restoreItem: async (itemId) => (await this.request<{ item: WorkspaceItemSummary }>(
+        `/workspace-items/${itemId}/restore`, { method: 'POST' },
+      )).item,
+      permanentlyRemoveItem: async (itemId) => {
+        await this.request<void>(`/workspace-items/${itemId}`, { method: 'DELETE' });
       },
     };
   }
