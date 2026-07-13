@@ -42,6 +42,7 @@ function renderWorkspaceRoutes(input: {
   initialPath: string;
   workspaces: WorkspaceSummary[];
   items?: WorkspaceItemSummary[];
+  user?: AuthUser;
 }) {
   const workspaceApi: WorkspaceApi = {
     list: vi.fn().mockResolvedValue(input.workspaces),
@@ -57,7 +58,7 @@ function renderWorkspaceRoutes(input: {
     <AppearanceProvider>
       <MemoryRouter initialEntries={[input.initialPath]}>
         <Routes>
-          <Route element={<WorkspaceShell user={authorUser} workspaceApi={workspaceApi} personalApi={personalApi} onLogout={vi.fn()} />}>
+          <Route element={<WorkspaceShell user={input.user ?? authorUser} workspaceApi={workspaceApi} personalApi={personalApi} onLogout={vi.fn()} />}>
             <Route path="/library" element={<h1>指南库</h1>} />
             <Route path="/workspaces" element={<WorkspaceDirectoryPage />} />
             <Route path="/workspaces/:workspaceId" element={<WorkspaceOverviewPage workspaceApi={workspaceApi} />} />
@@ -123,6 +124,29 @@ describe('workspace pages', () => {
 
     expect(await screen.findByRole('heading', { name: '物料管理' })).toBeVisible();
     expect(screen.queryByRole('link', { name: '新建指南' })).not.toBeInTheDocument();
+  });
+
+  it('does not offer a workspace-owner create action to learners', async () => {
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces/workspace-materials',
+      user: { ...authorUser, id: 'learner', role: 'LEARNER' },
+      workspaces: [{ ...workspaceDefaults, permission: 'OWNER', id: 'workspace-materials', name: '物料管理' }],
+    });
+
+    expect(await screen.findByRole('heading', { name: '物料管理' })).toBeVisible();
+    expect(screen.queryByRole('link', { name: '新建指南' })).not.toBeInTheDocument();
+  });
+
+  it('offers an EDIT workspace create action to editors', async () => {
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces/workspace-materials',
+      user: { ...authorUser, id: 'editor', role: 'EDITOR' },
+      workspaces: [{ ...workspaceDefaults, permission: 'EDIT', id: 'workspace-materials', name: '物料管理' }],
+    });
+
+    expect(await screen.findByRole('link', { name: '新建指南' })).toHaveAttribute(
+      'href', '/workspaces/workspace-materials/guides?create=1',
+    );
   });
 
   it('links favorite guides to the route allowed by their permission', async () => {

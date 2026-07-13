@@ -149,3 +149,76 @@ apps/web/src/features/personal/PersonalResourcePage.test.tsx
 apps/web/src/features/resources/ResourceTable.tsx
 packages/contracts/src/workspace.ts
 ```
+
+---
+
+## Review follow-up 2: initial-load ownership and scoped create authorization
+
+### RED evidence
+
+Focused regressions were run before implementation:
+
+```text
+pnpm --filter @guideanything/web exec vitest run src/features/library/LibraryPage.test.tsx src/features/workspace/WorkspacePages.test.tsx
+
+Test Files  2 failed (2)
+Tests       7 failed | 20 passed (27)
+```
+
+The failures reproduced both reported roots:
+
+- Search results existed in rendered state but remained hidden behind the never-cleared `正在载入指南…` state.
+- A scoped `?create=1` called `createGuide("workspace-sales")` before the editable-workspace request resolved, including VIEW and LEARNER cases.
+- A LEARNER with workspace OWNER permission still received the overview create link.
+
+### GREEN evidence
+
+The exact requested final verification completed successfully:
+
+```text
+pnpm --filter @guideanything/web test
+Test Files  12 passed (12)
+Tests       76 passed (76)
+
+pnpm --filter @guideanything/api test
+Test Files  9 passed (9)
+Tests       34 passed (34)
+
+pnpm --filter @guideanything/web typecheck   passed
+pnpm --filter @guideanything/api typecheck   passed
+pnpm lint                                    passed
+pnpm build                                   passed
+git diff --check                             passed
+```
+
+### Resolution
+
+- Initial published loading and interactive search now have separate generations. Starting a query explicitly supersedes initial loading; a stale initial resolve, reject, or `finally` cannot replace query state.
+- Clearing a query starts a fresh published-list request instead of exposing an initial request that was already superseded.
+- Scoped creation requires both an AUTHOR/EDITOR application role and a loaded editable-workspace match with OWNER/EDIT permission.
+- Scoped create intent is consumed before asynchronous authorization, waits for the editable-workspace list, executes once after success, and is discarded after load or authorization failure so a later retry cannot silently create.
+- Pending scoped authorization displays a truthful status rather than an actionable create button; workspace load failures retain the explicit retry alert.
+- `WorkspaceShell` now supplies the authenticated user through outlet context, and `WorkspaceOverviewPage` combines that role with the workspace permission before rendering its create link.
+
+### Focused regression coverage
+
+- Pending initial load superseded by a successful query, followed by a stale initial rejection.
+- Query clearing and published-list reload after initial supersession.
+- AUTHOR and EDITOR scoped intent authorization and exactly-once execution.
+- VIEW and LEARNER scoped intent denial.
+- Failed editable-workspace load followed by manual retry without silent creation.
+- Workspace overview create affordances for AUTHOR/EDITOR versus VIEW/LEARNER.
+
+### Changed files
+
+```text
+apps/web/src/features/library/LibraryPage.test.tsx
+apps/web/src/features/library/LibraryPage.tsx
+apps/web/src/features/workspace/WorkspaceOverviewPage.tsx
+apps/web/src/features/workspace/WorkspacePages.test.tsx
+apps/web/src/features/workspace/WorkspaceShell.tsx
+```
+
+### Concerns
+
+No blocking concerns. Client-side affordance checks are intentionally a usability boundary; the API continues to enforce role and workspace authorization as the security boundary.

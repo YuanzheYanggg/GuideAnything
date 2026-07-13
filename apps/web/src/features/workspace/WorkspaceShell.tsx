@@ -29,6 +29,7 @@ interface WorkspaceShellProps {
 }
 
 export interface WorkspaceOutletContext {
+  user: AuthUser;
   workspaceApi: WorkspaceApi;
   personalApi: PersonalApi;
   workspaces: WorkspaceSummary[];
@@ -130,6 +131,7 @@ export function WorkspaceShell({ user, workspaceApi, personalApi, onLogout }: Wo
 
     <main className="workspace-content">
       <Outlet context={{
+        user,
         workspaceApi,
         personalApi,
         workspaces,

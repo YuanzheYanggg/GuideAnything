@@ -79,9 +79,12 @@ export function LibraryPage({
   const [searching, setSearching] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  const [pendingCreateIntent, setPendingCreateIntent] = useState<string | null>(null);
   const createIntentHandled = useRef(false);
-  const requestGenerationRef = useRef(0);
+  const initialGenerationRef = useRef(0);
+  const searchGenerationRef = useRef(0);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
+  const roleCanCreate = user.role === 'AUTHOR' || user.role === 'EDITOR';
 
   const loadEditableWorkspaces = useCallback(async () => {
     setWorkspaceLoadError('');
@@ -101,16 +104,22 @@ export function LibraryPage({
     void loadEditableWorkspaces().catch(() => undefined);
   }, [loadEditableWorkspaces]);
 
-  useEffect(() => {
-    const generation = ++requestGenerationRef.current;
+  const loadPublished = useCallback(() => {
+    const generation = ++initialGenerationRef.current;
+    searchGenerationRef.current += 1;
     setResults(null);
+    setSearching(false);
     setLoadingPublished(true);
     api.search('', workspaceId)
-      .then((items) => { if (requestGenerationRef.current === generation) setPublished(items); })
-      .catch((reason: unknown) => { if (requestGenerationRef.current === generation) setError(errorMessage(reason, '指南载入失败')); })
-      .finally(() => { if (requestGenerationRef.current === generation) setLoadingPublished(false); });
-    return () => { if (requestGenerationRef.current === generation) requestGenerationRef.current += 1; };
+      .then((items) => { if (initialGenerationRef.current === generation) setPublished(items); })
+      .catch((reason: unknown) => { if (initialGenerationRef.current === generation) setError(errorMessage(reason, '指南载入失败')); })
+      .finally(() => { if (initialGenerationRef.current === generation) setLoadingPublished(false); });
   }, [api, workspaceId]);
+
+  useEffect(() => {
+    loadPublished();
+    return () => { initialGenerationRef.current += 1; };
+  }, [loadPublished]);
 
   useEffect(() => {
     if (user.role === 'LEARNER') return;
@@ -123,7 +132,7 @@ export function LibraryPage({
     return () => { active = false; };
   }, [api, user.role, workspaceId]);
 
-  const createInside = async (targetWorkspaceId: string, fromPicker = false) => {
+  const createInside = useCallback(async (targetWorkspaceId: string, fromPicker = false) => {
     if (!fromPicker) setPickerOpen(false);
     setCreating(true);
     setError('');
@@ -136,10 +145,22 @@ export function LibraryPage({
     } finally {
       setCreating(false);
     }
-  };
+  }, [api, onEdit]);
 
   const create = async () => {
+    if (!roleCanCreate) {
+      setError('当前账户角色不能创建指南');
+      return;
+    }
     if (workspaceId) {
+      if (!workspacesLoaded) {
+        setError(workspaceLoadError || '正在确认当前工作区的创建权限');
+        return;
+      }
+      if (!editableWorkspaces.some((item) => item.id === workspaceId)) {
+        setError('当前工作区不可创建指南');
+        return;
+      }
       await createInside(workspaceId);
       return;
     }
@@ -164,33 +185,50 @@ export function LibraryPage({
   };
 
   useEffect(() => {
-    if (!createRequested || !workspaceId || createIntentHandled.current) return;
+    if (!createRequested) {
+      createIntentHandled.current = false;
+      return;
+    }
+    if (!workspaceId || createIntentHandled.current) return;
     createIntentHandled.current = true;
     onCreateIntentConsumed?.();
-    void createInside(workspaceId);
-  // createInside intentionally follows the route intent once for this mount.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    setPendingCreateIntent(workspaceId);
   }, [createRequested, workspaceId, onCreateIntentConsumed]);
+
+  useEffect(() => {
+    if (!pendingCreateIntent) return;
+    if (workspaceLoadError) {
+      setPendingCreateIntent(null);
+      return;
+    }
+    if (!workspacesLoaded) return;
+    setPendingCreateIntent(null);
+    if (!roleCanCreate || !editableWorkspaces.some((item) => item.id === pendingCreateIntent)) {
+      setError('当前工作区不可创建指南');
+      return;
+    }
+    void createInside(pendingCreateIntent);
+  }, [createInside, editableWorkspaces, pendingCreateIntent, roleCanCreate, workspaceLoadError, workspacesLoaded]);
 
   const submitSearch = async (event: FormEvent) => {
     event.preventDefault();
     if (!query.trim()) {
-      requestGenerationRef.current += 1;
-      setResults(null);
-      setSearching(false);
+      loadPublished();
       return;
     }
+    initialGenerationRef.current += 1;
+    setLoadingPublished(false);
     setSearching(true);
-    const generation = ++requestGenerationRef.current;
+    const generation = ++searchGenerationRef.current;
     setError('');
     setFilter('全部');
     try {
       const items = await api.search(query.trim(), workspaceId);
-      if (requestGenerationRef.current === generation) setResults(items);
+      if (searchGenerationRef.current === generation) setResults(items);
     } catch (reason) {
-      if (requestGenerationRef.current === generation) setError(errorMessage(reason, '检索失败，请稍后重试'));
+      if (searchGenerationRef.current === generation) setError(errorMessage(reason, '检索失败，请稍后重试'));
     } finally {
-      if (requestGenerationRef.current === generation) setSearching(false);
+      if (searchGenerationRef.current === generation) setSearching(false);
     }
   };
 
@@ -264,7 +302,8 @@ export function LibraryPage({
   return <div className="library-workspace-page" aria-labelledby="library-heading">
     <div className="workspace-heading">
       <h1 id="library-heading">指南库</h1>
-      {user.role !== 'LEARNER' ? <button ref={createTriggerRef} className="workspace-create-button" type="button" disabled={creating} onClick={() => void create()}><span aria-hidden="true">+</span>{creating && !pickerOpen ? '正在创建指南…' : '新建指南'}</button> : null}
+      {roleCanCreate && (!workspaceId || (workspacesLoaded && editableWorkspaces.some((item) => item.id === workspaceId))) ? <button ref={createTriggerRef} className="workspace-create-button" type="button" disabled={creating} onClick={() => void create()}><span aria-hidden="true">+</span>{creating && !pickerOpen ? '正在创建指南…' : '新建指南'}</button> : null}
+      {roleCanCreate && workspaceId && !workspacesLoaded && !workspaceLoadError ? <span className="workspace-status" role="status">正在确认创建权限…</span> : null}
     </div>
 
     <div className="workspace-search-wrap">

@@ -127,12 +127,15 @@ describe('LibraryPage', () => {
   });
 
   it('creates directly inside the current workspace and consumes route intent once', async () => {
-    const api = createLibraryApi({ workspaces: [] });
+    let resolveCreate!: (guide: { id: string }) => void;
+    const api = createLibraryApi({ workspaces: [workspace({ id: 'workspace-sales', permission: 'EDIT' })] });
+    api.createGuide = vi.fn(() => new Promise<{ id: string }>((resolve) => { resolveCreate = resolve; }));
     const onCreateIntentConsumed = vi.fn();
     render(<LibraryPage user={{ id: 'author', displayName: '王作者', email: 'author@guide.local', role: 'AUTHOR' }} api={api} personalApi={createPersonalApiMock()} workspaceId="workspace-sales" createRequested onCreateIntentConsumed={onCreateIntentConsumed} onEdit={vi.fn()} onLearn={vi.fn()} />);
     expect(await screen.findByText('正在创建指南…')).toBeVisible();
     expect(api.createGuide).toHaveBeenCalledWith('workspace-sales');
     expect(onCreateIntentConsumed).toHaveBeenCalledTimes(1);
+    resolveCreate({ id: 'guide-new' });
   });
 
   it('updates favorites and removes an authorized guide after trashing it', async () => {
@@ -193,6 +196,93 @@ describe('LibraryPage', () => {
     await Promise.resolve();
     expect(screen.queryByText('旧结果')).not.toBeInTheDocument();
     expect(screen.queryByText('正在检索已发布指南…')).not.toBeInTheDocument();
+  });
+
+  it('shows query results when search supersedes a pending initial load', async () => {
+    const user = userEvent.setup();
+    let rejectInitial!: (reason: Error) => void;
+    const api = createLibraryApi({ workspaces: [] });
+    api.search = vi.fn((query: string) => query
+      ? Promise.resolve([{ ...result, title: '抢占后的结果' }])
+      : new Promise<typeof result[]>((_resolve, reject) => { rejectInitial = reject; }));
+    render(<LibraryPage user={{ id: 'learner', displayName: '李学员', email: 'learner@guide.local', role: 'LEARNER' }} api={api} personalApi={createPersonalApiMock()} onEdit={vi.fn()} onLearn={vi.fn()} />);
+
+    expect(screen.getByText('正在载入指南…')).toBeVisible();
+    await user.type(screen.getByRole('searchbox'), '抢占');
+    await user.click(screen.getByRole('button', { name: '搜索指南' }));
+    expect(await screen.findByText('抢占后的结果')).toBeVisible();
+
+    rejectInitial(new Error('过期初始错误'));
+    await Promise.resolve();
+    expect(screen.queryByText('过期初始错误')).not.toBeInTheDocument();
+    expect(screen.queryByText('正在载入指南…')).not.toBeInTheDocument();
+  });
+
+  it('reloads the published list when a superseding query is cleared', async () => {
+    const user = userEvent.setup();
+    let initialCall = 0;
+    const api = createLibraryApi({ workspaces: [] });
+    api.search = vi.fn((query: string) => {
+      if (query) return Promise.resolve([{ ...result, title: '查询结果' }]);
+      initialCall += 1;
+      return initialCall === 1 ? new Promise<typeof result[]>(() => undefined) : Promise.resolve([{ ...result, title: '重新载入结果' }]);
+    });
+    render(<LibraryPage user={{ id: 'learner', displayName: '李学员', email: 'learner@guide.local', role: 'LEARNER' }} api={api} personalApi={createPersonalApiMock()} onEdit={vi.fn()} onLearn={vi.fn()} />);
+    const searchbox = screen.getByRole('searchbox');
+    await user.type(searchbox, '查询');
+    await user.click(screen.getByRole('button', { name: '搜索指南' }));
+    expect(await screen.findByText('查询结果')).toBeVisible();
+    await user.clear(searchbox);
+    await user.click(screen.getByRole('button', { name: '搜索指南' }));
+    expect(await screen.findByText('重新载入结果')).toBeVisible();
+    expect(api.search).toHaveBeenLastCalledWith('', undefined);
+  });
+
+  it.each([
+    ['AUTHOR', 'author'],
+    ['EDITOR', 'editor'],
+  ] as const)('waits for scoped authorization and creates once for %s', async (role, id) => {
+    let resolveWorkspaces!: (items: WorkspaceSummary[]) => void;
+    const api = createLibraryApi({ workspaces: [] });
+    api.listEditableWorkspaces = vi.fn(() => new Promise<WorkspaceSummary[]>((resolve) => { resolveWorkspaces = resolve; }));
+    const onConsumed = vi.fn();
+    render(<LibraryPage user={{ id, displayName: id, email: `${id}@guide.local`, role }} api={api} personalApi={createPersonalApiMock()} workspaceId="workspace-sales" createRequested onCreateIntentConsumed={onConsumed} onEdit={vi.fn()} onLearn={vi.fn()} />);
+
+    expect(onConsumed).toHaveBeenCalledTimes(1);
+    expect(api.createGuide).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: '新建指南' })).not.toBeInTheDocument();
+    resolveWorkspaces([workspace({ id: 'workspace-sales', permission: 'EDIT' })]);
+    await waitFor(() => expect(api.createGuide).toHaveBeenCalledWith('workspace-sales'));
+    expect(api.createGuide).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['AUTHOR', 'VIEW'],
+    ['LEARNER', 'OWNER'],
+  ] as const)('blocks scoped create intent for role %s with %s workspace permission', async (role, permission) => {
+    const api = createLibraryApi({ workspaces: [workspace({ id: 'workspace-sales', permission })] });
+    const onConsumed = vi.fn();
+    render(<LibraryPage user={{ id: role, displayName: role, email: `${role}@guide.local`, role }} api={api} personalApi={createPersonalApiMock()} workspaceId="workspace-sales" createRequested onCreateIntentConsumed={onConsumed} onEdit={vi.fn()} onLearn={vi.fn()} />);
+    await waitFor(() => expect(onConsumed).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(api.listEditableWorkspaces).toHaveBeenCalled());
+    expect(api.createGuide).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: '新建指南' })).not.toBeInTheDocument();
+  });
+
+  it('does not retry a consumed scoped create intent after workspace loading fails', async () => {
+    const user = userEvent.setup();
+    const api = createLibraryApi({ workspaces: [] });
+    api.listEditableWorkspaces = vi.fn().mockRejectedValueOnce(new Error('权限列表失败')).mockResolvedValueOnce([
+      workspace({ id: 'workspace-sales', permission: 'OWNER' }),
+    ]);
+    const onConsumed = vi.fn();
+    render(<LibraryPage user={{ id: 'author', displayName: '王作者', email: 'author@guide.local', role: 'AUTHOR' }} api={api} personalApi={createPersonalApiMock()} workspaceId="workspace-sales" createRequested onCreateIntentConsumed={onConsumed} onEdit={vi.fn()} onLearn={vi.fn()} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('权限列表失败');
+    expect(onConsumed).toHaveBeenCalledTimes(1);
+    expect(api.createGuide).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '重试载入工作区' }));
+    await waitFor(() => expect(api.listEditableWorkspaces).toHaveBeenCalledTimes(2));
+    expect(api.createGuide).not.toHaveBeenCalled();
   });
 
   it('traps picker focus, restores the trigger, and locks while creation is pending', async () => {

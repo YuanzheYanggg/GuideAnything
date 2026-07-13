@@ -8,9 +8,10 @@ import {
   Database,
   Star,
 } from '@phosphor-icons/react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useOutletContext, useParams } from 'react-router-dom';
 
 import type { WorkspaceActivity, WorkspaceApi, WorkspaceItemKind, WorkspaceItemSummary, WorkspaceSummary } from './types';
+import type { WorkspaceOutletContext } from './WorkspaceShell';
 
 type Counts = Record<WorkspaceItemKind, number>;
 
@@ -30,6 +31,7 @@ const moduleDefinitions = [
 ] as const;
 
 export function WorkspaceOverviewPage({ workspaceApi }: { workspaceApi: WorkspaceApi }) {
+  const { user } = useOutletContext<WorkspaceOutletContext>();
   const { workspaceId } = useParams();
   const [data, setData] = useState<OverviewData | null>(null);
   const [error, setError] = useState('');
@@ -56,19 +58,19 @@ export function WorkspaceOverviewPage({ workspaceApi }: { workspaceApi: Workspac
 
   const favorites = data.items.filter((item) => item.favorite);
   return <section className="workspace-overview">
-    <WorkspaceHero workspace={data.workspace} />
+    <WorkspaceHero workspace={data.workspace} canCreate={user.role === 'AUTHOR' || user.role === 'EDITOR'} />
     <ModuleGrid counts={data.counts} workspaceId={data.workspace.id} />
     <RecentActivity items={data.activity} />
     <FavoriteResources items={favorites} />
   </section>;
 }
 
-function WorkspaceHero({ workspace }: { workspace: WorkspaceSummary }) {
+function WorkspaceHero({ workspace, canCreate }: { workspace: WorkspaceSummary; canCreate: boolean }) {
   return <header className={`workspace-hero domain-card-${workspace.colorKey}`}>
     <div>
       <span className="page-kicker">工作区概览</span><h1>{workspace.name}</h1>
       <p>{workspace.description || '这个工作区暂未补充业务范围说明。'}</p>
-      {workspace.permission !== 'VIEW' ? <Link className="workspace-create-button workspace-hero-create" to={`/workspaces/${workspace.id}/guides?create=1`}><span aria-hidden="true">+</span>新建指南</Link> : null}
+      {canCreate && workspace.permission !== 'VIEW' ? <Link className="workspace-create-button workspace-hero-create" to={`/workspaces/${workspace.id}/guides?create=1`}><span aria-hidden="true">+</span>新建指南</Link> : null}
     </div>
     <dl><div><dt>负责人</dt><dd>{workspace.ownerName}</dd></div><div><dt>我的权限</dt><dd>{permissionLabel(workspace.permission)}</dd></div><div><dt>最近更新</dt><dd>{formatDate(workspace.updatedAt)}</dd></div></dl>
   </header>;
