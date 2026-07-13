@@ -32,11 +32,13 @@ describe('LessonPage', () => {
     expect(screen.getByText('步骤 1 / 2')).toBeVisible();
     expect(screen.getByRole('heading', { name: '理解业务场景' })).toBeVisible();
     expect(screen.getByText('确认销售组织。')).toBeVisible();
+    expect(screen.getByLabelText('当前步骤内容')).toHaveAttribute('data-step-id', 'step-1');
     expect(screen.getByRole('button', { name: '上一步' })).toBeDisabled();
 
     await user.click(screen.getByRole('button', { name: '下一步' }));
     expect(screen.getByText('步骤 2 / 2')).toBeVisible();
     expect(screen.getByRole('heading', { name: '观看录入演示' })).toBeVisible();
+    expect(screen.getByLabelText('当前步骤内容')).toHaveAttribute('data-step-id', 'step-2');
     const video = screen.getByLabelText('VA01 操作演示') as HTMLVideoElement;
     await user.click(screen.getByRole('button', { name: '跳转到 00:15' }));
     expect(video.currentTime).toBe(15);

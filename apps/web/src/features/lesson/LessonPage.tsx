@@ -98,7 +98,7 @@ export function LessonPage({ versionId, api, onBack }: { versionId: string; api:
           <Controls showInteractive={false} />
         </ReactFlow>
       </section>
-      <aside className="lesson-content" aria-live="polite">
+      <aside key={currentStep?.id} className="lesson-content" aria-label="当前步骤内容" aria-live="polite" data-step-id={currentStep?.id}>
         <div className="lesson-step-meta"><span>步骤 {currentIndex + 1}</span><small>{typeLabel(currentNode?.type)}</small></div>
         <h2>{currentStep?.title}</h2>
         {currentStep?.body ? <p className="lesson-body">{currentStep.body}</p> : null}

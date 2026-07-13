@@ -155,6 +155,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .spinner { width: 30px; height: 30px; margin: auto; border: 3px solid var(--ga-border); border-top-color: var(--ga-accent); border-radius: 50%; animation: spin 760ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes reveal-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes lesson-step-in { from { opacity: .45; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 /* Canvas editor */
@@ -257,7 +258,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .lesson-map-start, .lesson-map-end { border-radius: 999px; text-align: center; background: var(--ga-accent-soft); }
 .lesson-map-decision { border-color: color-mix(in srgb, var(--ga-warning) 56%, transparent); background: color-mix(in srgb, var(--ga-warning) 10%, var(--ga-surface-strong)); }
 .lesson-map-subguide { border: 1px dashed var(--ga-accent); background: color-mix(in srgb, var(--ga-accent) 8%, var(--ga-surface-strong)); }
-.lesson-content { min-width: 0; overflow: auto; padding: clamp(20px, 3vw, 36px); border-left: 1px solid var(--ga-border); background: var(--ga-surface-solid); }
+.lesson-content { min-width: 0; overflow: auto; padding: clamp(20px, 3vw, 36px); border-left: 1px solid var(--ga-border); background: var(--ga-surface-solid); animation: lesson-step-in 280ms cubic-bezier(.16, 1, .3, 1) both; }
 .lesson-step-meta { display: flex; justify-content: space-between; color: var(--ga-accent); font-size: .7rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .lesson-content h2 { margin: 10px 0 16px; font-size: 1.8rem; font-weight: 650; letter-spacing: -.04em; line-height: 1.1; }
 .lesson-body { padding: 14px; border-radius: 12px; color: var(--ga-text-secondary); background: var(--ga-accent-soft); line-height: 1.6; }
