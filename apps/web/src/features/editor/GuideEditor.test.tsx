@@ -1,11 +1,42 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Edge, NodeChange } from '@xyflow/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { CanvasEdge, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, GuideVersionSnapshot } from '@guideanything/contracts';
 
 import { GuideEditor, persistableNodeChanges, toCanvasEdge, toFlowNodes, type EditorApi } from './GuideEditor';
 import { createPersonalApiMock } from '../../test/workspace-api-mocks';
+
+const { fitView, screenToFlowPosition, reactFlowCallbacks } = vi.hoisted(() => ({
+  fitView: vi.fn(),
+  screenToFlowPosition: vi.fn(({ x, y }: { x: number; y: number }) => ({ x, y })),
+  reactFlowCallbacks: {
+    onMoveEnd: undefined as undefined | ((event: unknown, viewport: { x: number; y: number; zoom: number }) => void),
+    onConnectStart: undefined as undefined | ((event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void),
+    onConnectEnd: undefined as undefined | ((event: unknown) => void),
+    onEdgeDoubleClick: undefined as undefined | ((event: unknown, edge: Edge) => void),
+  },
+}));
+
+vi.mock('@xyflow/react', async () => {
+  const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react');
+  const React = await import('react');
+  return {
+    ...actual,
+    ReactFlow: ({ children, nodes = [], onInit, onMoveEnd, onConnectStart, onConnectEnd, onEdgeDoubleClick, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string; data?: { description?: string } }>; onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onConnectStart?: (event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void; onConnectEnd?: (event: unknown) => void; onEdgeDoubleClick?: (event: unknown, edge: Edge) => void; nodesDraggable?: boolean }) => {
+      reactFlowCallbacks.onMoveEnd = onMoveEnd;
+      reactFlowCallbacks.onConnectStart = onConnectStart;
+      reactFlowCallbacks.onConnectEnd = onConnectEnd;
+      reactFlowCallbacks.onEdgeDoubleClick = onEdgeDoubleClick;
+      React.useEffect(() => { onInit?.({ fitView, screenToFlowPosition }); }, [onInit]);
+      return <div className="react-flow"><div className="react-flow__pane" data-testid="flow-pane" />{nodes.map((node) => <div className={`react-flow__node${nodesDraggable ? ' draggable' : ''}`} data-id={node.id} key={node.id}>{node.data?.description ? <p className="flow-description" data-testid={`flow-description-${node.id}`}>{node.data.description}</p> : null}</div>)}{children}</div>;
+    },
+    ViewportPortal: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+    Background: () => null,
+    MiniMap: () => null,
+    Controls: () => null,
+  };
+});
 
 const emptyGuide = {
   id: 'guide-host', workspaceId: 'workspace-sales', workspaceItemId: 'item-guide-1', ownerId: 'author', authorName: '王作者', title: '订单教学', summary: '', tags: ['ERP'],
@@ -121,6 +152,273 @@ describe('GuideEditor', () => {
     expect(api.publishGuide).toHaveBeenCalledWith('guide-host');
   });
 
+  it('attaches new resources to the selected flow, previews hierarchy, and applies it as one undoable change', async () => {
+    const api = createApi();
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加阶段' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
+    const stageId = (screen.getByRole('option', { name: '业务阶段 1' }) as HTMLOptionElement).value;
+    fireEvent.change(screen.getByLabelText('所属业务阶段'), { target: { value: stageId } });
+    fireEvent.click(screen.getByRole('button', { name: '添加 Markdown 节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ nodes: expect.arrayContaining([
+        expect.objectContaining({ type: 'markdown', contentParentId: expect.any(String) }),
+      ]) }),
+    }));
+
+    const savesBeforePreview = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
+    expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
+    expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
+    fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }));
+  });
+
+  it('explains the hierarchy preview and focuses an offscreen node selected from the structure tree', async () => {
+    const user = userEvent.setup();
+    fitView.mockClear();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      stages: [{ id: 'prepare', title: '准备', order: 0 }],
+      nodes: [
+        { id: 'start', type: 'start', stageId: 'prepare', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'offscreen', type: 'process', stageId: 'prepare', position: { x: 12_000, y: 8_000 }, zIndex: 1, data: { label: '离屏流程', shape: 'process' } },
+        { id: 'attached', type: 'markdown', contentParentId: 'start', position: { x: 320, y: 0 }, zIndex: 2, data: { markdown: '已挂靠资料' } },
+        { id: 'loose', type: 'markdown', position: { x: 320, y: 220 }, zIndex: 3, data: { markdown: '未挂靠资料' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    await user.click(screen.getByRole('button', { name: '预览自动整理' }));
+    expect(screen.getByText('主流程 2')).toBeVisible();
+    expect(screen.getByText('阶段 1')).toBeVisible();
+    expect(screen.getByText('已挂靠资料 1')).toBeVisible();
+    expect(screen.getByText('未挂靠资料 1')).toBeVisible();
+    expect(screen.getByText('孤立节点 1')).toBeVisible();
+    expect(screen.getByText('循环 0')).toBeVisible();
+    expect(screen.getByText('入口 → 阶段泳道 → 资料')).toBeVisible();
+
+    await user.click(screen.getByRole('button', { name: '选择流程节点 离屏流程' }));
+    expect(fitView).toHaveBeenCalledWith(expect.objectContaining({ nodes: [{ id: 'offscreen' }] }));
+  });
+
+  it('persists named stages and responsibility lanes without leaking presentation data', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      stages: [{ id: 'entry', title: '订单录入', order: 0 }],
+      nodes: [
+        { id: 'start', type: 'start', stageId: 'entry', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'enter-order', type: 'process', stageId: 'entry', position: { x: 320, y: 0 }, zIndex: 1, data: { label: '录入订单', shape: 'process' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.change(screen.getByRole('textbox', { name: '业务阶段 订单录入' }), { target: { value: '订单处理' } });
+    fireEvent.click(screen.getByRole('button', { name: '添加系统泳道' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '责任泳道 新系统' }), { target: { value: 'ERP' } });
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 录入订单' }));
+    const erpLaneId = (screen.getByRole('option', { name: 'ERP' }) as HTMLOptionElement).value;
+    fireEvent.change(screen.getByLabelText('责任泳道'), { target: { value: erpLaneId } });
+
+    expect(screen.getByText('ERP', { selector: '.swimlane-column *' })).toBeVisible();
+    expect(screen.getByText('系统', { selector: '.swimlane-column *' })).toBeVisible();
+    expect(screen.getByText('订单处理', { selector: '.stage-lane span' })).toHaveClass('stage-lane-label');
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({
+        stages: [expect.objectContaining({ id: 'entry', title: '订单处理' })],
+        lanes: [expect.objectContaining({ id: erpLaneId, title: 'ERP', kind: 'SYSTEM' })],
+        nodes: expect.arrayContaining([expect.objectContaining({ id: 'enter-order', laneId: erpLaneId, data: expect.not.objectContaining({ responsibility: expect.anything() }) })]),
+      }),
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
+    expect(screen.getByText('泳道 1')).toBeVisible();
+  });
+
+  it('keeps preview navigation and guide metadata transient until cancellation', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'offscreen', type: 'process', position: { x: 12_000, y: 8_000 }, zIndex: 1, data: { label: '离屏流程', shape: 'process' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    await user.click(screen.getByRole('button', { name: '预览自动整理' }));
+    expect(screen.getByLabelText('指南标题')).toBeDisabled();
+    expect(screen.getByLabelText('摘要')).toBeDisabled();
+    expect(screen.getByLabelText('标签')).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: '选择流程节点 离屏流程' }));
+    act(() => reactFlowCallbacks.onMoveEnd?.(null, { x: 480, y: 220, zoom: 0.8 }));
+    fireEvent.keyDown(window, { key: 's', metaKey: true });
+    expect(api.saveGuide).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: '取消自动整理' }));
+    expect(api.saveGuide).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledTimes(1));
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      title: '订单教学', summary: '', tags: ['ERP'], document: expect.objectContaining({ viewport: { x: 0, y: 0, zoom: 1 } }),
+    }));
+  });
+
+  it('keeps a layout preview intact when a canvas node drag is attempted', async () => {
+    const api = createApi();
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加 Markdown 节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    const savesBeforePreview = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
+    const processNode = document.querySelector<HTMLElement>('.react-flow__node[data-id^="process-"]');
+    expect(processNode).toBeTruthy();
+    expect(processNode).not.toHaveClass('draggable');
+    fireEvent.pointerDown(processNode!, { clientX: 80, clientY: 80, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(document, { clientX: 220, clientY: 80, pointerId: 1, buttons: 1 });
+    fireEvent.pointerUp(document, { clientX: 220, clientY: 80, pointerId: 1, button: 0 });
+
+    expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
+    expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
+
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
+    expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
+  });
+
+  it('detaches attached resources when deleting their primary flow node', async () => {
+    const api = createApi();
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加 Markdown 节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除选中项' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ nodes: [expect.objectContaining({ type: 'markdown', contentParentId: undefined })] }),
+    }));
+  });
+
+  it('creates and connects a primary flow node when a connection ends on the empty canvas', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+    await act(async () => { await Promise.resolve(); });
+
+    act(() => reactFlowCallbacks.onConnectStart?.({} as MouseEvent, { nodeId: 'start', handleId: 'out', handleType: 'source' }));
+    act(() => reactFlowCallbacks.onConnectEnd?.({ target: screen.getByTestId('flow-pane'), clientX: 480, clientY: 240 } as unknown as MouseEvent));
+
+    expect(await screen.findByRole('menu', { name: '创建下一项' })).toBeVisible();
+    await user.click(screen.getByRole('menuitem', { name: '创建流程节点' }));
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({
+        nodes: expect.arrayContaining([expect.objectContaining({ type: 'process', position: { x: 480, y: 240 } })]),
+        edges: expect.arrayContaining([expect.objectContaining({ source: 'start', sourceHandle: 'out', target: expect.stringMatching(/^process-/) })]),
+      }),
+    }));
+  });
+
+  it('creates resources as attachments without creating a real edge', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: 'process-a', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '操作步骤', shape: 'process' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+    await act(async () => { await Promise.resolve(); });
+
+    act(() => reactFlowCallbacks.onConnectStart?.({} as MouseEvent, { nodeId: 'process-a', handleId: 'out', handleType: 'source' }));
+    act(() => reactFlowCallbacks.onConnectEnd?.({ target: screen.getByTestId('flow-pane'), clientX: 480, clientY: 240 } as unknown as MouseEvent));
+    await user.click(await screen.findByRole('menuitem', { name: '创建说明资料' }));
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document;
+    const markdown = saved.nodes.find((node: CanvasDocument['nodes'][number]) => node.type === 'markdown');
+    expect(markdown).toEqual(expect.objectContaining({ contentParentId: 'process-a' }));
+    expect(saved.edges.some((edge: CanvasDocument['edges'][number]) => edge.target === markdown?.id)).toBe(false);
+  });
+
+  it('edits labels only for persisted host edges', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'process-a', type: 'process', position: { x: 320, y: 0 }, zIndex: 1, data: { label: '操作步骤', shape: 'process' } },
+      ],
+      edges: [{ id: 'flow-edge', source: 'start', sourceHandle: 'out', target: 'process-a' }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    act(() => reactFlowCallbacks.onEdgeDoubleClick?.({ clientX: 480, clientY: 240 } as MouseEvent, { id: 'flow-edge', source: 'start', target: 'process-a' } as Edge));
+    await user.type(await screen.findByRole('textbox', { name: '连线标注' }), '提交审核');
+    await user.keyboard('{Enter}');
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({ document: expect.objectContaining({ edges: [expect.objectContaining({ id: 'flow-edge', label: '提交审核' })] }) }));
+
+    act(() => reactFlowCallbacks.onEdgeDoubleClick?.({ clientX: 480, clientY: 240 } as MouseEvent, { id: 'hierarchy:note', source: 'start', target: 'process-a' } as Edge));
+    expect(screen.queryByRole('dialog', { name: '编辑连线标注' })).not.toBeInTheDocument();
+  });
+
+  it('persists a flow-node detail and renders the short canvas description', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: 'process-a', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '操作步骤', shape: 'process' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    await user.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
+    await user.type(screen.getByRole('textbox', { name: '节点明细' }), '填写售达方、物料和交货日期。');
+    expect(await screen.findByTestId('flow-description-process-a')).toHaveClass('flow-description');
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({ document: expect.objectContaining({ nodes: [expect.objectContaining({ id: 'process-a', data: expect.objectContaining({ description: '填写售达方、物料和交货日期。' }) })] }) }));
+  });
+
   it('inserts a pinned subguide and expands its immutable snapshot', async () => {
     const user = userEvent.setup();
     const api = createApi();
@@ -140,10 +438,11 @@ describe('GuideEditor', () => {
   });
 });
 
-function createApi(): EditorApi & Record<string, ReturnType<typeof vi.fn>> {
+function createApi(overrides: { document?: CanvasDocument } = {}): EditorApi & Record<string, ReturnType<typeof vi.fn>> {
+  const guide = { ...structuredClone(emptyGuide), document: overrides.document ?? structuredClone(emptyGuide.document) };
   return {
-    getGuide: vi.fn().mockResolvedValue(structuredClone(emptyGuide)),
-    saveGuide: vi.fn().mockResolvedValue({ ...structuredClone(emptyGuide), revision: 1 }),
+    getGuide: vi.fn().mockResolvedValue(guide),
+    saveGuide: vi.fn().mockResolvedValue({ ...guide, revision: 1 }),
     publishGuide: vi.fn().mockResolvedValue(sourceVersion),
     search: vi.fn().mockResolvedValue({ items: [{ versionId: 'version-source', guideId: 'guide-source', workspaceId: 'workspace-materials', workspaceItemId: 'item-guide-source', workspaceName: '物料管理', favorite: false, canManageLifecycle: false, title: '物料主数据检查', summary: '', tags: ['物料'], version: 1, authorName: '王作者' }], nextOffset: null }),
     getVersion: vi.fn().mockResolvedValue(sourceVersion),
