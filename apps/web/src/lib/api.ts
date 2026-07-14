@@ -3,6 +3,7 @@ import type { DraftItem, LibraryApi, SearchItem } from '../features/library/Libr
 import type { EditorApi, GuideDraftDetail, SearchPage } from '../features/editor/GuideEditor';
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
 import type {
+  CreateWorkspaceInput,
   PersonalApi,
   WorkspaceApi,
   WorkspaceActivity,
@@ -76,6 +77,10 @@ export class ApiClient {
   workspaceApi(): WorkspaceApi {
     return {
       list: async () => (await this.request<{ items: WorkspaceSummary[] }>('/workspaces')).items,
+      create: async (input: CreateWorkspaceInput) => (await this.request<{ workspace: WorkspaceSummary }>('/workspaces', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      })).workspace,
       get: (id) => this.request<{
         workspace: WorkspaceSummary;
         counts: Record<WorkspaceItemKind, number>;

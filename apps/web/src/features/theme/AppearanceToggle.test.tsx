@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { AppearanceProvider, AppearanceToggle } from './AppearanceToggle';
+import '../../styles.css';
 
 describe('AppearanceToggle', () => {
   beforeEach(() => {
@@ -38,5 +39,37 @@ describe('AppearanceToggle', () => {
 
     expect(screen.getByRole('button', { name: '切换到浅色' })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: '外观' })).toBeInTheDocument();
+  });
+
+  it('updates editor shell colors when the appearance changes', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <AppearanceProvider initialAppearance="light">
+        <AppearanceToggle />
+        <header className="editor-header">编辑器</header>
+      </AppearanceProvider>,
+    );
+
+    const editorHeader = container.querySelector('.editor-header');
+    expect(editorHeader).not.toBeNull();
+    const editorHeaderRules = Array.from(document.styleSheets)
+      .flatMap((styleSheet) => Array.from(styleSheet.cssRules))
+      .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === '.editor-header');
+
+    expect(editorHeaderRules).toHaveLength(1);
+    expect(editorHeaderRules[0]!.style.getPropertyValue('background')).toBe('var(--ga-surface)');
+
+    await user.click(screen.getByRole('button', { name: '切换到深色' }));
+
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  });
+
+  it('keeps the hierarchy sidebar on a theme-aware surface', () => {
+    const hierarchyRules = Array.from(document.styleSheets)
+      .flatMap((styleSheet) => Array.from(styleSheet.cssRules))
+      .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === ':root[data-theme="dark"] .hierarchy-panel');
+
+    expect(hierarchyRules).toHaveLength(1);
+    expect(hierarchyRules[0]!.style.getPropertyValue('background')).toBe('var(--ga-surface-solid)');
   });
 });

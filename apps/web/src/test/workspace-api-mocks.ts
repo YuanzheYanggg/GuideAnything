@@ -15,6 +15,7 @@ export function mockAuthenticatedWorkspaceApi(input: {
   });
   vi.spyOn(ApiClient.prototype, 'workspaceApi').mockReturnValue({
     list: vi.fn().mockResolvedValue(input.workspaces ?? []),
+    create: vi.fn().mockResolvedValue((input.workspaces ?? [])[0]),
     get: vi.fn(async (id) => ({
       workspace: (input.workspaces ?? []).find((workspace) => workspace.id === id)!,
       counts,

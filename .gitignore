@@ -1,4 +1,5 @@
 node_modules/
+.pnpm-store/
 .worktrees/
 dist/
 coverage/
@@ -12,3 +13,4 @@ playwright-report/
 .playwright-cli/
 .DS_Store
 *.log
+screenlog.*

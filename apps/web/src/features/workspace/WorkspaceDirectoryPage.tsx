@@ -1,16 +1,31 @@
+import { useState } from 'react';
 import { ArrowRight, FileText } from '@phosphor-icons/react';
-import { Link, useOutletContext } from 'react-router-dom';
+import { Link, useNavigate, useOutletContext } from 'react-router-dom';
 
+import { WorkspaceCreateDialog } from './WorkspaceCreateDialog';
 import type { WorkspaceOutletContext } from './WorkspaceShell';
 import type { WorkspaceSummary } from './types';
 
 export function WorkspaceDirectoryPage() {
-  const { workspaces, workspaceLoading: loading, workspaceError: error } = useOutletContext<WorkspaceOutletContext>();
+  const { user, workspaceApi, workspaces, workspaceLoading: loading, workspaceError: error, refreshWorkspaces } = useOutletContext<WorkspaceOutletContext>();
+  const navigate = useNavigate();
+  const [createOpen, setCreateOpen] = useState(false);
+  const canCreate = user.role === 'AUTHOR';
+
+  const createWorkspace = async (input: Parameters<WorkspaceOutletContext['workspaceApi']['create']>[0]) => {
+    const workspace = await workspaceApi.create(input);
+    await refreshWorkspaces();
+    setCreateOpen(false);
+    navigate(`/workspaces/${workspace.id}`);
+  };
 
   return <div className="workspace-directory page-stack">
     <header className="page-heading">
       <div><span className="page-kicker">KNOWLEDGE DOMAINS</span><h1>工作区</h1><p>进入有明确业务边界、负责人和权限的知识空间。</p></div>
-      <span className="page-count">{workspaces.length} 个工作区</span>
+      <div className="workspace-directory-actions">
+        {canCreate ? <button className="workspace-create-button" type="button" onClick={() => setCreateOpen(true)}><span aria-hidden="true">+</span>新建工作区</button> : null}
+        <span className="page-count">{workspaces.length} 个工作区</span>
+      </div>
     </header>
     {loading ? <LoadingState label="正在载入工作区…" /> : null}
     {!loading && !error && workspaces.length === 0 ? <div className="workspace-empty"><strong>还没有可访问的工作区</strong><span>请联系工作区所有者添加成员权限。</span></div> : null}
@@ -27,6 +42,7 @@ export function WorkspaceDirectoryPage() {
         </dl>
       </Link>)}
     </div> : null}
+    {createOpen ? <WorkspaceCreateDialog onClose={() => setCreateOpen(false)} onSubmit={createWorkspace} /> : null}
   </div>;
 }
 

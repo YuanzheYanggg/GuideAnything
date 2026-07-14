@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bell,
   BookOpen,
@@ -35,6 +35,7 @@ export interface WorkspaceOutletContext {
   workspaces: WorkspaceSummary[];
   workspaceLoading: boolean;
   workspaceError: string;
+  refreshWorkspaces: () => Promise<void>;
 }
 
 const primaryNav: Array<{ to: string; label: string; icon: Icon }> = [
@@ -59,16 +60,21 @@ export function WorkspaceShell({ user, workspaceApi, personalApi, onLogout }: Wo
   const [error, setError] = useState('');
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    workspaceApi.list()
-      .then((items) => { if (active) setWorkspaces(items); })
-      .catch((reason: unknown) => {
-        if (active) setError(reason instanceof Error ? reason.message : '工作区载入失败');
-      })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+  const refreshWorkspaces = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      setWorkspaces(await workspaceApi.list());
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : '工作区载入失败');
+    } finally {
+      setLoading(false);
+    }
   }, [workspaceApi]);
+
+  useEffect(() => {
+    void refreshWorkspaces();
+  }, [refreshWorkspaces]);
 
   const recentWorkspaces = useMemo(() => [...workspaces]
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
@@ -137,6 +143,7 @@ export function WorkspaceShell({ user, workspaceApi, personalApi, onLogout }: Wo
         workspaces,
         workspaceLoading: loading,
         workspaceError: error,
+        refreshWorkspaces,
       } satisfies WorkspaceOutletContext} />
     </main>
   </div>;

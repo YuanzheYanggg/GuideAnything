@@ -43,9 +43,11 @@ function renderWorkspaceRoutes(input: {
   workspaces: WorkspaceSummary[];
   items?: WorkspaceItemSummary[];
   user?: AuthUser;
+  create?: WorkspaceApi['create'];
 }) {
   const workspaceApi: WorkspaceApi = {
     list: vi.fn().mockResolvedValue(input.workspaces),
+    create: input.create ?? vi.fn().mockResolvedValue(input.workspaces[0]),
     get: vi.fn(async (id) => ({
       workspace: input.workspaces.find((item) => item.id === id)!,
       counts: { GUIDE: 3, SOURCE: 0, AGENT: 0, ONTOLOGY: 0, CONVERSATION: 0, ARTIFACT: 0 },
@@ -95,6 +97,71 @@ describe('workspace pages', () => {
     expect(screen.getByText('维护物料主数据、供应商和采购流程。')).toBeVisible();
     expect(screen.getByText('3 条指南')).toBeVisible();
     expect(workspaceApi.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the workspace creation entry to authors', async () => {
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces',
+      workspaces: [{ ...workspaceDefaults, id: 'workspace-materials', name: '物料管理' }],
+    });
+
+    expect(await screen.findByRole('button', { name: '新建工作区' })).toBeVisible();
+  });
+
+  it.each(['EDITOR', 'LEARNER'] as const)('hides workspace creation entry from %s users', async (role) => {
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces',
+      user: { ...authorUser, id: role.toLowerCase(), role },
+      workspaces: [{ ...workspaceDefaults, id: 'workspace-materials', name: '物料管理' }],
+    });
+
+    expect(await screen.findByRole('heading', { name: '工作区' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '新建工作区' })).not.toBeInTheDocument();
+  });
+
+  it('submits workspace details and opens the created workspace', async () => {
+    const user = userEvent.setup();
+    const create = vi.fn().mockResolvedValue({ ...workspaceDefaults, id: 'workspace-materials', name: '物料管理' });
+    const { workspaceApi } = renderWorkspaceRoutes({
+      initialPath: '/workspaces',
+      create,
+      workspaces: [{ ...workspaceDefaults, id: 'workspace-materials', name: '物料管理' }],
+    });
+
+    await user.click(await screen.findByRole('button', { name: '新建工作区' }));
+    await user.type(screen.getByLabelText('名称'), '采购管理');
+    await user.type(screen.getByLabelText('Slug'), 'procurement');
+    await user.type(screen.getByLabelText('描述'), '采购与供应商知识');
+    await user.selectOptions(screen.getByLabelText('图标'), 'FileText');
+    await user.selectOptions(screen.getByLabelText('颜色'), 'materials');
+    await user.click(screen.getByRole('button', { name: '创建工作区' }));
+
+    expect(workspaceApi.create).toHaveBeenCalledWith({
+      name: '采购管理',
+      slug: 'procurement',
+      description: '采购与供应商知识',
+      iconKey: 'FileText',
+      colorKey: 'materials',
+    });
+    expect(await screen.findByRole('heading', { name: '物料管理' })).toBeVisible();
+  });
+
+  it('keeps the form open and shows a create error when the API rejects', async () => {
+    const user = userEvent.setup();
+    const create = vi.fn().mockRejectedValue(new Error('Slug 已被占用'));
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces',
+      create,
+      workspaces: [{ ...workspaceDefaults, id: 'workspace-materials', name: '物料管理' }],
+    });
+
+    await user.click(await screen.findByRole('button', { name: '新建工作区' }));
+    await user.type(screen.getByLabelText('名称'), '采购管理');
+    await user.type(screen.getByLabelText('Slug'), 'procurement');
+    await user.click(screen.getByRole('button', { name: '创建工作区' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Slug 已被占用');
+    expect(screen.getByRole('dialog')).toBeVisible();
   });
 
   it('uses one main landmark and hides settings without a real route', async () => {
@@ -198,7 +265,7 @@ describe('workspace pages', () => {
   it('renders a single alert when workspace loading fails', async () => {
     const workspaceApi: WorkspaceApi = {
       list: vi.fn().mockRejectedValue(new Error('工作区载入失败')),
-      get: vi.fn(), listItems: vi.fn(), activity: vi.fn(),
+      create: vi.fn(), get: vi.fn(), listItems: vi.fn(), activity: vi.fn(),
     };
     render(<AppearanceProvider><MemoryRouter initialEntries={['/workspaces']}><Routes>
       <Route element={<WorkspaceShell user={authorUser} workspaceApi={workspaceApi} personalApi={createEmptyPersonalApi()} onLogout={vi.fn()} />}>

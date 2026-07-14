@@ -12,8 +12,17 @@ export type {
   WorkspaceSummary,
 } from '@guideanything/contracts';
 
+export interface CreateWorkspaceInput {
+  name: string;
+  slug: string;
+  description: string;
+  iconKey: string;
+  colorKey: string;
+}
+
 export interface WorkspaceApi {
   list: () => Promise<WorkspaceSummary[]>;
+  create: (input: CreateWorkspaceInput) => Promise<WorkspaceSummary>;
   get: (id: string) => Promise<{
     workspace: WorkspaceSummary;
     counts: Record<WorkspaceItemKind, number>;
