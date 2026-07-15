@@ -1,6 +1,8 @@
 import type { AuthUser, Session } from '../features/auth/types';
 import type { DraftItem, LibraryApi, SearchItem } from '../features/library/LibraryPage';
 import type { EditorApi, GuideDraftDetail, SearchPage } from '../features/editor/GuideEditor';
+import type { KnowledgeApi, KnowledgeDocument, KnowledgeHealth, KnowledgeOverview, KnowledgeSearchHit } from '../features/knowledge/types';
+import type { SourcesApi, WorkspaceSource, WorkspaceSourcesResult, FlowSnapshotSummary } from '../features/sources/types';
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
 import type {
   CreateWorkspaceInput,
@@ -117,6 +119,41 @@ export class ApiClient {
       )).item,
       permanentlyRemoveItem: async (itemId) => {
         await this.request<void>(`/workspace-items/${itemId}`, { method: 'DELETE' });
+      },
+    };
+  }
+
+  knowledgeApi(): KnowledgeApi {
+    return {
+      status: async () => (await this.request<{ status: KnowledgeHealth }>('/knowledge/santexwell/status')).status,
+      overview: () => this.request<KnowledgeOverview>('/knowledge/santexwell/overview'),
+      search: async (query) => (await this.request<{ items: KnowledgeSearchHit[] }>(
+        `/knowledge/santexwell/search?q=${encodeURIComponent(query)}`,
+      )).items,
+      readDocument: async (documentId) => (await this.request<{ document: KnowledgeDocument }>(
+        `/knowledge/santexwell/documents/${encodeURIComponent(documentId)}`,
+      )).document,
+    };
+  }
+
+  sourcesApi(): SourcesApi {
+    return {
+      list: (workspaceId) => this.request<WorkspaceSourcesResult>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/sources`,
+      ),
+      listFlowSnapshots: async (workspaceId) => (await this.request<{ items: FlowSnapshotSummary[] }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/flow-snapshots`,
+      )).items,
+      santexwellStatus: async () => (await this.request<{ status: KnowledgeHealth }>(
+        '/knowledge/santexwell/status',
+      )).status,
+      upload: async (workspaceId, file) => {
+        const form = new FormData();
+        form.append('file', file);
+        return (await this.request<{ source: WorkspaceSource }>(
+          `/workspaces/${encodeURIComponent(workspaceId)}/sources`,
+          { method: 'POST', body: form },
+        )).source;
       },
     };
   }

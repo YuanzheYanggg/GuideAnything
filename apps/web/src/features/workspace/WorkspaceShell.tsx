@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bell,
   BookOpen,
+  Books,
   BookmarkSimple,
   CaretDown,
   ChartLineUp,
@@ -40,6 +41,7 @@ export interface WorkspaceOutletContext {
 
 const primaryNav: Array<{ to: string; label: string; icon: Icon }> = [
   { to: '/library', label: '指南库', icon: BookOpen },
+  { to: '/knowledge/santexwell', label: 'Santexwell', icon: Books },
   { to: '/favorites', label: '收藏夹', icon: BookmarkSimple },
   { to: '/recent', label: '最近查看', icon: ClockCounterClockwise },
   { to: '/shared', label: '与我共享', icon: UsersThree },

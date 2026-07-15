@@ -3,7 +3,6 @@ import {
   Archive,
   ArrowRight,
   BookOpen,
-  BracketsCurly,
   ChatCircleDots,
   Database,
   Star,
@@ -26,7 +25,6 @@ const moduleDefinitions = [
   { key: 'GUIDE', label: '指南', route: 'guides', icon: BookOpen },
   { key: 'SOURCE', label: '资料源', route: 'sources', icon: Database },
   { key: 'AGENT', label: 'Agent', route: 'agents', icon: ChatCircleDots },
-  { key: 'ONTOLOGY', label: 'Ontology', route: 'ontology', icon: BracketsCurly },
   { key: 'ARTIFACT', label: '会话与产物', route: 'artifacts', icon: Archive },
 ] as const;
 

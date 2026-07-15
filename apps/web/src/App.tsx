@@ -13,7 +13,9 @@ import {
 import { LoginPage, type LoginCredentials } from './features/auth/LoginPage';
 import type { AuthUser } from './features/auth/types';
 import { LibraryPage } from './features/library/LibraryPage';
+import { SantexwellKnowledgePage } from './features/knowledge/SantexwellKnowledgePage';
 import { PersonalResourcePage } from './features/personal/PersonalResourcePage';
+import { WorkspaceSourcesPage } from './features/sources/WorkspaceSourcesPage';
 import { AppearanceProvider } from './features/theme/AppearanceToggle';
 import { ReservedModulePage } from './features/workspace/ReservedModulePage';
 import { WorkspaceDirectoryPage } from './features/workspace/WorkspaceDirectoryPage';
@@ -35,6 +37,8 @@ function AppContent() {
   const editorApi = useMemo(() => apiClient.editorApi(), []);
   const workspaceApi = useMemo(() => apiClient.workspaceApi(), []);
   const personalApi = useMemo(() => apiClient.personalApi(), []);
+  const knowledgeApi = useMemo(() => apiClient.knowledgeApi(), []);
+  const sourcesApi = useMemo(() => apiClient.sourcesApi(), []);
 
   useEffect(() => {
     if (!apiClient.hasToken) return;
@@ -61,10 +65,14 @@ function AppContent() {
       <Route path="/recent" element={<PersonalResourcePage kind="recent" />} />
       <Route path="/shared" element={<PersonalResourcePage kind="shared" />} />
       <Route path="/trash" element={<PersonalResourcePage kind="trash" />} />
+      <Route path="/knowledge/santexwell" element={<SantexwellKnowledgePage api={knowledgeApi} />} />
+      <Route path="/knowledge/santexwell/documents/:documentId" element={<SantexwellKnowledgePage api={knowledgeApi} />} />
       <Route path="/workspaces" element={<WorkspaceDirectoryPage />} />
       <Route path="/workspaces/:workspaceId" element={<WorkspaceOverviewPage workspaceApi={workspaceApi} />} />
       <Route path="/workspaces/:workspaceId/guides" element={<LibraryRoute user={user} />} />
-      <Route path="/workspaces/:workspaceId/:module" element={<ReservedModulePage />} />
+      <Route path="/workspaces/:workspaceId/sources" element={<WorkspaceSourcesPage api={sourcesApi} />} />
+      <Route path="/workspaces/:workspaceId/agents" element={<ReservedModulePage module="agents" />} />
+      <Route path="/workspaces/:workspaceId/artifacts" element={<ReservedModulePage module="artifacts" />} />
     </Route>
     <Route path="/guides/:guideId/edit" element={<GuideEditorRoute />} />
     <Route path="/versions/:versionId/learn" element={<LessonRoute />} />
