@@ -303,7 +303,7 @@ git commit -m "feat: persist knowledge and agent runtime state"
 
 - [ ] **Step 1: Add failing parser/index/search/upload tests**
 
-Use temporary roots containing a MOC, concept, digest, hidden file, outside-root symlink, and changed checksum. Assert headings/wikilinks, incremental replacement, CJK bigram search, no raw indexing, no absolute path in DTOs, and correct 404/403 upload behavior.
+Use temporary roots containing a MOC, concept, digest, exact allowlist/exclude directories, a provenance manifest, iCloud conflict names, hidden files, inside/outside-root symlinks, rename/changed/partial files, and malformed frontmatter. Assert headings/wikilinks/alias ambiguity, stable fragment ids, complete-scan-only deletion, CJK bigram and query escaping, no raw/path indexing, trusted Harness failure modes, public DTO projection, and correct upload 401/404/403 behavior.
 
 ```ts
 it('indexes only allowed vault markdown without exposing root paths', async () => {
@@ -332,11 +332,11 @@ pnpm --filter @guideanything/api add pdf-parse@2.4.5 mammoth@1.12.0
 
 - [ ] **Step 4: Implement safe Markdown parsing and incremental vault indexing**
 
-Realpath every candidate and require it to remain inside the configured root. Split on headings with bounded 4,000-character fragments. Build search text from lowercase Latin tokens and CJK bigrams. Use a short transaction per document; never hold a transaction for the full scan.
+Use exact canonical directory and trusted Harness allowlists. `lstat` plus realpath every candidate, reject every symlink, and require containment. Treat the bounded provenance manifest as internal metadata, never content. Parse only bounded scalar/scalar-list frontmatter and Obsidian wikilinks; remove raw locators from public content. Split on heading paths with stable, bounded 4,000-character fragments. Build search text from NFKC-normalized lowercase Latin tokens and CJK bigrams, and quote generated MATCH tokens. Apply a short transaction per document; publish deletions/revision only after a complete scan, preserving last-known-good on partial failure. Preserve document ids across an unambiguous checksum+title+page-type rename.
 
 - [ ] **Step 5: Implement repository/service/routes and flow sync**
 
-Register read-only global routes and workspace-authorized source routes. `VIEW/LEARNER` can read workspace sources but cannot create persistent ones. After guide save/publish succeeds, compile and upsert the matching flow snapshot plus searchable node/attachment fragments.
+Register path-free read-only global routes and workspace-authorized source routes using separate internal/public DTOs. `VIEW/LEARNER` can read workspace sources but cannot create persistent ones. Validate upload extension, MIME, magic, bounded extraction and UUID storage outside transactions. After guide save/publish succeeds, compile and insert-or-reuse the immutable matching flow snapshot plus searchable node/attachment fragments; indexing failure must not roll back the authoritative guide mutation and must be recoverable by reconcile.
 
 - [ ] **Step 6: Verify GREEN and commit**
 

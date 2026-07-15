@@ -68,16 +68,21 @@ flowchart LR
 
 ### 4.1 Santexwell
 
-Santexwell 是全局只读知识源。服务器通过配置项提供 vault root，Index 只处理允许的文件：
+Santexwell 是全局只读知识源。服务器通过配置项提供 vault root，Indexer 使用精确 allowlist，而不是递归收集所有 Markdown：
 
 - `AGENTS.md`、`CORE.md`、`SOUL.md` 与问答相关 playbook 作为可信 Harness 配置；
-- `wiki_v2` 中的 Markdown 页面作为可检索知识；
+- `wiki_v2/index.md`、`moc|indexes|concepts|sources|procedures|cases|analysis` 七个精确目录与 `_meta/Tag Taxonomy.md` 作为可检索知识；
+- `_meta/build/provenance_manifest.json` 只作为有界、内部 provenance 输入，不进入 FTS、DTO 或模型上下文；
 - `raw` 默认不建立全文片段，只登记目录和来源关系，需要原始证据时才进行有界按需读取；
-- 隐藏文件、Obsidian 配置、回收站和 root 之外的符号链接不进入索引。
+- 隐藏文件、Obsidian 配置、模板、skill、输出/临时目录、iCloud 冲突副本、所有符号链接和 root 之外的文件不进入索引。
 
-索引保存 source、relative path、title、frontmatter、heading、wikilink、checksum、mtime、片段和 revision。绝对路径不进入 API DTO、事件、日志或模型输出。
+索引保存 source、内部 relative path、稳定 document/fragment id、title、受限 frontmatter、heading、wikilink、checksum、mtime、片段和 revision。引用以 `documentId + revision + fragmentId/heading` 为权威，relative path 只是内部审计信息，因此 vault rename 不破坏稳定引用。绝对/相对 vault 路径均不进入 API DTO、事件、日志或模型输出。
+
+扫描在事务外完成枚举、realpath、稳定读取和 checksum，再以每文档短事务更新。只有整轮扫描完整成功后才能做 deletion sweep 和发布新 source revision；中止、iCloud partial write、不可读文件、manifest/harness 失败都保留 last-known-good 索引。唯一的 checksum + title + page type rename 可保留 document/fragment id，歧义时不得猜测。
 
 查询顺序遵循：`MOC / concept -> source-digest -> raw on demand`。Router 必须选择主要知识集群；只有现有证据表明需要时，调度器才允许扩展次级集群。
+
+可信 Harness 固定为非递归 allowlist：常驻 `AGENTS.md`、`CORE.md`、`SOUL.md`、`playbooks/qna.md`；字段契约、development playbook 和 Knitwear KB OS canonical modules 按任务条件加载。缺少常驻文件时 Santexwell QA 明确 unavailable，绝不 fallback 到 legacy AGENTS、个人 skill、skill-pack 或带写回行为的 archivist。
 
 ### 4.2 工作区文档
 
