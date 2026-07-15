@@ -4,30 +4,39 @@ import type { Edge, NodeChange } from '@xyflow/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { CanvasDocument, CanvasEdge, GuideVersionSnapshot } from '@guideanything/contracts';
 
-import { GuideEditor, persistableNodeChanges, toCanvasEdge, toFlowNodes, type EditorApi } from './GuideEditor';
+import { GuideEditor, persistableNodeChanges, toCanvasEdge, toFlowNodes, updateInlineNodeText, type EditorApi, type GuideDraftDetail } from './GuideEditor';
 import { createPersonalApiMock } from '../../test/workspace-api-mocks';
 
 const { fitView, screenToFlowPosition, reactFlowCallbacks } = vi.hoisted(() => ({
   fitView: vi.fn(),
   screenToFlowPosition: vi.fn(({ x, y }: { x: number; y: number }) => ({ x, y })),
   reactFlowCallbacks: {
+    onNodesChange: undefined as undefined | ((changes: NodeChange[]) => void),
     onMoveEnd: undefined as undefined | ((event: unknown, viewport: { x: number; y: number; zoom: number }) => void),
     onConnectStart: undefined as undefined | ((event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void),
     onConnectEnd: undefined as undefined | ((event: unknown) => void),
     onEdgeDoubleClick: undefined as undefined | ((event: unknown, edge: Edge) => void),
+    edges: [] as Edge[],
+    edgeTypes: undefined as unknown,
+    inlineEditing: undefined as undefined | { enabled: boolean; updateText: (nodeId: string, field: 'label' | 'description' | 'markdown' | 'imageCaption' | 'videoCaption', value: string) => void },
   },
 }));
 
 vi.mock('@xyflow/react', async () => {
   const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react');
   const React = await import('react');
+  const { useInlineNodeEditing } = await import('../nodes/InlineNodeTextEditor');
   return {
     ...actual,
-    ReactFlow: ({ children, nodes = [], onInit, onMoveEnd, onConnectStart, onConnectEnd, onEdgeDoubleClick, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string; data?: { description?: string } }>; onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onConnectStart?: (event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void; onConnectEnd?: (event: unknown) => void; onEdgeDoubleClick?: (event: unknown, edge: Edge) => void; nodesDraggable?: boolean }) => {
+    ReactFlow: ({ children, nodes = [], edges = [], edgeTypes, onInit, onNodesChange, onMoveEnd, onConnectStart, onConnectEnd, onEdgeDoubleClick, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string; data?: { description?: string } }>; edges?: Edge[]; edgeTypes?: unknown; onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void; onNodesChange?: (changes: NodeChange[]) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onConnectStart?: (event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void; onConnectEnd?: (event: unknown) => void; onEdgeDoubleClick?: (event: unknown, edge: Edge) => void; nodesDraggable?: boolean }) => {
+      reactFlowCallbacks.inlineEditing = useInlineNodeEditing();
+      reactFlowCallbacks.onNodesChange = onNodesChange;
       reactFlowCallbacks.onMoveEnd = onMoveEnd;
       reactFlowCallbacks.onConnectStart = onConnectStart;
       reactFlowCallbacks.onConnectEnd = onConnectEnd;
       reactFlowCallbacks.onEdgeDoubleClick = onEdgeDoubleClick;
+      reactFlowCallbacks.edges = edges;
+      reactFlowCallbacks.edgeTypes = edgeTypes;
       React.useEffect(() => { onInit?.({ fitView, screenToFlowPosition }); }, [onInit]);
       return <div className="react-flow"><div className="react-flow__pane" data-testid="flow-pane" />{nodes.map((node) => <div className={`react-flow__node${nodesDraggable ? ' draggable' : ''}`} data-id={node.id} key={node.id}>{node.data?.description ? <p className="flow-description" data-testid={`flow-description-${node.id}`}>{node.data.description}</p> : null}</div>)}{children}</div>;
     },
@@ -84,6 +93,135 @@ describe('GuideEditor', () => {
 
     expect(node).toBeDefined();
     expect(node!.measured).toEqual({ width: 240, height: 104 });
+  });
+
+  it('gives unmeasured nodes the same default size used by layout and routing', () => {
+    const [imageNode, processNode] = toFlowNodes([
+      { id: 'image', type: 'image', position: { x: 0, y: 0 }, zIndex: 0, data: { url: 'https://example.com/a.png', alt: '示意图' } },
+      { id: 'process', type: 'process', position: { x: 0, y: 0 }, zIndex: 1, data: { label: '处理', shape: 'process' } },
+    ]);
+
+    expect(imageNode!.style).toEqual({ width: 320, height: 260 });
+    expect(processNode!.style).toEqual({ width: 240, height: 104 });
+  });
+
+  it('updates only type-compatible inline text fields without mutating the source document', () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'process', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '旧标题', shape: 'process', description: '旧明细' } },
+        { id: 'image', type: 'image', position: { x: 320, y: 0 }, zIndex: 1, data: { url: 'https://example.com/a.png', alt: '示意图', caption: '旧说明' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'process', exitNodeIds: ['process'],
+    };
+
+    const renamed = updateInlineNodeText(document, 'process', 'label', '新标题');
+    const clearedCaption = updateInlineNodeText(renamed, 'image', 'imageCaption', '');
+    const mismatch = updateInlineNodeText(clearedCaption, 'image', 'label', '不应写入');
+
+    expect(renamed.nodes[0]).toMatchObject({ data: { label: '新标题', description: '旧明细' } });
+    expect(clearedCaption.nodes[1]!.data).not.toHaveProperty('caption');
+    expect(mismatch).toBe(clearedCaption);
+    expect(document.nodes[0]).toMatchObject({ data: { label: '旧标题' } });
+  });
+
+  it('persists inline edits through the editor commit path and restores them with undo', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: 'process', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '旧标题', shape: 'process' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'process', exitNodeIds: ['process'],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    expect(reactFlowCallbacks.inlineEditing?.enabled).toBe(true);
+    act(() => reactFlowCallbacks.inlineEditing?.updateText('process', 'label', '节点内新标题'));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    const firstSaved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
+    expect(firstSaved.nodes[0]).toMatchObject({ data: { label: '节点内新标题' } });
+    expect(JSON.parse(JSON.stringify(firstSaved))).toEqual(firstSaved);
+
+    fireEvent.click(screen.getByRole('button', { name: '撤销' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledTimes(2));
+    expect((api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document.nodes[0]).toMatchObject({ data: { label: '旧标题' } });
+  });
+
+  it('keeps a resized image node size when automatic layout is previewed and saved', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'image', type: 'image', position: { x: 320, y: 0 }, zIndex: 1, size: { width: 760, height: 520 }, data: { url: 'https://example.com/a.png', alt: '示意图' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    act(() => reactFlowCallbacks.onNodesChange?.([{
+      id: 'image', type: 'dimensions', resizing: false, dimensions: { width: 380, height: 260 },
+    }]));
+    fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
+    fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({
+        nodes: expect.arrayContaining([expect.objectContaining({ id: 'image', size: { width: 380, height: 260 } })]),
+      }),
+    }));
+  });
+
+  it('does not issue a second save while automatic layout is still being saved', async () => {
+    let resolveSave: ((value: GuideDraftDetail) => void) | undefined;
+    const api = {
+      ...createApi(),
+      saveGuide: vi.fn().mockImplementation(() => new Promise<GuideDraftDetail>((resolve) => { resolveSave = resolve; })),
+    };
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.click(screen.getByRole('button', { name: '添加开始节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
+    fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    expect(api.saveGuide).toHaveBeenCalledTimes(1);
+    resolveSave?.({ ...emptyGuide, revision: 1 });
+    await waitFor(() => expect(screen.getByText(/已保存/)).toBeVisible());
+  });
+
+  it('requeues the latest automatic layout after an earlier save finishes', async () => {
+    const pending: Array<(value: GuideDraftDetail) => void> = [];
+    const api = {
+      ...createApi(),
+      saveGuide: vi.fn().mockImplementation(() => new Promise<GuideDraftDetail>((resolve) => { pending.push(resolve); })),
+    };
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    fireEvent.click(screen.getByRole('button', { name: '添加开始节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    expect(api.saveGuide).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
+    fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
+    pending[0]?.({ ...emptyGuide, revision: 1 });
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledTimes(2));
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 1, expect.objectContaining({
+      document: expect.objectContaining({ nodes: expect.any(Array) }),
+    }));
+    pending[1]?.({ ...emptyGuide, revision: 2 });
+    await waitFor(() => expect(screen.getByText(/已保存/)).toBeVisible());
   });
 
   it('preserves expanded-edge provenance when React Flow reports an edge update', () => {
@@ -173,7 +311,7 @@ describe('GuideEditor', () => {
 
     const savesBeforePreview = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
-    expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
+    expect(screen.getByText('阶段从上到下 · 阶段内从左到右')).toBeVisible();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
     fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
     fireEvent.click(screen.getByRole('button', { name: '撤销' }));
@@ -204,7 +342,12 @@ describe('GuideEditor', () => {
     expect(screen.getByText('未挂靠资料 1')).toBeVisible();
     expect(screen.getByText('孤立节点 1')).toBeVisible();
     expect(screen.getByText('循环 0')).toBeVisible();
-    expect(screen.getByText('入口 → 阶段泳道 → 资料')).toBeVisible();
+    expect(screen.getByText('入口 → 阶段 → 分支与回流 → 资料')).toBeVisible();
+    await waitFor(() => expect(fitView).toHaveBeenCalledWith(expect.objectContaining({
+      padding: 0.16,
+      minZoom: document.viewport.zoom,
+      maxZoom: document.viewport.zoom,
+    })));
 
     await user.click(screen.getByRole('button', { name: '选择流程节点 离屏流程' }));
     expect(fitView).toHaveBeenCalledWith(expect.objectContaining({ nodes: [{ id: 'offscreen' }] }));
@@ -231,8 +374,8 @@ describe('GuideEditor', () => {
     const erpLaneId = (screen.getByRole('option', { name: 'ERP' }) as HTMLOptionElement).value;
     fireEvent.change(screen.getByLabelText('责任泳道'), { target: { value: erpLaneId } });
 
-    expect(screen.getByText('ERP', { selector: '.swimlane-column *' })).toBeVisible();
-    expect(screen.getByText('系统', { selector: '.swimlane-column *' })).toBeVisible();
+    expect(screen.getByRole('textbox', { name: '责任泳道 ERP' })).toHaveValue('ERP');
+    expect(screen.getByText('系统', { selector: '.lane-kind-system' })).toBeVisible();
     expect(screen.getByText('订单处理', { selector: '.stage-lane span' })).toHaveClass('stage-lane-label');
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
     await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
@@ -300,11 +443,11 @@ describe('GuideEditor', () => {
     fireEvent.pointerMove(document, { clientX: 220, clientY: 80, pointerId: 1, buttons: 1 });
     fireEvent.pointerUp(document, { clientX: 220, clientY: 80, pointerId: 1, button: 0 });
 
-    expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
+    expect(screen.getByText('阶段从上到下 · 阶段内从左到右')).toBeVisible();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
 
     fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
-    expect(screen.getByText('已按入口从左到右整理')).toBeVisible();
+    expect(screen.getByText('阶段从上到下 · 阶段内从左到右')).toBeVisible();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
   });
 
@@ -399,6 +542,55 @@ describe('GuideEditor', () => {
 
     act(() => reactFlowCallbacks.onEdgeDoubleClick?.({ clientX: 480, clientY: 240 } as MouseEvent, { id: 'hierarchy:note', source: 'start', target: 'process-a' } as Edge));
     expect(screen.queryByRole('dialog', { name: '编辑连线标注' })).not.toBeInTheDocument();
+  });
+
+  it('derives orthogonal route data for real business edges', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, size: { width: 240, height: 104 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'process-a', type: 'process', position: { x: 360, y: 0 }, size: { width: 240, height: 104 }, zIndex: 1, data: { label: '处理', shape: 'process' } },
+      ],
+      edges: [{ id: 'flow-edge', source: 'start', target: 'process-a', label: '继续' }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: ['process-a'],
+    };
+
+    render(<GuideEditor guideId="guide-host" api={createApi({ document })} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    expect(reactFlowCallbacks.edgeTypes).toEqual(expect.objectContaining({ orthogonal: expect.anything() }));
+    expect(reactFlowCallbacks.edges).toContainEqual(expect.objectContaining({
+      id: 'flow-edge', sourceHandle: 'out', targetHandle: 'in', type: 'orthogonal', label: '继续', data: expect.objectContaining({ route: expect.objectContaining({ kind: 'FORWARD' }) }),
+    }));
+  });
+
+  it('opens the image annotation editor and records annotation edits in undo history', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: 'image', type: 'image', position: { x: 0, y: 0 }, zIndex: 0, data: { url: 'https://example.com/erp.png', alt: 'ERP 页面' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    await user.click(screen.getByRole('button', { name: '选择资料 ERP 页面' }));
+    await user.click(screen.getByRole('button', { name: '编辑图片标注' }));
+    const surface = screen.getByTestId('annotation-surface');
+    vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 400, width: 800, height: 400, toJSON: () => ({}) });
+    fireEvent.click(surface, { clientX: 200, clientY: 100 });
+    await user.click(screen.getByRole('button', { name: '关闭图片标注编辑器' }));
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ nodes: [expect.objectContaining({ data: expect.objectContaining({ annotations: [expect.objectContaining({ title: '新标注' })] }) })] }),
+    }));
+
+    await user.click(screen.getByRole('button', { name: '撤销' }));
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 1, expect.objectContaining({
+      document: expect.objectContaining({ nodes: [expect.objectContaining({ data: expect.not.objectContaining({ annotations: expect.anything() }) })] }),
+    }));
   });
 
   it('persists a flow-node detail and renders the short canvas description', async () => {

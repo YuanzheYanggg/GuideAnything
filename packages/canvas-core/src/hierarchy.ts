@@ -65,6 +65,8 @@ export interface HierarchyLayoutReport {
   unassignedContentIds: string[];
   unconnectedPrimaryIds: string[];
   cycleNodeIds: string[];
+  backEdgeIds: string[];
+  denseStageIds: string[];
   stageCount: number;
   laneCount: number;
 }
@@ -107,40 +109,40 @@ export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutRe
   const primary = visible.filter(isPrimaryFlowNode).sort(compareNodes);
   const content = visible.filter(isContentNode).sort(compareNodes);
   const primaryIds = new Set(primary.map((node) => node.id));
-  const graph = buildPrimaryGraph(document.edges, primaryIds);
-  const ranked = rankFromEntry(document.entryNodeId, primary, graph);
-  const contentByParent = attachedContentByParent(content, primaryIds);
-  const looseContent = unassignedContent(content, primaryIds);
+  const connectedContent = flowThroughContent(content, document.edges);
+  const connectedContentIds = new Set(connectedContent.map((node) => node.id));
+  const layoutNodes = [...primary, ...connectedContent].sort(compareNodes);
+  const layoutNodeIds = new Set(layoutNodes.map((node) => node.id));
+  const remainingContent = content.filter((node) => !connectedContentIds.has(node.id));
+  const graph = buildPrimaryGraph(document.edges, layoutNodeIds);
+  const ranked = rankFromEntry(document.entryNodeId, layoutNodes, graph);
+  const contentByParent = attachedContentByParent(remainingContent, primaryIds);
+  const looseContent = unassignedContent(remainingContent, primaryIds);
   const stages = document.stages ?? [];
   const lanes = orderedLanes(document.lanes ?? []);
-  const positioned = lanes.length > 0
-    ? placePrimaryInGrid(primary, ranked.rankById, stages, lanes, contentByParent, looseContent, document.edges)
-    : placePrimary(primary, ranked.rankById, calculateRankX(primary, content, ranked.rankById, primaryIds), stages, contentByParent, document.edges);
-  const withContent = placeContent(content, positioned, contentByParent);
+  const positioned = placePrimary(layoutNodes, ranked.rankById, stages, contentByParent, document.edges);
+  const withContent = placeContent(remainingContent, positioned, contentByParent);
   const byId = new Map(withContent.map((node) => [node.id, node]));
   const next = { ...document, nodes: document.nodes.map((node) => byId.get(node.id) ?? node) };
 
   return {
     document: next,
-    report: reportFor(primary, content, ranked, stages, lanes, primaryIds),
+    report: reportFor(primary, content, ranked, stages, lanes, primaryIds, connectedContentIds, document.edges),
     stageBounds: getStageBounds(next),
   };
 }
 
-export function getStageBounds(document: CanvasDocument): StageBounds[] {
-  const lanes = orderedLanes(document.lanes ?? []);
-  if (lanes.length > 0) {
-    const geometry = getGridGeometryForDocument(document, lanes);
-    return geometry.rows.map((row) => ({
-      stageId: row.stage?.id ?? null,
-      title: row.stage?.title ?? '未分阶段',
-      x: -STAGE_PADDING,
-      y: row.y - STAGE_PADDING,
-      width: geometry.totalWidth + STAGE_PADDING * 2,
-      height: row.height + STAGE_PADDING * 2,
-    }));
-  }
+function flowThroughContent(content: CanvasNode[], edges: CanvasEdge[]): CanvasNode[] {
+  const connectedIds = new Set<string>();
+  edges.forEach((edge) => {
+    if (edge.hidden || edge.sourceTrace) return;
+    connectedIds.add(edge.source);
+    connectedIds.add(edge.target);
+  });
+  return content.filter((node) => !node.contentParentId && connectedIds.has(node.id));
+}
 
+export function getStageBounds(document: CanvasDocument): StageBounds[] {
   const stages = orderedStages(document.stages ?? []);
   const stagesById = new Map(stages.map((stage) => [stage.id, stage]));
   const nodesById = new Map(document.nodes.map((node) => [node.id, node]));
@@ -163,9 +165,19 @@ export function getStageBounds(document: CanvasDocument): StageBounds[] {
     boundsByStage.set(stageId, { minX: node.position.x, minY: node.position.y, maxX, maxY });
   });
 
-  const result = stages.flatMap((stage) => {
+  const configuredBounds = stages.map((stage) => {
     const bounds = boundsByStage.get(stage.id);
-    return bounds ? [toStageBounds(stage.id, stage.title, bounds)] : [];
+    return bounds ? toStageBounds(stage.id, stage.title, bounds) : null;
+  });
+  const configuredWidth = Math.max(EMPTY_GRID_CELL_WIDTH + STAGE_PADDING * 2, ...configuredBounds.map((bound) => bound?.width ?? 0));
+  let nextY = configuredBounds.find((bound): bound is StageBounds => Boolean(bound))?.y ?? -STAGE_PADDING;
+  const result = stages.map((stage, index) => {
+    const actual = configuredBounds[index];
+    const bound = actual
+      ? { ...actual, x: -STAGE_PADDING, width: configuredWidth }
+      : { stageId: stage.id, title: stage.title, x: -STAGE_PADDING, y: nextY, width: configuredWidth, height: EMPTY_GRID_CELL_HEIGHT + STAGE_PADDING * 2 };
+    nextY = bound.y + bound.height + STAGE_GAP_Y - STAGE_PADDING * 2;
+    return bound;
   });
   const unassigned = boundsByStage.get(null);
   if (unassigned) result.push(toStageBounds(null, '未分阶段', unassigned));
@@ -473,51 +485,105 @@ function calculateRankX(primary: CanvasNode[], content: CanvasNode[], rankById: 
   return rankX;
 }
 
-function placePrimary(
-  primary: CanvasNode[],
-  rankById: Map<string, number>,
-  rankX: Map<number, number>,
-  stages: FlowStage[],
-  contentByParent: Map<string, CanvasNode[]>,
-  edges: CanvasEdge[],
-): PrimaryPlacement {
+function placePrimary(primary: CanvasNode[], rankById: Map<string, number>, stages: FlowStage[], contentByParent: Map<string, CanvasNode[]>, edges: CanvasEdge[]): PrimaryPlacement {
   const ordered = orderedStages(stages);
   const stageIds = new Set(ordered.map((stage) => stage.id));
-  const laneNodes = new Map<string | null, Map<number, CanvasNode[]>>();
+  const stageNodes = new Map<string | null, CanvasNode[]>();
   primary.forEach((node) => {
     const stageId = node.stageId && stageIds.has(node.stageId) ? node.stageId : null;
-    const byRank = laneNodes.get(stageId) ?? new Map<number, CanvasNode[]>();
-    const rank = rankById.get(node.id)!;
-    const nodes = byRank.get(rank) ?? [];
+    const nodes = stageNodes.get(stageId) ?? [];
     nodes.push(node);
-    byRank.set(rank, nodes);
-    laneNodes.set(stageId, byRank);
+    stageNodes.set(stageId, nodes);
   });
 
   const nodes: CanvasNode[] = [];
   const byId = new Map<string, CanvasNode>();
   const branchesByTarget = decisionBranchPlacements(primary, edges);
-  let laneY = 0;
+  const branchRows = branchRowsByNode(primary, edges, branchesByTarget);
+  let stageY = 0;
   let unassignedContentY = 0;
   [...ordered.map((stage) => stage.id), null].forEach((stageId) => {
-    const byRank = laneNodes.get(stageId);
-    let laneHeight = 0;
-    if (byRank) {
+    const inStage = stageNodes.get(stageId) ?? [];
+    let stageHeight = 0;
+    if (inStage.length > 0) {
+      const ranks = inStage.map((node) => rankById.get(node.id)!);
+      const minimumRank = Math.min(...ranks);
+      const localRankById = new Map(inStage.map((node) => [node.id, rankById.get(node.id)! - minimumRank]));
+      const rankX = localRankX(inStage, localRankById);
+      const rowHeight = Math.max(...inStage.map((node) => gridOccupiedHeight(node, contentByParent)), EMPTY_GRID_CELL_HEIGHT);
+      const occupiedRows = new Set<number>();
+      const byRank = new Map<number, CanvasNode[]>();
+      inStage.forEach((node) => {
+        const rank = localRankById.get(node.id)!;
+        const ranked = byRank.get(rank) ?? [];
+        ranked.push(node);
+        byRank.set(rank, ranked);
+      });
       [...byRank.keys()].sort((left, right) => left - right).forEach((rank) => {
-        let y = laneY;
+        const usedAtRank = new Set<number>();
         orderRankNodes(byRank.get(rank)!, branchesByTarget).forEach((node) => {
-          const positioned = { ...node, position: { x: rankX.get(rank)!, y } };
+          let row = branchRows.get(node.id) ?? 0;
+          while (usedAtRank.has(row)) row += 1;
+          usedAtRank.add(row);
+          occupiedRows.add(row);
+          const positioned = { ...node, position: { x: rankX.get(rank)!, y: stageY + row * (rowHeight + NODE_GAP_Y) } };
           nodes.push(positioned);
           byId.set(node.id, positioned);
-          y += occupiedHeight(node, contentByParent) + NODE_GAP_Y;
+          stageHeight = Math.max(stageHeight, positioned.position.y - stageY + gridOccupiedHeight(node, contentByParent));
         });
-        laneHeight = Math.max(laneHeight, y - laneY - NODE_GAP_Y);
       });
     }
-    if (stageId === null) unassignedContentY = laneY + (laneHeight > 0 ? laneHeight + STAGE_GAP_Y : 0);
-    if (laneHeight > 0) laneY += laneHeight + STAGE_GAP_Y;
+    if (stageId !== null && stageHeight === 0) stageHeight = EMPTY_GRID_CELL_HEIGHT;
+    if (stageId === null) unassignedContentY = stageY + (stageHeight > 0 ? stageHeight + STAGE_GAP_Y : 0);
+    if (stageHeight > 0) stageY += stageHeight + STAGE_GAP_Y;
   });
-  return { nodes, byId, unassignedContentX: 0, unassignedContentY, contentPlacement: 'right' };
+  return { nodes, byId, unassignedContentX: 0, unassignedContentY, contentPlacement: 'below' };
+}
+
+function localRankX(nodes: CanvasNode[], rankById: Map<string, number>): Map<number, number> {
+  const widthByRank = new Map<number, number>();
+  nodes.forEach((node) => {
+    const rank = rankById.get(node.id)!;
+    widthByRank.set(rank, Math.max(widthByRank.get(rank) ?? 0, nodeSize(node).width));
+  });
+  const result = new Map<number, number>();
+  let x = 0;
+  [...widthByRank.keys()].sort((left, right) => left - right).forEach((rank) => {
+    result.set(rank, x);
+    x += widthByRank.get(rank)! + BASE_RANK_GAP;
+  });
+  return result;
+}
+
+function branchRowsByNode(
+  primary: CanvasNode[],
+  edges: CanvasEdge[],
+  branchesByTarget: Map<string, DecisionBranchPlacement>,
+): Map<string, number> {
+  const primaryIds = new Set(primary.map((node) => node.id));
+  const outgoing = new Map(primary.map((node) => [node.id, [] as string[]]));
+  const incoming = new Map(primary.map((node) => [node.id, 0]));
+  edges.forEach((edge) => {
+    if (edge.hidden || edge.sourceTrace || !primaryIds.has(edge.source) || !primaryIds.has(edge.target)) return;
+    outgoing.get(edge.source)!.push(edge.target);
+    incoming.set(edge.target, incoming.get(edge.target)! + 1);
+  });
+  const result = new Map<string, number>();
+  [...branchesByTarget.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .forEach(([targetId, branch]) => {
+      const row = branch.priority ?? 0;
+      const queue = [targetId];
+      const seen = new Set<string>();
+      while (queue.length > 0) {
+        const id = queue.shift()!;
+        if (seen.has(id) || (id !== targetId && incoming.get(id)! > 1)) continue;
+        seen.add(id);
+        result.set(id, Math.max(result.get(id) ?? 0, row));
+        outgoing.get(id)?.forEach((next) => queue.push(next));
+      }
+    });
+  return result;
 }
 
 function placePrimaryInGrid(
@@ -690,14 +756,22 @@ function reportFor(
   stages: FlowStage[],
   lanes: FlowLane[],
   primaryIds: Set<string>,
+  connectedContentIds: Set<string>,
+  edges: CanvasEdge[],
 ): HierarchyLayoutReport {
   const attached = content.filter((node) => node.contentParentId && primaryIds.has(node.contentParentId));
   return {
     primaryNodeIds: primary.map((node) => node.id),
     attachedContentIds: attached.map((node) => node.id),
-    unassignedContentIds: content.filter((node) => !node.contentParentId || !primaryIds.has(node.contentParentId)).map((node) => node.id),
-    unconnectedPrimaryIds: ranked.unconnectedPrimaryIds,
-    cycleNodeIds: ranked.cycleNodeIds,
+    unassignedContentIds: content.filter((node) => !connectedContentIds.has(node.id) && (!node.contentParentId || !primaryIds.has(node.contentParentId))).map((node) => node.id),
+    unconnectedPrimaryIds: ranked.unconnectedPrimaryIds.filter((id) => primaryIds.has(id)),
+    cycleNodeIds: ranked.cycleNodeIds.filter((id) => primaryIds.has(id)),
+    backEdgeIds: edges
+      .filter((edge) => !edge.hidden && !edge.sourceTrace && primaryIds.has(edge.source) && primaryIds.has(edge.target))
+      .filter((edge) => (ranked.rankById.get(edge.target) ?? 0) <= (ranked.rankById.get(edge.source) ?? 0))
+      .map((edge) => edge.id)
+      .sort(),
+    denseStageIds: [],
     stageCount: stages.length,
     laneCount: lanes.length,
   };

@@ -1,12 +1,16 @@
 import type { CanvasDocument, CanvasNode, FlowLane, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
+import { routeCanvasEdges } from '@guideanything/canvas-core';
 import {
   Background,
   BackgroundVariant,
   Controls,
+  Handle,
   MarkerType,
   MiniMap,
+  Position,
   ReactFlow,
   type Edge,
+  type EdgeTypes,
   type Node,
   type NodeProps,
   type NodeTypes,
@@ -18,7 +22,9 @@ import { MarkdownNodeView } from '../nodes/MarkdownNode';
 import { VideoNodeView } from '../nodes/VideoNode';
 import { useMediaSource } from '../nodes/useMediaSource';
 import { AppearanceToggle } from '../theme/AppearanceToggle';
+import { OrthogonalEdge } from '../editor/OrthogonalEdge';
 import type { PersonalApi } from '../workspace/types';
+import { MediaLightbox, type MediaPreview } from './MediaLightbox';
 
 export interface LessonApi {
   getVersion: (versionId: string) => Promise<GuideVersionSnapshot>;
@@ -68,14 +74,32 @@ const LessonMapNode = memo(function LessonMapNode({ data, type }: NodeProps) {
         activate();
       }
     } : undefined}
-  ><span>{typeLabel(type)}</span><strong>{nodeSummary(type, value)}</strong></div>;
+  ><Handle className="lesson-map-handle" type="target" position={Position.Left} id="in" /><span>{typeLabel(type)}</span><strong>{nodeSummary(type, value)}</strong>{type === 'decision'
+      ? <><Handle className="lesson-map-handle" type="source" position={Position.Right} id="yes" /><Handle className="lesson-map-handle" type="source" position={Position.Bottom} id="no" /></>
+      : <Handle className="lesson-map-handle" type="source" position={Position.Right} id="out" />}</div>;
 });
 
 const nodeTypes: NodeTypes = {
   start: LessonMapNode, end: LessonMapNode, process: LessonMapNode, decision: LessonMapNode, data: LessonMapNode,
   markdown: LessonMapNode, image: LessonMapNode, video: LessonMapNode, subguide: LessonMapNode,
 };
-const edgeOptions = { type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: 'var(--ga-accent)', strokeWidth: 2 } };
+const edgeTypes: EdgeTypes = { orthogonal: OrthogonalEdge };
+const edgeOptions = { type: 'orthogonal', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: 'var(--ga-accent)', strokeWidth: 2 } };
+
+export function toLessonFlowEdges(document: CanvasDocument): Edge[] {
+  const routing = routeCanvasEdges(document);
+  return document.edges.map((edge) => {
+    const route = routing.routesByEdgeId.get(edge.id);
+    const source = document.nodes.find((node) => node.id === edge.source);
+    return {
+      ...edge,
+      sourceHandle: edge.sourceHandle ?? (source?.type === 'decision' ? 'yes' : 'out'),
+      targetHandle: edge.targetHandle ?? 'in',
+      type: route ? 'orthogonal' : 'smoothstep',
+      ...(route ? { data: { route } } : {}),
+    } as Edge;
+  });
+}
 
 export function LessonPage({ versionId, api, personalApi, onBack }: { versionId: string; api: LessonApi; personalApi?: PersonalApi; onBack: () => void }) {
   const [versionHistory, setVersionHistory] = useState<GuideVersionSnapshot[]>([]);
@@ -83,6 +107,7 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
   const [instance, setInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
   const [subguideLoading, setSubguideLoading] = useState(false);
   const [error, setError] = useState('');
+  const [previewStack, setPreviewStack] = useState<MediaPreview[]>([]);
   const inFlightSubguidesRef = useRef(new Set<string>());
 
   useEffect(() => {
@@ -115,6 +140,22 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
     () => version && currentNode ? resourcesForStep(version.document, currentNode.id) : [],
     [currentNode, version],
   );
+  const currentPreview = previewStack[previewStack.length - 1] ?? null;
+  const openPreview = useCallback((node: CanvasNode) => {
+    const preview = previewForNode(node);
+    if (preview) setPreviewStack([preview]);
+  }, []);
+  const openAnnotationTarget = useCallback((targetNodeId: string, annotationIndex: number) => {
+    if (!version) return;
+    const target = version.document.nodes.find((node) => node.id === targetNodeId);
+    const targetPreview = target ? previewForNode(target) : null;
+    if (!targetPreview) return;
+    setPreviewStack((stack) => {
+      const source = stack[stack.length - 1];
+      const restoredSource = source?.kind === 'image' ? { ...source, initialAnnotationIndex: annotationIndex } : source;
+      return [...stack.slice(0, -1), ...(restoredSource ? [restoredSource] : []), targetPreview];
+    });
+  }, [version]);
   const openSubguide = useCallback(async (guideVersionId: string) => {
     if (inFlightSubguidesRef.current.has(guideVersionId)) return;
     if (versionHistory.some((item) => item.id === guideVersionId)) {
@@ -160,12 +201,16 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
     zIndex: node.zIndex,
     selected: node.id === currentStep?.nodeId,
   })) : [], [currentStep?.nodeId, openSubguide, version]);
-  const flowEdges = useMemo<Edge[]>(() => version ? version.document.edges as Edge[] : [], [version]);
+  const flowEdges = useMemo<Edge[]>(() => version ? toLessonFlowEdges(version.document) : [], [version]);
 
   useEffect(() => {
     if (!instance || !currentStep) return;
     void instance.fitView({ nodes: [{ id: currentStep.nodeId }], duration: 280, padding: 1.2, minZoom: 0.45, maxZoom: 1.25 });
   }, [currentStep, instance]);
+
+  useEffect(() => {
+    setPreviewStack([]);
+  }, [currentStep?.id, version?.id]);
 
   if (!version) return <main className="center-state">{error ? <p className="error-message" role="alert">{error}</p> : <><span className="spinner" /><p>正在载入教学指南…</p></>}</main>;
 
@@ -188,6 +233,7 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
           nodes={flowNodes}
           edges={flowEdges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           defaultEdgeOptions={edgeOptions}
           onInit={setInstance}
           nodesDraggable={false}
@@ -213,29 +259,56 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
         <div className="lesson-step-meta"><span>步骤 {currentIndex + 1}</span><span className="lesson-step-context"><small>{typeLabel(currentNode?.type)}</small>{currentLane ? <small className="lesson-responsibility-badge">{currentLane.kind === 'ROLE' ? '责任' : '系统'} · {currentLane.title}</small> : null}</span></div>
         <h2>{currentStep?.title}</h2>
         {currentStep?.body ? <p className="lesson-body">{currentStep.body}</p> : null}
-        {currentNode ? <CurrentNodeContent node={currentNode} /> : <p className="error-message">关联节点不存在</p>}
+        {currentNode ? <CurrentNodeContent node={currentNode} onOpenPreview={openPreview} /> : <p className="error-message">关联节点不存在</p>}
         {currentResources.length > 0 ? <section className="lesson-resources" aria-labelledby="lesson-resources-title">
           <span className="eyebrow">STEP RESOURCES</span>
           <h3 id="lesson-resources-title">本步骤资料</h3>
-          {currentResources.map((node) => <CurrentNodeContent key={node.id} node={node} />)}
+          {currentResources.map((node) => <CurrentNodeContent key={node.id} node={node} onOpenPreview={openPreview} />)}
         </section> : null}
         <div className="lesson-navigation"><button className="secondary-button" type="button" disabled={currentIndex === 0} onClick={() => setCurrentIndex((index) => Math.max(0, index - 1))}>上一步</button><button className="primary-button" type="button" disabled={currentIndex === lessonSteps.length - 1} onClick={() => setCurrentIndex((index) => Math.min(lessonSteps.length - 1, index + 1))}>下一步</button></div>
       </aside>
     </div>}
+    {currentPreview ? <MediaLightbox
+      preview={currentPreview}
+      onClose={() => setPreviewStack([])}
+      {...(previewStack.length > 1 ? { onBack: () => setPreviewStack((stack) => stack.slice(0, -1)) } : {})}
+      onOpenTarget={openAnnotationTarget}
+      isTargetValid={(targetNodeId) => Boolean(version.document.nodes.find((node) => node.id === targetNodeId && node.id !== (currentPreview.kind === 'image' ? currentPreview.node.id : '')))}
+      onActivateNode={(node) => {
+        if (node.type === 'subguide') {
+          setPreviewStack([]);
+          void openSubguide(node.data.guideVersionId);
+          return;
+        }
+        const targetIndex = lessonSteps.findIndex(({ step }) => step.nodeId === node.id);
+        if (targetIndex >= 0) setCurrentIndex(targetIndex);
+        else void instance?.fitView({ nodes: [{ id: node.id }], duration: 280, padding: 1.1, minZoom: 0.4, maxZoom: 1.3 });
+        setPreviewStack([]);
+      }}
+    /> : null}
   </main>;
 }
 
-function CurrentNodeContent({ node }: { node: CanvasNode }) {
+function CurrentNodeContent({ node, onOpenPreview }: { node: CanvasNode; onOpenPreview: (node: CanvasNode) => void }) {
   if (node.type === 'markdown') return <MarkdownNodeView data={node.data} />;
   if (node.type === 'video') return <VideoNodeView data={node.data} />;
-  if (node.type === 'image') return <LessonImage node={node} />;
+  if (node.type === 'image') return <LessonImage node={node} onOpenPreview={() => onOpenPreview(node)} />;
   if (node.type === 'subguide') return <div className="lesson-reference"><span>固定引用 · v{node.data.version}</span><strong>{node.data.title}</strong><p>{node.data.expanded ? '该子指南已在发布快照中展开。' : '这是一个固定版本子指南；作者可在编辑画布中展开查看完整流程。'}</p></div>;
   return <div className="lesson-flow-detail"><span>{typeLabel(node.type)}</span><strong>{node.data.label}</strong>{node.data.description ? <p>{node.data.description}</p> : null}</div>;
 }
 
-function LessonImage({ node }: { node: CanvasNode<'image'> }) {
+function LessonImage({ node, onOpenPreview }: { node: CanvasNode<'image'>; onOpenPreview: () => void }) {
   const source = useMediaSource(node.data.url);
-  return <figure>{source ? <img src={source} alt={node.data.alt} /> : <p>图片载入失败</p>}<figcaption>{node.data.caption}</figcaption></figure>;
+  return <figure>{source ? <button className="lesson-media-trigger" type="button" onClick={onOpenPreview} aria-label={`放大查看 ${node.data.alt}`}><img src={source} alt={node.data.alt} /></button> : <p>图片载入失败</p>}<figcaption>{node.data.caption}</figcaption></figure>;
+}
+
+function previewForNode(node: CanvasNode): MediaPreview | null {
+  if (node.type === 'image') return { kind: 'image', node };
+  if (node.type === 'video') return { kind: 'video', node };
+  if (node.type === 'markdown') return { kind: 'markdown', node };
+  if (node.type === 'subguide') return { kind: 'subguide', node };
+  if (node.type === 'start' || node.type === 'end' || node.type === 'process' || node.type === 'decision' || node.type === 'data') return { kind: 'flow', node };
+  return null;
 }
 
 function typeLabel(type?: string): string {

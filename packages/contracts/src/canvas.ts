@@ -37,6 +37,46 @@ const KeypointSchema = z.object({
   targetNodeId: IdSchema.optional(),
 });
 
+const NormalizedCoordinateSchema = z.number().min(0).max(1);
+
+const ImageAnnotationRegionSchema = z.object({
+  x: NormalizedCoordinateSchema,
+  y: NormalizedCoordinateSchema,
+  width: z.number().positive().max(1).optional(),
+  height: z.number().positive().max(1).optional(),
+});
+
+const ImageAnnotationCameraSchema = z.object({
+  centerX: NormalizedCoordinateSchema,
+  centerY: NormalizedCoordinateSchema,
+  zoom: z.number().min(1).max(8),
+});
+
+export const ImageAnnotationSchema = z.object({
+  id: IdSchema,
+  order: z.number().int().min(0),
+  title: z.string().min(1).max(200),
+  body: z.string().max(5_000).optional(),
+  shape: z.enum(['POINT', 'RECT']),
+  region: ImageAnnotationRegionSchema,
+  camera: ImageAnnotationCameraSchema.optional(),
+  targetNodeId: IdSchema.optional(),
+}).superRefine((annotation, context) => {
+  const { width, height, x, y } = annotation.region;
+  if (annotation.shape === 'POINT' && (width !== undefined || height !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['region'], message: '点标注不能包含区域尺寸' });
+  }
+  if (annotation.shape === 'RECT' && (width === undefined || height === undefined)) {
+    context.addIssue({ code: 'custom', path: ['region'], message: '矩形标注必须包含宽度和高度' });
+  }
+  if (width !== undefined && x + width > 1) {
+    context.addIssue({ code: 'custom', path: ['region', 'width'], message: '标注区域不能超出图片宽度' });
+  }
+  if (height !== undefined && y + height > 1) {
+    context.addIssue({ code: 'custom', path: ['region', 'height'], message: '标注区域不能超出图片高度' });
+  }
+});
+
 const ExpandedContinuationEdgeSchema = z.object({
   id: IdSchema,
   hidden: z.boolean(),
@@ -83,6 +123,7 @@ export const CanvasNodeSchema = z.discriminatedUnion('type', [
     url: MediaUrlSchema,
     caption: z.string().max(1_000).optional(),
     alt: z.string().min(1).max(500),
+    annotations: z.array(ImageAnnotationSchema).max(500).optional(),
   })),
   node('video', z.object({
     assetId: IdSchema.optional(),
@@ -181,6 +222,23 @@ export const CanvasDocumentSchema = z.object({
     if (node.laneId && (!primary || !laneIds.has(node.laneId))) {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'laneId'], message: '责任泳道只能标记存在的一级主流程节点' });
     }
+    if (node.type === 'image' && node.data.annotations) {
+      const annotationIds = new Set<string>();
+      const annotationOrders = new Set<number>();
+      node.data.annotations.forEach((annotation, annotationIndex) => {
+        if (annotationIds.has(annotation.id)) {
+          context.addIssue({ code: 'custom', path: ['nodes', index, 'data', 'annotations', annotationIndex, 'id'], message: '图片标注 ID 必须唯一' });
+        }
+        if (annotationOrders.has(annotation.order)) {
+          context.addIssue({ code: 'custom', path: ['nodes', index, 'data', 'annotations', annotationIndex, 'order'], message: '图片标注顺序必须唯一' });
+        }
+        if (annotation.targetNodeId === node.id) {
+          context.addIssue({ code: 'custom', path: ['nodes', index, 'data', 'annotations', annotationIndex, 'targetNodeId'], message: '图片标注不能关联自身' });
+        }
+        annotationIds.add(annotation.id);
+        annotationOrders.add(annotation.order);
+      });
+    }
     if (!node.contentParentId) return;
     const parent = nodesById.get(node.contentParentId);
     if (!contentTypes.has(node.type) || node.source || !parent || !primaryTypes.has(parent.type) || parent.source) {
@@ -215,6 +273,7 @@ export const CanvasDocumentSchema = z.object({
 });
 
 export type SourceTrace = z.infer<typeof SourceTraceSchema>;
+export type ImageAnnotation = z.infer<typeof ImageAnnotationSchema>;
 export type FlowStage = z.infer<typeof FlowStageSchema>;
 export type FlowLane = z.infer<typeof FlowLaneSchema>;
 export type NodeKind = z.infer<typeof CanvasNodeSchema>['type'];

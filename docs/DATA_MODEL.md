@@ -67,10 +67,12 @@ interface CanvasDocument {
   steps: LessonStep[];
   entryNodeId?: string;
   exitNodeIds: string[];
+  stages?: FlowStage[];
+  lanes?: FlowLane[];
 }
 ```
 
-流程、Markdown、图片、视频和子指南节点使用共享 schema。子指南节点保存固定 `guideVersionId`、入口/出口快照和续接边状态；`SourceTrace` 记录引用节点、源指南、版本和元素 ID。
+流程、Markdown、图片、视频和子指南节点使用共享 schema。图片节点可选保存 `annotations`；每项含稳定 ID、顺序、标题、可选说明、`POINT | RECT` 归一化区域、可选 `targetNodeId`，以及 `centerX/centerY/zoom` 镜头。区域坐标限制在 `0..1`，矩形宽高必须为正且不能越界；同一图片内 ID 与顺序唯一，不能关联自身，目标缺失时保留数据并在学习模式显示失效状态。子指南节点保存固定 `guideVersionId`、入口/出口快照和续接边状态；`SourceTrace` 记录引用节点、源指南、版本和元素 ID。
 
 ## 6. 未来契约（非持久化实现）
 
