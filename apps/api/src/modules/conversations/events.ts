@@ -233,8 +233,10 @@ function updateRunStateForEvent(database: DatabaseSync, event: AgentRunEventV1):
   } else if (event.type === 'plan.committed' || event.type === 'task.started') {
     if (event.type === 'plan.committed') {
       database.prepare(
-        `UPDATE agent_runs SET status = 'RUNNING', route = ?, updated_at = ? WHERE id = ?`,
-      ).run(event.payload.plan.route, now, event.runId);
+        `UPDATE agent_runs
+         SET status = 'RUNNING', route = ?, route_decision_json = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(event.payload.plan.route, JSON.stringify(event.payload.plan), now, event.runId);
     } else {
       database.prepare(
         `UPDATE agent_runs SET status = 'RUNNING', updated_at = ? WHERE id = ?`,
@@ -285,8 +287,9 @@ function assertRunEventTransition(
     if (run.status !== 'VALIDATING') throw new Error('只有 VALIDATING 运行可以完成');
     const message = database.prepare(
       `SELECT id FROM conversation_messages
-       WHERE id = ? AND conversation_id = ? AND role = 'ASSISTANT' AND committed = 1`,
-    ).get(input.payload.messageId, run.conversation_id);
+       WHERE id = ? AND conversation_id = ? AND role = 'ASSISTANT' AND committed = 1
+         AND json_extract(content, '$.runId') = ?`,
+    ).get(input.payload.messageId, run.conversation_id, run.id);
     if (!message) throw new Error('完成事件必须引用当前会话已提交的助手消息');
   }
 }

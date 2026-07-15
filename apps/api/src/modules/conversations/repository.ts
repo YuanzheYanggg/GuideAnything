@@ -1,16 +1,26 @@
 import {
+  AgentCommittedAnswerV1Schema,
   AgentMessageAcceptedV1Schema,
   AgentRunSnapshotV1Schema,
+  ConversationAssistantMessageV1Schema,
+  ConversationAttachmentSummaryV1Schema,
+  ConversationDetailV1Schema,
   ConversationSummaryV1Schema,
+  ConversationUserMessageV1Schema,
+  PublicRoutePlanV1Schema,
   SendConversationMessageRequestV1Schema,
   SourceOptionsV1Schema,
+  type AgentCommittedAnswerV1,
   type AgentMessageAcceptedV1,
   type AgentRunSnapshotV1,
+  type ConversationAssistantMessageV1,
+  type ConversationDetailV1,
   type ConversationSummaryV1,
   type SendConversationMessageRequestV1,
 } from '@guideanything/contracts';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { z } from 'zod';
 
 export interface CreateConversationInput {
   scope: 'GLOBAL_SANTEXWELL' | 'WORKSPACE';
@@ -85,6 +95,7 @@ interface RunRow {
   route: AgentRunSnapshotV1['route'];
   status: AgentRunSnapshotV1['status'];
   source_options_json: string;
+  route_decision_json: string | null;
   error_code: string | null;
   error_message: string | null;
   error_retryable: number | null;
@@ -94,6 +105,20 @@ interface RunRow {
   updated_at: string;
   last_event_sequence: number;
 }
+
+interface StoredMessageRow {
+  id: string;
+  role: 'USER' | 'ASSISTANT';
+  client_message_id: string | null;
+  content: string;
+  source_options_json: string | null;
+  created_at: string;
+}
+
+const AssistantMessageEnvelopeSchema = z.object({
+  runId: z.string().min(1).max(200),
+  answer: AgentCommittedAnswerV1Schema,
+}).strict();
 
 const CONVERSATION_SELECT = `
   SELECT conversation.id, conversation.scope, conversation.workspace_id,
@@ -147,6 +172,103 @@ export function listConversationsForOwner(
      ORDER BY conversation.updated_at DESC, conversation.id DESC`,
   ).all(input.ownerId, input.scope, input.workspaceId) as unknown as ConversationRow[];
   return rows.map(mapConversation);
+}
+
+export function getConversationDetailForOwner(
+  database: DatabaseSync,
+  conversationId: string,
+  ownerId: string,
+): ConversationDetailV1 | null {
+  const conversation = getConversationForOwner(database, conversationId, ownerId);
+  if (!conversation) return null;
+  const rows = database.prepare(
+    `SELECT id, role, client_message_id, content, source_options_json, created_at
+     FROM conversation_messages
+     WHERE conversation_id = ? AND committed = 1
+     ORDER BY created_at ASC, id ASC`,
+  ).all(conversationId) as unknown as StoredMessageRow[];
+  const messages = rows.map((row) => row.role === 'USER'
+    ? ConversationUserMessageV1Schema.parse({
+        id: row.id,
+        role: 'USER',
+        clientMessageId: row.client_message_id,
+        content: row.content,
+        sources: SourceOptionsV1Schema.parse(JSON.parse(row.source_options_json ?? 'null')),
+        createdAt: row.created_at,
+      })
+    : mapAssistantMessage(row));
+  const latestRunRow = database.prepare(
+    `SELECT run.*,
+            COALESCE((SELECT MAX(sequence) FROM agent_run_events WHERE run_id = run.id), 0)
+              AS last_event_sequence
+     FROM agent_runs AS run
+     WHERE run.conversation_id = ?
+     ORDER BY run.run_sequence DESC, run.id DESC
+     LIMIT 1`,
+  ).get(conversationId) as unknown as RunRow | undefined;
+  const attachmentRows = database.prepare(
+    `SELECT id, original_name, mime_type, size, status, expires_at, created_at, updated_at
+     FROM conversation_attachments
+     WHERE conversation_id = ? AND owner_id = ?
+     ORDER BY created_at ASC, id ASC`,
+  ).all(conversationId, ownerId) as unknown as Array<{
+    id: string;
+    original_name: string;
+    mime_type: string;
+    size: number;
+    status: string;
+    expires_at: string;
+    created_at: string;
+    updated_at: string;
+  }>;
+  return ConversationDetailV1Schema.parse({
+    conversation,
+    messages,
+    latestRun: latestRunRow ? mapRunSnapshot(latestRunRow) : null,
+    attachments: attachmentRows.map((row) => ConversationAttachmentSummaryV1Schema.parse({
+      id: row.id,
+      originalName: row.original_name,
+      mimeType: row.mime_type,
+      size: row.size,
+      status: row.status,
+      expiresAt: row.expires_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    })),
+  });
+}
+
+export function commitAssistantMessage(
+  database: DatabaseSync,
+  input: { runId: string; answer: AgentCommittedAnswerV1 },
+): ConversationAssistantMessageV1 {
+  const answer = AgentCommittedAnswerV1Schema.parse(input.answer);
+  const run = getRunById(database, input.runId);
+  if (!run) throw new Error('运行不存在');
+  if (run.status !== 'VALIDATING') throw new Error('只有 VALIDATING 运行可以提交助手消息');
+  const existing = getAssistantMessageByRun(database, run.id);
+  if (existing) return mapAssistantMessage(existing);
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const content = JSON.stringify(AssistantMessageEnvelopeSchema.parse({ runId: run.id, answer }));
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    database.prepare(
+      `INSERT INTO conversation_messages (
+        id, conversation_id, role, client_message_id, content, source_options_json,
+        selected_context_json, attachment_ids_json, committed, created_at
+      ) VALUES (?, ?, 'ASSISTANT', NULL, ?, NULL, NULL, '[]', 1, ?)`,
+    ).run(id, run.conversation_id, content, now);
+    database.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?')
+      .run(now, run.conversation_id);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    const raced = getAssistantMessageByRun(database, run.id);
+    if (raced) return mapAssistantMessage(raced);
+    throw error;
+  }
+  return mapAssistantMessage(getAssistantMessageByRun(database, run.id)!);
 }
 
 export function enqueueConversationRun(
@@ -273,12 +395,36 @@ export function mapRunSnapshot(row: RunRow): AgentRunSnapshotV1 {
     route: row.route,
     status: row.status,
     sources,
+    ...(row.route_decision_json
+      ? { publicPlan: PublicRoutePlanV1Schema.parse(JSON.parse(row.route_decision_json)) }
+      : {}),
     lastEventSequence: row.last_event_sequence,
     createdAt: row.created_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
     updatedAt: row.updated_at,
     error,
+  });
+}
+
+function getAssistantMessageByRun(database: DatabaseSync, runId: string): StoredMessageRow | null {
+  const row = database.prepare(
+    `SELECT id, role, client_message_id, content, source_options_json, created_at
+     FROM conversation_messages
+     WHERE role = 'ASSISTANT' AND json_extract(content, '$.runId') = ?
+     LIMIT 1`,
+  ).get(runId) as unknown as StoredMessageRow | undefined;
+  return row ?? null;
+}
+
+function mapAssistantMessage(row: StoredMessageRow): ConversationAssistantMessageV1 {
+  const envelope = AssistantMessageEnvelopeSchema.parse(JSON.parse(row.content));
+  return ConversationAssistantMessageV1Schema.parse({
+    id: row.id,
+    role: 'ASSISTANT',
+    runId: envelope.runId,
+    answer: envelope.answer,
+    createdAt: row.created_at,
   });
 }
 

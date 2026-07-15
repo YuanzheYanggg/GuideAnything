@@ -296,7 +296,10 @@ CREATE TABLE conversation_messages (
       AND client_message_id IS NULL
       AND source_options_json IS NULL
       AND selected_context_json IS NULL
-      AND json_array_length(attachment_ids_json) = 0)
+      AND json_array_length(attachment_ids_json) = 0
+      AND json_valid(content)
+      AND json_type(content, '$.runId') = 'text'
+      AND json_type(content, '$.answer') = 'object')
   ),
   UNIQUE (conversation_id, client_message_id),
   UNIQUE (conversation_id, id)
@@ -304,6 +307,10 @@ CREATE TABLE conversation_messages (
 
 CREATE INDEX conversation_messages_conversation_idx
   ON conversation_messages(conversation_id, created_at, id);
+
+CREATE UNIQUE INDEX conversation_messages_assistant_run_unique
+  ON conversation_messages(json_extract(content, '$.runId'))
+  WHERE role = 'ASSISTANT';
 
 CREATE TABLE agent_runs (
   id TEXT PRIMARY KEY,

@@ -12,6 +12,7 @@ import { getWorkspacePermission } from '../workspaces/repository';
 import {
   createConversation,
   enqueueConversationRun,
+  getConversationDetailForOwner,
   getConversationForOwner,
   listConversationsForOwner,
   type EnqueueConversationRunResult,
@@ -57,12 +58,14 @@ export class ConversationService {
   }
 
   readGlobal(ownerId: string, conversationId: string) {
-    return this.requireConversation(ownerId, conversationId, 'GLOBAL_SANTEXWELL', null);
+    this.requireConversation(ownerId, conversationId, 'GLOBAL_SANTEXWELL', null);
+    return getConversationDetailForOwner(this.database, conversationId, ownerId)!;
   }
 
   readWorkspace(ownerId: string, workspaceId: string, conversationId: string) {
     this.requireWorkspaceAccess(ownerId, workspaceId);
-    return this.requireConversation(ownerId, conversationId, 'WORKSPACE', workspaceId);
+    this.requireConversation(ownerId, conversationId, 'WORKSPACE', workspaceId);
+    return getConversationDetailForOwner(this.database, conversationId, ownerId)!;
   }
 
   sendGlobal(

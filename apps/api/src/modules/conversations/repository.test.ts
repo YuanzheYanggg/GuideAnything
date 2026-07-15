@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDatabase } from '../../db/client';
 import { migrateDatabase } from '../../db/migrate';
 import {
+  commitAssistantMessage,
   createConversation,
   enqueueConversationRun,
+  getConversationDetailForOwner,
   getConversationForOwner,
   IdempotencyConflictError,
   listConversationsForOwner,
@@ -50,6 +52,46 @@ describe('conversation persistence', () => {
       ownerId: 'owner-1', scope: 'GLOBAL_SANTEXWELL', workspaceId: null,
     })).toEqual([global]);
     expect(getConversationForOwner(database, global.id, 'owner-2')).toBeNull();
+  });
+
+  it('returns a schema-valid conversation detail with its public plan and committed answer', () => {
+    const conversation = createConversation(database, {
+      scope: 'WORKSPACE', workspaceId: 'workspace-1', ownerId: 'owner-1', title: '流程问答',
+    });
+    const queued = enqueueConversationRun(database, {
+      conversationId: conversation.id, ownerId: 'owner-1', request: messageRequest(),
+    });
+    const store = new AgentRunEventStore(database, new RunEventBroker());
+    store.append({
+      runId: queued.accepted.run.id, planVersion: 1, phase: 'PROVISIONAL',
+      type: 'route.started', payload: {},
+    });
+    store.append({
+      runId: queued.accepted.run.id, planVersion: 1, phase: 'PROVISIONAL',
+      type: 'plan.committed', payload: { plan: focusedPublicPlan() },
+    });
+    store.append({
+      runId: queued.accepted.run.id, planVersion: 1, phase: 'COMMITTED',
+      type: 'answer.validating', payload: {},
+    });
+    const assistant = commitAssistantMessage(database, {
+      runId: queued.accepted.run.id,
+      answer: committedAnswer(),
+    });
+    store.append({
+      runId: queued.accepted.run.id, planVersion: 1, phase: 'COMMITTED',
+      type: 'run.completed', payload: { messageId: assistant.id },
+    });
+
+    const detail = getConversationDetailForOwner(database, conversation.id, 'owner-1');
+    expect(detail?.messages).toEqual([queued.accepted.message, assistant]);
+    expect(detail?.latestRun).toMatchObject({
+      id: queued.accepted.run.id,
+      status: 'COMPLETED',
+      route: 'FOCUSED',
+      publicPlan: focusedPublicPlan(),
+    });
+    expect(getConversationDetailForOwner(database, conversation.id, 'owner-2')).toBeNull();
   });
 
   it('atomically persists an idempotent message and queued run', () => {
@@ -262,6 +304,24 @@ describe('conversation persistence', () => {
     expect(database.prepare('SELECT route FROM agent_runs WHERE id = ?').get(runId)).toEqual({ route: 'DIRECT' });
   });
 
+  it('does not complete a run with an assistant message committed for another run', () => {
+    const { conversationId, runId } = seedRun();
+    const now = '2026-07-15T02:00:00.000Z';
+    database.prepare("UPDATE agent_runs SET status = 'VALIDATING' WHERE id = ?").run(runId);
+    database.prepare(
+      `INSERT INTO conversation_messages (
+        id, conversation_id, role, client_message_id, content, source_options_json,
+        selected_context_json, attachment_ids_json, committed, created_at
+      ) VALUES ('assistant-other', ?, 'ASSISTANT', NULL, ?, NULL, NULL, '[]', 1, ?)`,
+    ).run(conversationId, JSON.stringify({ runId: 'other-run', answer: committedAnswer() }), now);
+    const store = new AgentRunEventStore(database, new RunEventBroker());
+
+    expect(() => store.append({
+      runId, planVersion: 1, phase: 'COMMITTED', type: 'run.completed',
+      payload: { messageId: 'assistant-other' },
+    })).toThrow(/助手消息/u);
+  });
+
   it('replays ordered events after a sequence and ends on terminal state', async () => {
     const { runId } = seedRun();
     const broker = new RunEventBroker();
@@ -321,6 +381,28 @@ function messageRequest(): SendConversationMessageRequestV1 {
     },
     selectedContext: { kind: 'FLOW_NODE', snapshotId: 'snapshot-1', nodeId: 'approve' },
     attachmentIds: ['attachment-1'],
+  };
+}
+
+function focusedPublicPlan() {
+  return {
+    route: 'FOCUSED' as const,
+    userFacingPlan: '检查当前流程节点。',
+    executionMode: 'SEQUENTIAL' as const,
+    tasks: [{ id: 'flow', label: '检查流程', sourceKind: 'WORKSPACE_FLOW' as const }],
+  };
+}
+
+function committedAnswer() {
+  return {
+    mode: 'ANSWER' as const,
+    conclusion: '当前节点由复核员负责。',
+    sections: [{ id: 'detail', title: '依据', markdown: '流程节点标记为复核。' }],
+    evidenceStatus: 'SUPPORTED' as const,
+    citations: [],
+    flowFeedback: [],
+    artifacts: [],
+    suggestedQuestions: [],
   };
 }
 

@@ -52,7 +52,7 @@ export async function registerConversationRoutes(
     preHandler: app.authenticateRequest,
   }, async (request) => {
     const params = parseOrThrow(ConversationParamsSchema, request.params);
-    return { conversation: service.readGlobal(request.authUser!.id, params.conversationId) };
+    return service.readGlobal(request.authUser!.id, params.conversationId);
   });
 
   app.post('/api/knowledge/santexwell/conversations/:conversationId/messages', {
@@ -86,13 +86,11 @@ export async function registerConversationRoutes(
     preHandler: app.authenticateRequest,
   }, async (request) => {
     const params = parseOrThrow(WorkspaceConversationParamsSchema, request.params);
-    return {
-      conversation: service.readWorkspace(
-        request.authUser!.id,
-        params.workspaceId,
-        params.conversationId,
-      ),
-    };
+    return service.readWorkspace(
+      request.authUser!.id,
+      params.workspaceId,
+      params.conversationId,
+    );
   });
 
   app.post('/api/workspaces/:workspaceId/conversations/:conversationId/messages', {
