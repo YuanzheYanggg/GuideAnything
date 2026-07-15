@@ -333,7 +333,10 @@ CREATE TABLE agent_runs (
   completed_at TEXT,
   updated_at TEXT NOT NULL,
   CHECK (
-    (error_code IS NULL AND error_message IS NULL AND error_retryable IS NULL)
+    (status != 'FAILED'
+      AND error_code IS NULL
+      AND error_message IS NULL
+      AND error_retryable IS NULL)
     OR (status = 'FAILED'
       AND error_code IS NOT NULL
       AND error_message IS NOT NULL

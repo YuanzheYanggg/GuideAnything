@@ -20,6 +20,8 @@ const TERMINAL_RUN_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 export class RunEventBroker {
   readonly #listeners = new Map<string, Set<RunEventListener>>();
 
+  constructor(private readonly onListenerError: (error: unknown) => void = () => undefined) {}
+
   subscribe(runId: string, listener: RunEventListener): () => void {
     const listeners = this.#listeners.get(runId) ?? new Set<RunEventListener>();
     listeners.add(listener);
@@ -31,7 +33,17 @@ export class RunEventBroker {
   }
 
   publish(event: AgentRunEventV1): void {
-    for (const listener of this.#listeners.get(event.runId) ?? []) listener(event);
+    for (const listener of this.#listeners.get(event.runId) ?? []) {
+      try {
+        listener(event);
+      } catch (error) {
+        try {
+          this.onListenerError(error);
+        } catch {
+          // Observability hooks must never change the result of an already committed append.
+        }
+      }
+    }
   }
 }
 
@@ -61,6 +73,7 @@ export function appendRunEvent(
     if (input.phase === 'COMMITTED' && input.planVersion !== run.plan_version) {
       throw new Error('正式事件必须属于当前计划版本');
     }
+    assertRunEventTransition(database, run, input);
     const sequenceRow = database.prepare(
       'SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM agent_run_events WHERE run_id = ?',
     ).get(input.runId) as { next_sequence: number };
@@ -150,6 +163,17 @@ export async function* streamPersistedRunEvents(
       yield event;
       if (TERMINAL_EVENT_TYPES.has(event.type)) return;
     }
+    const runAfterReplay = getRunById(database, runId);
+    if (runAfterReplay && TERMINAL_RUN_STATUSES.has(runAfterReplay.status)) {
+      const finalCatchup = listRunEventsAfter(database, runId, lastSequence);
+      for (const event of finalCatchup) {
+        if (event.sequence <= lastSequence) continue;
+        lastSequence = event.sequence;
+        yield event;
+        if (TERMINAL_EVENT_TYPES.has(event.type)) return;
+      }
+      return;
+    }
     while (!signal?.aborted) {
       const event = await queue.shift();
       if (!event) return;
@@ -207,10 +231,15 @@ function updateRunStateForEvent(database: DatabaseSync, event: AgentRunEventV1):
        WHERE id = ?`,
     ).run(now, now, event.runId);
   } else if (event.type === 'plan.committed' || event.type === 'task.started') {
-    database.prepare(
-      `UPDATE agent_runs SET status = 'RUNNING', route = COALESCE(route, ?), updated_at = ?
-       WHERE id = ?`,
-    ).run(event.type === 'plan.committed' ? event.payload.plan.route : null, now, event.runId);
+    if (event.type === 'plan.committed') {
+      database.prepare(
+        `UPDATE agent_runs SET status = 'RUNNING', route = ?, updated_at = ? WHERE id = ?`,
+      ).run(event.payload.plan.route, now, event.runId);
+    } else {
+      database.prepare(
+        `UPDATE agent_runs SET status = 'RUNNING', updated_at = ? WHERE id = ?`,
+      ).run(now, event.runId);
+    }
   } else if (event.type === 'answer.validating') {
     database.prepare(
       `UPDATE agent_runs SET status = 'VALIDATING', updated_at = ? WHERE id = ?`,
@@ -238,5 +267,26 @@ function updateRunStateForEvent(database: DatabaseSync, event: AgentRunEventV1):
       now,
       event.runId,
     );
+  }
+}
+
+function assertRunEventTransition(
+  database: DatabaseSync,
+  run: NonNullable<ReturnType<typeof getRunById>>,
+  input: AppendRunEventInput,
+): void {
+  if (input.type === 'route.started' && run.status !== 'QUEUED' && run.status !== 'ROUTING') {
+    throw new Error(`当前运行状态 ${run.status} 不能重新开始路由`);
+  }
+  if (input.type === 'plan.committed' && run.status !== 'ROUTING') {
+    throw new Error(`当前运行状态 ${run.status} 不能提交计划`);
+  }
+  if (input.type === 'run.completed') {
+    if (run.status !== 'VALIDATING') throw new Error('只有 VALIDATING 运行可以完成');
+    const message = database.prepare(
+      `SELECT id FROM conversation_messages
+       WHERE id = ? AND conversation_id = ? AND role = 'ASSISTANT' AND committed = 1`,
+    ).get(input.payload.messageId, run.conversation_id);
+    if (!message) throw new Error('完成事件必须引用当前会话已提交的助手消息');
   }
 }

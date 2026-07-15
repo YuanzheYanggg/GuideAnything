@@ -154,8 +154,12 @@ export function enqueueConversationRun(
   input: EnqueueConversationRunInput,
 ): EnqueueConversationRunResult {
   const request = SendConversationMessageRequestV1Schema.parse(input.request);
-  if (!getConversationForOwner(database, input.conversationId, input.ownerId)) {
+  const conversation = getConversationForOwner(database, input.conversationId, input.ownerId);
+  if (!conversation) {
     throw new ConversationNotFoundError();
+  }
+  if (conversation.scope === 'GLOBAL_SANTEXWELL' && !isGlobalSantexwellRequest(request)) {
+    throw new Error('全局会话只能使用 Santexwell 来源与知识片段上下文');
   }
 
   const existing = getUserMessageByClientId(database, input.conversationId, request.clientMessageId);
@@ -334,4 +338,13 @@ function mapConversation(row: ConversationRow): ConversationSummaryV1 {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });
+}
+
+function isGlobalSantexwellRequest(request: SendConversationMessageRequestV1): boolean {
+  return !request.sources.workspaceFlows
+    && !request.sources.workspaceDocuments
+    && !request.sources.sessionAttachments
+    && request.sources.santexwell
+    && request.attachmentIds.length === 0
+    && (!request.selectedContext || request.selectedContext.kind === 'KNOWLEDGE_FRAGMENT');
 }

@@ -98,6 +98,17 @@ describe('conversation persistence', () => {
     })).toThrow(IdempotencyConflictError);
   });
 
+  it('refuses to persist workspace sources through a global conversation repository call', () => {
+    const conversation = createConversation(database, {
+      scope: 'GLOBAL_SANTEXWELL', workspaceId: null, ownerId: 'owner-1', title: '全局问答',
+    });
+    expect(() => enqueueConversationRun(database, {
+      conversationId: conversation.id,
+      ownerId: 'owner-1',
+      request: messageRequest(),
+    })).toThrow(/全局会话只能使用 Santexwell/u);
+  });
+
   it('persists a schema-validated event before notifying subscribers', () => {
     const { runId } = seedRun();
     const broker = new RunEventBroker();
@@ -128,6 +139,66 @@ describe('conversation persistence', () => {
     expect(database.prepare('SELECT COUNT(*) AS count FROM agent_run_events').get()).toEqual({ count: 1 });
   });
 
+  it('does not turn a committed append into a caller-visible failure when a listener throws', () => {
+    const { runId } = seedRun();
+    const broker = new RunEventBroker();
+    broker.subscribe(runId, () => { throw new Error('broken listener'); });
+    const store = new AgentRunEventStore(database, broker);
+    expect(() => store.append({
+      runId, planVersion: 1, phase: 'PROVISIONAL', type: 'route.started', payload: {},
+    })).not.toThrow();
+    expect(database.prepare('SELECT COUNT(*) AS count FROM agent_run_events').get()).toEqual({ count: 1 });
+  });
+
+  it('rejects invalid run state transitions and replaces the route after steer', () => {
+    const { runId } = seedRun();
+    const store = new AgentRunEventStore(database, new RunEventBroker());
+    expect(() => store.append({
+      runId,
+      planVersion: 1,
+      phase: 'COMMITTED',
+      type: 'run.completed',
+      payload: { messageId: 'missing-assistant-message' },
+    })).toThrow(/VALIDATING|消息/u);
+    store.append({ runId, planVersion: 1, phase: 'PROVISIONAL', type: 'route.started', payload: {} });
+    store.append({
+      runId,
+      planVersion: 1,
+      phase: 'PROVISIONAL',
+      type: 'plan.committed',
+      payload: {
+        plan: {
+          route: 'FOCUSED',
+          userFacingPlan: '检查当前流程。',
+          executionMode: 'SEQUENTIAL',
+          tasks: [{ id: 'flow', label: '检查流程', sourceKind: 'WORKSPACE_FLOW' }],
+        },
+      },
+    });
+    expect(() => store.append({
+      runId, planVersion: 1, phase: 'PROVISIONAL', type: 'route.started', payload: {},
+    })).toThrow(/状态/u);
+
+    database.prepare(
+      `UPDATE agent_runs SET plan_version = 2, status = 'ROUTING' WHERE id = ?`,
+    ).run(runId);
+    store.append({
+      runId,
+      planVersion: 2,
+      phase: 'PROVISIONAL',
+      type: 'plan.committed',
+      payload: {
+        plan: {
+          route: 'DIRECT',
+          userFacingPlan: '直接使用已验证上下文。',
+          executionMode: 'SEQUENTIAL',
+          tasks: [],
+        },
+      },
+    });
+    expect(database.prepare('SELECT route FROM agent_runs WHERE id = ?').get(runId)).toEqual({ route: 'DIRECT' });
+  });
+
   it('replays ordered events after a sequence and ends on terminal state', async () => {
     const { runId } = seedRun();
     const broker = new RunEventBroker();
@@ -154,6 +225,14 @@ describe('conversation persistence', () => {
     for await (const event of streamPersistedRunEvents(database, broker, runId, 1)) received.push(event);
     expect(received.map((event) => event.sequence)).toEqual([2, 3]);
     expect(received.at(-1)?.type).toBe('run.failed');
+
+    const terminalCursor = streamPersistedRunEvents(database, broker, runId, 3);
+    const next = await Promise.race([
+      terminalCursor.next(),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50)),
+    ]);
+    expect(next).not.toBe('timeout');
+    expect(next).toMatchObject({ done: true });
   });
 
   function seedRun(): { conversationId: string; runId: string } {

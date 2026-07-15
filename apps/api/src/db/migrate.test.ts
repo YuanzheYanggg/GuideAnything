@@ -629,6 +629,9 @@ describe('database migrations', () => {
        WHERE id = 'run-one'`,
     ).run()).toThrow();
     expect(() => database!.prepare(
+      `UPDATE agent_runs SET status = 'FAILED' WHERE id = 'run-one'`,
+    ).run()).toThrow();
+    expect(() => database!.prepare(
       `INSERT INTO agent_runs (
         id, conversation_id, initiating_message_id, run_sequence, plan_version, route,
         status, source_options_json, created_at, updated_at
