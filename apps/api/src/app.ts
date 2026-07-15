@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { registerAuthRoutes } from './modules/auth/routes';
+import { registerConversationAttachmentRoutes } from './modules/conversation-attachments/routes';
 import { registerGuideRoutes } from './modules/guides/routes';
 import { registerMediaRoutes } from './modules/media/routes';
 import { registerKnowledgeRoutes } from './modules/knowledge/routes';
@@ -58,6 +59,11 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   await registerAuthRoutes(app, options.database);
   await registerGuideRoutes(app, options.database);
   await registerKnowledgeRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
+  await registerConversationAttachmentRoutes(
+    app,
+    options.database,
+    options.uploadDir ?? resolve('data/uploads'),
+  );
   await registerMediaRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
   await registerPersonalRoutes(app, options.database);
   await registerSearchRoutes(app, options.database);
