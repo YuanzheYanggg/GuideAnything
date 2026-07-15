@@ -5,6 +5,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { registerArtifactRoutes } from './modules/artifacts/routes';
 import { registerAuthRoutes } from './modules/auth/routes';
 import { registerConversationRoutes, type ConversationRouteRuntime } from './modules/conversations/routes';
 import { registerGuideRoutes } from './modules/guides/routes';
@@ -58,6 +59,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   await registerAuthRoutes(app, options.database);
+  await registerArtifactRoutes(app, options.database);
   if (options.agentRuntime) await registerConversationRoutes(app, options.database, options.agentRuntime);
   await registerGuideRoutes(app, options.database);
   await registerKnowledgeRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
