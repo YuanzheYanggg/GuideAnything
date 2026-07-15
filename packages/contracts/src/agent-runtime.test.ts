@@ -145,6 +145,33 @@ describe('agent runtime contracts', () => {
     });
   });
 
+  it('requires COMPOSITE to execute in parallel with at least two-way concurrency', () => {
+    const composite = validRouteDecision('COMPOSITE');
+    const invalid = [
+      { ...composite, executionMode: 'SEQUENTIAL', maxConcurrency: 1 },
+      { ...composite, maxConcurrency: 1 },
+      {
+        ...composite,
+        maxConcurrency: 1,
+        budget: { ...composite.budget, maxConcurrency: 1 },
+      },
+    ];
+
+    invalid.forEach((decision) => {
+      expect(RouteDecisionV1Schema.safeParse(decision).success).toBe(false);
+    });
+    expect(RouteDecisionV1Schema.safeParse(composite).success).toBe(true);
+    expect(RouteDecisionV1Schema.safeParse(compositeDecision([
+      routeTask('flow', 'WORKSPACE_FLOW'),
+      routeTask('documents', 'WORKSPACE_DOCUMENT'),
+      routeTask('vault', 'SANTEXWELL'),
+      routeTask('reduce', 'REDUCE', ['flow', 'documents', 'vault']),
+    ], {
+      budget: { ...compositeBudget(), maxWorkers: 3, maxConcurrency: 3 },
+      maxConcurrency: 3,
+    })).success).toBe(true);
+  });
+
   it('rejects tasks for disabled sources', () => {
     for (const kind of ['WORKSPACE_FLOW', 'WORKSPACE_DOCUMENT', 'SESSION_ATTACHMENT', 'SANTEXWELL'] as const) {
       expect(RouteDecisionV1Schema.safeParse(focusedDecision([
@@ -374,6 +401,17 @@ describe('agent runtime contracts', () => {
     expect(TaskFindingV1Schema.safeParse({
       ...finding,
       validatedEvidence: [{ ...finding.validatedEvidence[0], locator: withoutDocumentIdentity }],
+    }).success).toBe(false);
+  });
+
+  it('rejects duplicate evidence IDs in task findings even when locators differ', () => {
+    const finding = santexwellFinding();
+    const duplicate = flowEvidence(finding.validatedEvidence[0]!.id);
+
+    expect(duplicate.locator).not.toEqual(finding.validatedEvidence[0]!.locator);
+    expect(TaskFindingV1Schema.safeParse({
+      ...finding,
+      validatedEvidence: [...finding.validatedEvidence, duplicate],
     }).success).toBe(false);
   });
 
@@ -664,6 +702,17 @@ describe('agent runtime contracts', () => {
     )).success).toBe(false);
   });
 
+  it('rejects duplicate internal evidence IDs so reference collections stay unambiguous', () => {
+    const answer = internalAnswer();
+    const duplicate = flowEvidence(answer.evidence[0]!.id);
+
+    expect(duplicate.locator).not.toEqual(answer.evidence[0]!.locator);
+    expect(AgentInternalAnswerV1Schema.safeParse({
+      ...answer,
+      evidence: [...answer.evidence, duplicate],
+    }).success).toBe(false);
+  });
+
   it('keeps flow feedback in committed answers through browser-safe references', () => {
     const referenceId = 'flow/reference 1';
     const answer = AgentCommittedAnswerV1Schema.parse(committedAnswer([
@@ -823,6 +872,21 @@ function santexwellFinding() {
     }],
     conflicts: [],
     gaps: [],
+  };
+}
+
+function flowEvidence(id: string) {
+  return {
+    id,
+    source: 'WORKSPACE_FLOW',
+    title: '订单处理流程',
+    excerpt: '提交订单后进入流程复核。',
+    locator: {
+      kind: 'WORKSPACE_FLOW',
+      guideId: 'guide-1',
+      snapshotId: 'snapshot-1',
+      nodeId: 'review',
+    },
   };
 }
 

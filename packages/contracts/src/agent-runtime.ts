@@ -216,6 +216,12 @@ export const RouteDecisionV1Schema = z.object({
     ) {
       context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'COMPOSITE 路线必须允许并安排二至三个工作任务' });
     }
+    if (decision.executionMode !== 'PARALLEL') {
+      context.addIssue({ code: 'custom', path: ['executionMode'], message: 'COMPOSITE 路线必须并行执行' });
+    }
+    if (decision.maxConcurrency < 2 || decision.budget.maxConcurrency < 2) {
+      context.addIssue({ code: 'custom', path: ['maxConcurrency'], message: 'COMPOSITE 路线的并发必须为二至三' });
+    }
     if (decision.budget.allowRaw) {
       context.addIssue({ code: 'custom', path: ['budget', 'allowRaw'], message: 'COMPOSITE 路线不能读取原始资料' });
     }
@@ -318,13 +324,26 @@ export const ValidatedEvidenceV1Schema = z.object({
   }
 });
 
+function validateUniqueEvidenceIds(
+  evidence: readonly { id: string }[],
+  context: z.RefinementCtx,
+): void {
+  const evidenceIds = new Set<string>();
+  evidence.forEach((item, index) => {
+    if (evidenceIds.has(item.id)) {
+      context.addIssue({ code: 'custom', path: [index, 'id'], message: 'validated evidence ID 必须唯一' });
+    }
+    evidenceIds.add(item.id);
+  });
+}
+
 export const TaskFindingStatusV1Schema = z.enum(['FOUND', 'NO_EVIDENCE', 'PARTIAL', 'CONFLICT']);
 
 export const TaskFindingV1Schema = z.object({
   taskId: IdV1Schema,
   status: TaskFindingStatusV1Schema,
   findings: z.array(z.string().min(1).max(5_000)).max(100),
-  validatedEvidence: z.array(ValidatedEvidenceV1Schema).max(100),
+  validatedEvidence: z.array(ValidatedEvidenceV1Schema).max(100).superRefine(validateUniqueEvidenceIds),
   conflicts: z.array(z.string().min(1).max(5_000)).max(50),
   gaps: z.array(z.string().min(1).max(5_000)).max(50),
 }).strict();
@@ -551,7 +570,7 @@ export const AgentInternalAnswerV1Schema = z.object({
   mode: AgentAnswerModeV1Schema,
   conclusion: z.string().min(1).max(20_000),
   sections: z.array(AgentAnswerSectionV1Schema).max(100),
-  evidence: z.array(ValidatedEvidenceV1Schema).max(200),
+  evidence: z.array(ValidatedEvidenceV1Schema).max(200).superRefine(validateUniqueEvidenceIds),
   flowFeedback: z.array(FlowFeedbackV1Schema).max(100),
   evidenceStatus: EvidenceStatusV1Schema,
   artifacts: z.array(InternalArtifactV1Schema).max(20),
