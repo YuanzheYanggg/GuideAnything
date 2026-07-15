@@ -279,11 +279,24 @@ CREATE TABLE conversation_messages (
     source_options_json IS NULL
     OR (json_valid(source_options_json) AND json_type(source_options_json) = 'object')
   ),
+  selected_context_json TEXT CHECK (
+    selected_context_json IS NULL
+    OR (json_valid(selected_context_json) AND json_type(selected_context_json) = 'object')
+  ),
+  attachment_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (
+    json_valid(attachment_ids_json)
+    AND json_type(attachment_ids_json) = 'array'
+    AND json_array_length(attachment_ids_json) <= 20
+  ),
   committed INTEGER NOT NULL CHECK (committed IN (0, 1)),
   created_at TEXT NOT NULL,
   CHECK (
     (role = 'USER' AND client_message_id IS NOT NULL AND source_options_json IS NOT NULL)
-    OR (role = 'ASSISTANT' AND client_message_id IS NULL AND source_options_json IS NULL)
+    OR (role = 'ASSISTANT'
+      AND client_message_id IS NULL
+      AND source_options_json IS NULL
+      AND selected_context_json IS NULL
+      AND json_array_length(attachment_ids_json) = 0)
   ),
   UNIQUE (conversation_id, client_message_id),
   UNIQUE (conversation_id, id)
