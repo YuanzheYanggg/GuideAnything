@@ -772,6 +772,12 @@ export const BridgeModelRoleV1Schema = z.enum([
   'REDUCER',
 ]);
 
+export const BridgeOutputKindV1Schema = z.enum([
+  'ROUTE_DECISION',
+  'TASK_FINDING',
+  'ANSWER',
+]);
+
 export const BridgeRunRequestV1Schema = z.object({
   type: z.literal('RUN'),
   requestId: IdV1Schema,
@@ -779,10 +785,24 @@ export const BridgeRunRequestV1Schema = z.object({
   planVersion: z.number().int().positive(),
   role: BridgeModelRoleV1Schema,
   reasoningEffort: z.enum(['MEDIUM', 'HIGH']),
+  outputKind: BridgeOutputKindV1Schema,
   prompt: z.string().min(1).max(500_000),
   allowedRoots: z.array(z.string().min(1).max(4_096)).max(16),
   resumeThreadId: IdV1Schema.optional(),
-}).strict();
+}).strict().superRefine((request, context) => {
+  const valid = request.role === 'ROUTER' || request.role === 'DEEP_ROUTER'
+    ? request.outputKind === 'ROUTE_DECISION'
+    : request.role === 'REDUCER'
+      ? request.outputKind === 'ANSWER'
+      : request.outputKind === 'TASK_FINDING' || request.outputKind === 'ANSWER';
+  if (!valid) {
+    context.addIssue({
+      code: 'custom',
+      path: ['outputKind'],
+      message: '输出类型必须匹配模型角色',
+    });
+  }
+});
 
 export const BridgeCancelRequestV1Schema = z.object({
   type: z.literal('CANCEL'),
@@ -820,6 +840,16 @@ export const BridgeEventV1Schema = z.discriminatedUnion('type', [
     ...BridgeEventBaseV1Shape,
     type: z.literal('COMMENTARY'),
     payload: z.object({ text: z.string().min(1).max(100_000) }).strict(),
+  }).strict(),
+  z.object({
+    ...BridgeEventBaseV1Shape,
+    type: z.literal('ROUTE_DECISION'),
+    payload: z.object({ decision: RouteDecisionV1Schema }).strict(),
+  }).strict(),
+  z.object({
+    ...BridgeEventBaseV1Shape,
+    type: z.literal('TASK_FINDING'),
+    payload: z.object({ finding: TaskFindingV1Schema }).strict(),
   }).strict(),
   z.object({
     ...BridgeEventBaseV1Shape,
@@ -895,6 +925,7 @@ export type AgentInternalAnswerV1 = z.infer<typeof AgentInternalAnswerV1Schema>;
 export type AgentCommittedAnswerV1 = z.infer<typeof AgentCommittedAnswerV1Schema>;
 export type AgentRunEventV1 = z.infer<typeof AgentRunEventV1Schema>;
 export type BridgeModelRoleV1 = z.infer<typeof BridgeModelRoleV1Schema>;
+export type BridgeOutputKindV1 = z.infer<typeof BridgeOutputKindV1Schema>;
 export type BridgeRunRequestV1 = z.infer<typeof BridgeRunRequestV1Schema>;
 export type BridgeCancelRequestV1 = z.infer<typeof BridgeCancelRequestV1Schema>;
 export type BridgeSteerRequestV1 = z.infer<typeof BridgeSteerRequestV1Schema>;

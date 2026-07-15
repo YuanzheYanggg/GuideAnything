@@ -858,6 +858,7 @@ describe('agent runtime contracts', () => {
       planVersion: 1,
       role: 'FOCUSED_WORKER',
       reasoningEffort: 'MEDIUM',
+      outputKind: 'TASK_FINDING',
       prompt: '只读检查当前流程。',
       allowedRoots: ['/workspace'],
     });
@@ -872,6 +873,58 @@ describe('agent runtime contracts', () => {
     expect(request.type).toBe('RUN');
     expect(event.type).toBe('COMMENTARY');
     expect(BridgeRequestV1Schema.safeParse({ ...request, type: 'CANCEL', prompt: 'leak' }).success).toBe(false);
+  });
+
+  it('binds bridge output kinds to model roles and validates each structured event payload', () => {
+    const base = {
+      type: 'RUN' as const,
+      requestId: 'bridge-request-output',
+      runId: 'run-output',
+      planVersion: 1,
+      reasoningEffort: 'MEDIUM' as const,
+      prompt: '只读结构化输出。',
+      allowedRoots: [],
+    };
+    for (const [role, outputKind] of [
+      ['ROUTER', 'ROUTE_DECISION'],
+      ['DEEP_ROUTER', 'ROUTE_DECISION'],
+      ['FOCUSED_WORKER', 'TASK_FINDING'],
+      ['FOCUSED_WORKER', 'ANSWER'],
+      ['DEEP_WORKER', 'TASK_FINDING'],
+      ['DEEP_WORKER', 'ANSWER'],
+      ['REDUCER', 'ANSWER'],
+    ] as const) {
+      const effort = role === 'DEEP_ROUTER' || role === 'DEEP_WORKER' || role === 'REDUCER'
+        ? 'HIGH'
+        : 'MEDIUM';
+      expect(BridgeRequestV1Schema.safeParse({ ...base, role, reasoningEffort: effort, outputKind }).success).toBe(true);
+    }
+    for (const [role, outputKind] of [
+      ['ROUTER', 'ANSWER'],
+      ['DEEP_ROUTER', 'TASK_FINDING'],
+      ['FOCUSED_WORKER', 'ROUTE_DECISION'],
+      ['DEEP_WORKER', 'ROUTE_DECISION'],
+      ['REDUCER', 'TASK_FINDING'],
+    ] as const) {
+      expect(BridgeRequestV1Schema.safeParse({ ...base, role, outputKind }).success).toBe(false);
+    }
+
+    const eventBase = { requestId: base.requestId, runId: base.runId, sequence: 1 };
+    expect(BridgeEventV1Schema.parse({
+      ...eventBase,
+      type: 'ROUTE_DECISION',
+      payload: { decision: validRouteDecision('DIRECT') },
+    }).type).toBe('ROUTE_DECISION');
+    expect(BridgeEventV1Schema.parse({
+      ...eventBase,
+      type: 'TASK_FINDING',
+      payload: { finding: santexwellFinding() },
+    }).type).toBe('TASK_FINDING');
+    expect(BridgeEventV1Schema.safeParse({
+      ...eventBase,
+      type: 'TASK_FINDING',
+      payload: { finding: validRouteDecision('DIRECT') },
+    }).success).toBe(false);
   });
 });
 
