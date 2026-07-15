@@ -85,6 +85,8 @@ const FORBIDDEN_HOME_ENTRIES = new Set([
   '.agents',
   '.codex-plugin',
 ]);
+const RUNTIME_HOME_MARKER = '.guideanything-runtime-home';
+const RUNTIME_HOME_MARKER_CONTENT = 'guideanything-runtime-home:v1\n';
 
 export interface PreparedCodexRuntime {
   readonly home: string;
@@ -95,10 +97,10 @@ export interface PreparedCodexRuntime {
 }
 
 export async function prepareCodexRuntime(config: RuntimeBridgeConfig): Promise<PreparedCodexRuntime> {
-  await ensurePrivateDirectory(config.runtimeHome, 'CODEX_RUNTIME_HOME');
+  const home = await ensureManagedRuntimeHome(config.runtimeHome, config.runtimeAuthFile);
   await ensureEmptyPrivateDirectory(config.runtimeWorkDir);
-  const home = await realpath(config.runtimeHome);
   const workDir = await realpath(config.runtimeWorkDir);
+  await validateManagedRuntimeBeforePurge(home, config.runtimeAuthFile);
   await purgeGeneratedSystemSkills(home);
   await rejectForbiddenHomeEntries(home);
 
@@ -114,6 +116,72 @@ export async function prepareCodexRuntime(config: RuntimeBridgeConfig): Promise<
     configPath,
     appServerArgs: buildCodexAppServerArgs(),
   });
+}
+
+async function ensureManagedRuntimeHome(directory: string, explicitAuthSource: string | null): Promise<string> {
+  const existing = await lstatIfExists(directory);
+  if (existing?.isSymbolicLink()) throw new Error('CODEX_RUNTIME_HOME must not be a symbolic link');
+  if (existing && !existing.isDirectory()) throw new Error('CODEX_RUNTIME_HOME must be a directory');
+  if (!existing) await mkdir(directory, { recursive: true, mode: 0o700 });
+
+  const created = await lstat(directory);
+  if (created.isSymbolicLink() || !created.isDirectory()) {
+    throw new Error('CODEX_RUNTIME_HOME must be a private directory, not a symbolic link');
+  }
+  const home = await realpath(directory);
+  const markerPath = path.join(home, RUNTIME_HOME_MARKER);
+  const marker = await lstatIfExists(markerPath);
+  if (!marker) {
+    const entries = await readdir(home);
+    const claimable = entries.length === 0
+      || await isClaimableAuthOnlyHome(home, entries, explicitAuthSource)
+      || await isLegacyManagedRuntimeHome(home, entries, explicitAuthSource);
+    if (!claimable) {
+      throw new Error(`CODEX_RUNTIME_HOME is not managed by the runtime bridge: ${entries.sort()[0] ?? 'unknown entry'}`);
+    }
+    await atomicWritePrivateFile(markerPath, RUNTIME_HOME_MARKER_CONTENT);
+  } else {
+    if (marker.isSymbolicLink() || !marker.isFile()) {
+      throw new Error('CODEX_RUNTIME_HOME ownership marker is invalid');
+    }
+    if (await readFile(markerPath, 'utf8') !== RUNTIME_HOME_MARKER_CONTENT) {
+      throw new Error('CODEX_RUNTIME_HOME ownership marker is invalid');
+    }
+  }
+  await chmod(home, 0o700);
+  return home;
+}
+
+async function isClaimableAuthOnlyHome(
+  home: string,
+  entries: readonly string[],
+  explicitAuthSource: string | null,
+): Promise<boolean> {
+  if (entries.length !== 1 || entries[0] !== 'auth.json') return false;
+  try {
+    await validateExistingRuntimeAuth(path.join(home, 'auth.json'), explicitAuthSource);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isLegacyManagedRuntimeHome(
+  home: string,
+  entries: readonly string[],
+  explicitAuthSource: string | null,
+): Promise<boolean> {
+  if (!entries.includes('config.toml') || !entries.includes('auth.json')) return false;
+  if (entries.some((entry) => entry !== 'skills' && FORBIDDEN_HOME_ENTRIES.has(entry.toLowerCase()))) {
+    return false;
+  }
+  try {
+    await validateExactConfig(path.join(home, 'config.toml'));
+    await validateExistingRuntimeAuth(path.join(home, 'auth.json'), explicitAuthSource);
+  } catch {
+    return false;
+  }
+  return !entries.includes('skills') || await isGeneratedSystemSkillsTree(path.join(home, 'skills'));
 }
 
 export function buildCodexAppServerArgs(): readonly string[] {
@@ -167,63 +235,71 @@ async function rejectForbiddenHomeEntries(home: string): Promise<void> {
   if (forbidden) throw new Error(`CODEX_RUNTIME_HOME contains forbidden personal entry: ${forbidden}`);
 }
 
+async function validateManagedRuntimeBeforePurge(home: string, explicitAuthSource: string | null): Promise<void> {
+  if (!await lstatIfExists(path.join(home, 'skills'))) return;
+  await validateExactConfig(path.join(home, 'config.toml'));
+  await validateExistingRuntimeAuth(path.join(home, 'auth.json'), explicitAuthSource);
+}
+
 async function purgeGeneratedSystemSkills(home: string): Promise<void> {
   const skillsRoot = path.join(home, 'skills');
+  if (!await isGeneratedSystemSkillsTree(skillsRoot)) return;
+
+  const quarantine = path.join(home, `.runtime-skills-purge-${randomUUID()}`);
+  await rename(skillsRoot, quarantine);
+  if (!await isGeneratedSystemSkillsTree(quarantine)) {
+    await rename(quarantine, skillsRoot).catch(() => undefined);
+    throw new Error('generated system skills changed during restart validation');
+  }
+  await rm(quarantine, { recursive: true, force: true });
+}
+
+async function isGeneratedSystemSkillsTree(skillsRoot: string): Promise<boolean> {
   const skills = await lstatIfExists(skillsRoot);
-  if (!skills || skills.isSymbolicLink() || !skills.isDirectory()) return;
+  if (!skills || skills.isSymbolicLink() || !skills.isDirectory()) return false;
   const entries = await readdir(skillsRoot);
-  if (entries.length !== 1 || entries[0] !== '.system') return;
+  if (entries.length !== 1 || entries[0] !== '.system') return false;
 
   const systemRoot = path.join(skillsRoot, '.system');
   const system = await lstatIfExists(systemRoot);
   const marker = await lstatIfExists(path.join(systemRoot, '.codex-system-skills.marker'));
-  if (
-    !system
-    || system.isSymbolicLink()
-    || !system.isDirectory()
-    || !marker
-    || marker.isSymbolicLink()
-    || !marker.isFile()
-  ) return;
-
-  const quarantine = path.join(home, `.runtime-skills-purge-${randomUUID()}`);
-  await rename(skillsRoot, quarantine);
-  await rm(quarantine, { recursive: true, force: true });
+  return Boolean(
+    system
+    && !system.isSymbolicLink()
+    && system.isDirectory()
+    && marker
+    && !marker.isSymbolicLink()
+    && marker.isFile(),
+  );
 }
 
 async function installExactConfig(target: string): Promise<void> {
   const existing = await lstatIfExists(target);
   if (existing) {
-    if (existing.isSymbolicLink() || !existing.isFile()) {
-      throw new Error('config.toml must be the bridge-managed regular file');
-    }
-    const contents = await readFile(target, 'utf8');
-    if (contents !== MINIMAL_CODEX_CONFIG) {
-      throw new Error('config.toml is not the bridge-managed minimal configuration');
-    }
+    await validateExactConfig(target);
     await chmod(target, 0o600);
     return;
   }
   await atomicWritePrivateFile(target, MINIMAL_CODEX_CONFIG);
 }
 
-async function ensureRuntimeAuth(target: string, explicitSource: string | null): Promise<void> {
-  if (explicitSource) {
-    const source = await lstatIfExists(explicitSource);
-    if (!source || source.isSymbolicLink() || !source.isFile()) {
-      throw new Error('CODEX_RUNTIME_AUTH_FILE must be an existing regular auth file');
-    }
+async function validateExactConfig(target: string): Promise<void> {
+  const existing = await lstatIfExists(target);
+  if (!existing || existing.isSymbolicLink() || !existing.isFile()) {
+    throw new Error('config.toml must be the bridge-managed regular file');
   }
+  const contents = await readFile(target, 'utf8');
+  if (contents !== MINIMAL_CODEX_CONFIG) {
+    throw new Error('config.toml is not the bridge-managed minimal configuration');
+  }
+}
+
+async function ensureRuntimeAuth(target: string, explicitSource: string | null): Promise<void> {
+  await validateExplicitAuthSource(explicitSource);
 
   const existing = await lstatIfExists(target);
   if (existing) {
-    if (explicitSource) {
-      if (!existing.isSymbolicLink() || path.resolve(await readlink(target)) !== explicitSource) {
-        throw new Error('runtime auth.json does not link to CODEX_RUNTIME_AUTH_FILE');
-      }
-    } else if (!existing.isFile() && !existing.isSymbolicLink()) {
-      throw new Error('pre-provisioned runtime auth.json must be a file');
-    }
+    await validateExistingRuntimeAuth(target, explicitSource);
     return;
   }
 
@@ -238,6 +314,36 @@ async function ensureRuntimeAuth(target: string, explicitSource: string | null):
   } finally {
     await rm(temporary, { force: true });
   }
+}
+
+async function validateExplicitAuthSource(explicitSource: string | null): Promise<void> {
+  if (!explicitSource) return;
+  const source = await lstatIfExists(explicitSource);
+  if (!source || source.isSymbolicLink() || !source.isFile()) {
+    throw new Error('CODEX_RUNTIME_AUTH_FILE must be an existing regular auth file');
+  }
+}
+
+async function validateExistingRuntimeAuth(target: string, explicitSource: string | null): Promise<void> {
+  await validateExplicitAuthSource(explicitSource);
+  const existing = await lstatIfExists(target);
+  if (!existing) throw new Error('runtime auth.json is missing');
+  if (explicitSource) {
+    const link = existing.isSymbolicLink() ? await readlink(target) : null;
+    const resolvedLink = link === null ? null : path.resolve(path.dirname(target), link);
+    if (resolvedLink !== explicitSource) {
+      throw new Error('runtime auth.json does not link to CODEX_RUNTIME_AUTH_FILE');
+    }
+    return;
+  }
+  if (existing.isSymbolicLink() || !existing.isFile()) {
+    throw new Error('pre-provisioned runtime auth.json must be a regular file');
+  }
+}
+
+async function isRegularFile(target: string): Promise<boolean> {
+  const entry = await lstatIfExists(target);
+  return Boolean(entry && !entry.isSymbolicLink() && entry.isFile());
 }
 
 async function atomicWritePrivateFile(target: string, contents: string): Promise<void> {

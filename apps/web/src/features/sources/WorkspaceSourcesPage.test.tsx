@@ -34,8 +34,8 @@ function api(canUpload = true): SourcesApi {
   };
 }
 
-function renderPage(sourcesApi: SourcesApi) {
-  render(<MemoryRouter initialEntries={['/workspaces/workspace-1/sources']}><Routes>
+function renderPage(sourcesApi: SourcesApi, initialPath = '/workspaces/workspace-1/sources') {
+  render(<MemoryRouter initialEntries={[initialPath]}><Routes>
     <Route path="/workspaces/:workspaceId/sources" element={<WorkspaceSourcesPage api={sourcesApi} />} />
   </Routes></MemoryRouter>);
 }
@@ -70,5 +70,22 @@ describe('WorkspaceSourcesPage', () => {
     expect(await screen.findByRole('heading', { name: '资料源' })).toBeVisible();
     expect(screen.queryByLabelText('上传工作区资料')).not.toBeInTheDocument();
     expect(screen.getByText('当前权限仅支持查看')).toBeVisible();
+  });
+
+  it('locates the workspace document selected by a backend-generated query', async () => {
+    renderPage(api(), '/workspaces/workspace-1/sources?document=document-1&fragment=fragment-7');
+
+    expect(await screen.findByText('已定位引用资料：验货标准.pdf')).toBeVisible();
+    const row = screen.getByRole('article', { name: '资料 验货标准.pdf' });
+    expect(row).toHaveClass('is-target');
+    expect(row).toHaveAttribute('data-target-fragment', 'fragment-7');
+    expect(row).toHaveFocus();
+  });
+
+  it('reports an unavailable document query without exposing an internal locator', async () => {
+    renderPage(api(), '/workspaces/workspace-1/sources?document=missing-document&fragment=private-fragment');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('引用资料不存在或当前不可访问');
+    expect(document.body.textContent).not.toContain('private-fragment');
   });
 });

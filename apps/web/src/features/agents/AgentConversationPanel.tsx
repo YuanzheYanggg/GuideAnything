@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
   ArrowRight,
   ChatCircleDots,
@@ -51,10 +51,26 @@ export function AgentConversationPanel({
   const [steering, setSteering] = useState(false);
   const [steerText, setSteerText] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<string[]>([]);
   const conversationParam = searchParams.get('conversation');
   const conversationId = conversationParam && conversationParam !== 'new' ? conversationParam : null;
   const workspaceId = scope.kind === 'WORKSPACE' ? scope.workspaceId : null;
+  const conversationContextKey = conversationId ? createConversationContextKey(scope, conversationId) : null;
+  const activeConversationContextRef = useRef<string | null>(conversationContextKey);
+  const attachmentContextKey = workspaceId && conversationId
+    ? createAttachmentContextKey(workspaceId, conversationId)
+    : null;
+  const activeAttachmentContextRef = useRef<string | null>(attachmentContextKey);
+  const [attachmentSelection, setAttachmentSelection] = useState<{ contextKey: string | null; ids: string[] }>({
+    contextKey: attachmentContextKey,
+    ids: [],
+  });
+  const selectedAttachmentIds = attachmentSelection.contextKey === attachmentContextKey
+    ? attachmentSelection.ids
+    : [];
+  const effectiveSources: SourceOptionsV1 = {
+    ...sources,
+    sessionAttachments: selectedAttachmentIds.length > 0,
+  };
   const streamRun = useCallback((path: string, options: { afterSequence?: number; signal: AbortSignal }) => api.streamRun(path, options), [api]);
   const runState = useAgentRunStream(eventsPath, streamRun);
 
@@ -74,14 +90,38 @@ export function AgentConversationPanel({
   }, [list]);
 
   useEffect(() => {
+    activeConversationContextRef.current = conversationContextKey;
+    return () => {
+      if (activeConversationContextRef.current === conversationContextKey) {
+        activeConversationContextRef.current = null;
+      }
+    };
+  }, [conversationContextKey]);
+
+  useEffect(() => {
+    activeAttachmentContextRef.current = attachmentContextKey;
+    setAttachmentSelection((current) => current.contextKey === attachmentContextKey
+      ? current
+      : { contextKey: attachmentContextKey, ids: [] });
+    setSources((current) => ({ ...current, sessionAttachments: false }));
+    return () => {
+      if (activeAttachmentContextRef.current === attachmentContextKey) {
+        activeAttachmentContextRef.current = null;
+      }
+    };
+  }, [attachmentContextKey]);
+
+  useEffect(() => {
+    setText('');
     if (!conversationId) {
       setDetail(null);
       setEventsPath(null);
-      setSelectedAttachmentIds([]);
       return;
     }
     let active = true;
     setError('');
+    setDetail(null);
+    setEventsPath(null);
     read(conversationId).then((next) => {
       if (!active) return;
       setDetail((current) => current?.conversation.id === next.conversation.id
@@ -106,7 +146,10 @@ export function AgentConversationPanel({
     const next = new URLSearchParams(searchParams);
     if (id) next.set('conversation', id);
     else next.set('conversation', 'new');
-    setSelectedAttachmentIds([]);
+    const nextContextKey = workspaceId && id ? createAttachmentContextKey(workspaceId, id) : null;
+    activeConversationContextRef.current = id ? createConversationContextKey(scope, id) : null;
+    activeAttachmentContextRef.current = nextContextKey;
+    setAttachmentSelection({ contextKey: nextContextKey, ids: [] });
     setSources((current) => ({ ...current, sessionAttachments: false }));
     setSearchParams(next);
   };
@@ -114,9 +157,10 @@ export function AgentConversationPanel({
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const prompt = text.trim();
-    if (!prompt || sending || runActive) return;
+    if (!prompt || sending || uploading || runActive) return;
     setSending(true);
     setError('');
+    let sendContextKey = conversationContextKey;
     try {
       let targetId = conversationId;
       let targetConversation = detail?.conversation ?? conversations.find((conversation) => conversation.id === targetId) ?? null;
@@ -125,30 +169,38 @@ export function AgentConversationPanel({
         const created = scope.kind === 'GLOBAL'
           ? await api.createGlobal(title)
           : await api.createWorkspace(scope.workspaceId, title);
+        if (activeConversationContextRef.current !== sendContextKey) return;
         targetId = created.id;
         targetConversation = created;
         setConversations((items) => [created, ...items.filter((item) => item.id !== created.id)]);
         selectConversation(created.id);
       }
+      sendContextKey = createConversationContextKey(scope, targetId);
       const accepted = scope.kind === 'GLOBAL'
         ? await api.sendGlobal(targetId, {
           clientMessageId: createClientId(), text: prompt, attachmentIds: [],
           sources: { workspaceFlows: false, workspaceDocuments: false, sessionAttachments: false, santexwell: true },
         })
         : await api.sendWorkspace(scope.workspaceId, targetId, {
-          clientMessageId: createClientId(), text: prompt, attachmentIds: selectedAttachmentIds, sources,
+          clientMessageId: createClientId(), text: prompt, attachmentIds: selectedAttachmentIds, sources: effectiveSources,
         });
-      setDetail((current) => current ? {
-        ...current, messages: [...current.messages, accepted.message], latestRun: accepted.run,
-      } : targetConversation ? {
-        conversation: targetConversation, messages: [accepted.message], latestRun: accepted.run, attachments: [],
-      } : current);
+      if (activeConversationContextRef.current !== sendContextKey) return;
+      setDetail((current) => current?.conversation.id === targetId
+        ? { ...current, messages: [...current.messages, accepted.message], latestRun: accepted.run }
+        : !current && targetConversation
+          ? { conversation: targetConversation, messages: [accepted.message], latestRun: accepted.run, attachments: [] }
+          : current);
       setEventsPath(accepted.eventsPath);
       setText('');
-      setSelectedAttachmentIds([]);
+      setAttachmentSelection({
+        contextKey: scope.kind === 'WORKSPACE' ? createAttachmentContextKey(scope.workspaceId, targetId) : null,
+        ids: [],
+      });
       setSources((current) => ({ ...current, sessionAttachments: false }));
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : '消息发送失败');
+      if (activeConversationContextRef.current === sendContextKey) {
+        setError(reason instanceof Error ? reason.message : '消息发送失败');
+      }
     } finally {
       setSending(false);
     }
@@ -157,41 +209,51 @@ export function AgentConversationPanel({
   const uploadAttachment = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
-    if (!file || scope.kind !== 'WORKSPACE' || uploading || runActive) return;
+    if (!file || scope.kind !== 'WORKSPACE' || sending || uploading || runActive) return;
     setUploading(true);
     setError('');
+    let uploadContextKey = attachmentContextKey;
     try {
       let targetId = conversationId;
       let targetConversation = detail?.conversation ?? conversations.find((conversation) => conversation.id === targetId) ?? null;
       if (!targetId) {
         const created = await api.createWorkspace(scope.workspaceId, '新对话');
+        if (activeAttachmentContextRef.current !== uploadContextKey) return;
         targetId = created.id;
         targetConversation = created;
         setConversations((items) => [created, ...items.filter((item) => item.id !== created.id)]);
         setDetail({ conversation: created, messages: [], latestRun: null, attachments: [] });
         selectConversation(created.id);
       }
+      uploadContextKey = createAttachmentContextKey(scope.workspaceId, targetId);
       const attachment = await api.uploadAttachment(scope.workspaceId, targetId, file);
+      if (activeAttachmentContextRef.current !== uploadContextKey) return;
       setDetail((current) => current?.conversation.id === targetId
         ? { ...current, attachments: mergeAttachments(current.attachments, [attachment]) }
-        : targetConversation ? { conversation: targetConversation, messages: [], latestRun: null, attachments: [attachment] } : current);
+        : !current && targetConversation
+          ? { conversation: targetConversation, messages: [], latestRun: null, attachments: [attachment] }
+          : current);
       if (attachment.status === 'READY') {
-        setSelectedAttachmentIds((ids) => [...new Set([...ids, attachment.id])]);
-        setSources((current) => ({ ...current, sessionAttachments: true }));
+        setAttachmentSelection((current) => ({
+          contextKey: uploadContextKey,
+          ids: [...new Set([...(current.contextKey === uploadContextKey ? current.ids : []), attachment.id])],
+        }));
       }
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : '会话附件上传失败');
+      if (activeAttachmentContextRef.current === uploadContextKey) {
+        setError(reason instanceof Error ? reason.message : '会话附件上传失败');
+      }
     } finally {
       setUploading(false);
     }
   };
 
   const toggleAttachment = (attachmentId: string, checked: boolean) => {
-    setSelectedAttachmentIds((ids) => {
-      const next = checked ? [...new Set([...ids, attachmentId])] : ids.filter((id) => id !== attachmentId);
-      setSources((current) => ({ ...current, sessionAttachments: next.length > 0 }));
-      return next;
-    });
+    if (!attachmentContextKey) return;
+    const next = checked
+      ? [...new Set([...selectedAttachmentIds, attachmentId])]
+      : selectedAttachmentIds.filter((id) => id !== attachmentId);
+    setAttachmentSelection({ contextKey: attachmentContextKey, ids: next });
   };
 
   const cancel = async () => {
@@ -222,12 +284,13 @@ export function AgentConversationPanel({
 
   return <section className="agent-conversation-shell">
     <aside className="agent-conversation-list" aria-label="会话列表">
-      <header><span className="page-kicker">CONVERSATIONS</span><button type="button" aria-label="新建会话" onClick={() => selectConversation(null)}><Plus size={17} /></button></header>
+      <header><span className="page-kicker">CONVERSATIONS</span><button type="button" aria-label="新建会话" disabled={sending || uploading} onClick={() => selectConversation(null)}><Plus size={17} /></button></header>
       <nav>
         {conversations.map((conversation) => <button
           type="button"
           key={conversation.id}
           className={conversation.id === conversationId ? 'is-selected' : undefined}
+          disabled={sending || uploading}
           onClick={() => selectConversation(conversation.id)}
         ><ChatCircleDots size={17} /><span><strong>{conversation.title}</strong><small>{conversation.lastMessagePreview ?? '尚未提问'}</small></span></button>)}
       </nav>
@@ -257,18 +320,18 @@ export function AgentConversationPanel({
 
       <form className="agent-composer" onSubmit={submit}>
         {scope.kind === 'WORKSPACE' ? <>
-          <SourceSwitches value={sources} disabled={runActive} onChange={(next) => {
-            if (!next.sessionAttachments) setSelectedAttachmentIds([]);
+          <SourceSwitches value={effectiveSources} disabled={sending || runActive || uploading} attachmentSelected={selectedAttachmentIds.length > 0} onChange={(next) => {
+            if (!next.sessionAttachments) setAttachmentSelection({ contextKey: attachmentContextKey, ids: [] });
             setSources(next);
           }} />
           <div className="agent-attachment-bar">
-            <label className={uploading || runActive ? 'is-disabled' : undefined}>
+            <label className={sending || uploading || runActive ? 'is-disabled' : undefined}>
               <Paperclip size={15} />{uploading ? '正在解析…' : '添加附件'}
               <input
                 type="file"
                 aria-label="添加会话附件"
                 accept=".md,.txt,.pdf,.docx,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                disabled={uploading || runActive}
+                disabled={sending || uploading || runActive}
                 onChange={(event) => { void uploadAttachment(event); }}
               />
             </label>
@@ -276,7 +339,7 @@ export function AgentConversationPanel({
               <input
                 type="checkbox"
                 aria-label={`本轮使用附件 ${attachment.originalName}`}
-                disabled={runActive || attachment.status !== 'READY'}
+                disabled={sending || runActive || uploading || attachment.status !== 'READY'}
                 checked={selectedAttachmentIds.includes(attachment.id)}
                 onChange={(event) => toggleAttachment(attachment.id, event.target.checked)}
               />
@@ -289,8 +352,8 @@ export function AgentConversationPanel({
             aria-label="向 Agent 提问"
             rows={3}
             value={text}
-            disabled={sending || runActive}
-            placeholder={runActive ? '当前回答进行中；可以取消或调整方向。' : '描述你要确认的概念、流程节点或质量问题…'}
+            disabled={sending || uploading || runActive}
+            placeholder={uploading ? '附件正在处理，完成后即可发送。' : runActive ? '当前回答进行中；可以取消或调整方向。' : '描述你要确认的概念、流程节点或质量问题…'}
             onChange={(event) => setText(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
@@ -299,7 +362,7 @@ export function AgentConversationPanel({
               }
             }}
           />
-          <button type="submit" aria-label="发送问题" disabled={!text.trim() || sending || runActive}><PaperPlaneTilt size={19} weight="fill" /></button>
+          <button type="submit" aria-label="发送问题" disabled={!text.trim() || sending || uploading || runActive}><PaperPlaneTilt size={19} weight="fill" /></button>
         </div>
         <div className="agent-composer-footer"><span>Enter 发送 · Shift + Enter 换行</span>{runActive ? <div><button type="button" onClick={() => setSteering((open) => !open)}><SlidersHorizontal size={15} />调整方向</button><button type="button" onClick={() => { void cancel(); }}><Stop size={15} />取消</button></div> : null}</div>
       </form>
@@ -307,7 +370,7 @@ export function AgentConversationPanel({
   </section>;
 }
 
-function SourceSwitches({ value, disabled, onChange }: { value: SourceOptionsV1; disabled: boolean; onChange: (next: SourceOptionsV1) => void }) {
+function SourceSwitches({ value, disabled, attachmentSelected, onChange }: { value: SourceOptionsV1; disabled: boolean; attachmentSelected: boolean; onChange: (next: SourceOptionsV1) => void }) {
   const options = [
     { key: 'workspaceFlows' as const, label: '流程', icon: FlowArrow },
     { key: 'workspaceDocuments' as const, label: '文档', icon: FileText },
@@ -315,7 +378,7 @@ function SourceSwitches({ value, disabled, onChange }: { value: SourceOptionsV1;
     { key: 'santexwell' as const, label: 'Santexwell', icon: GlobeHemisphereWest },
   ];
   return <fieldset className="agent-source-switches" disabled={disabled}><legend>本轮来源</legend>{options.map(({ key, label, icon: Icon }) => <label key={key} className={value[key] ? 'is-selected' : undefined}>
-    <input type="checkbox" checked={value[key]} onChange={(event) => onChange({ ...value, [key]: event.target.checked })} /><Icon size={15} />{label}
+    <input type="checkbox" disabled={key === 'sessionAttachments' && !attachmentSelected} checked={value[key]} onChange={(event) => onChange({ ...value, [key]: event.target.checked })} /><Icon size={15} />{label}
   </label>)}</fieldset>;
 }
 
@@ -342,6 +405,14 @@ function artifactLabel(kind: string) {
 
 function createClientId() {
   return globalThis.crypto?.randomUUID?.() ?? `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createAttachmentContextKey(workspaceId: string, conversationId: string): string {
+  return JSON.stringify([workspaceId, conversationId]);
+}
+
+function createConversationContextKey(scope: ConversationScope, conversationId: string): string {
+  return JSON.stringify([scope.kind, scope.kind === 'WORKSPACE' ? scope.workspaceId : null, conversationId]);
 }
 
 function mergeAttachments<T extends { id: string }>(left: readonly T[], right: readonly T[]): T[] {

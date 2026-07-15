@@ -833,8 +833,11 @@ a.favorite-resource-item:hover { border-color: rgb(73 137 230 / .46); background
 .flow-snapshot-card p { margin: 0; color: var(--workspace-muted); font-size: .73rem; line-height: 1.5; }
 .flow-snapshot-card .knowledge-open-label, .source-invalid { margin-top: auto; }
 .source-invalid { color: var(--workspace-muted); font-size: .68rem; }
+.source-reference-notice { border-left: 2px solid #4b8df1; margin: 0; padding: 8px 0 8px 12px; color: var(--workspace-text); font-size: .74rem; }
 .source-document-list { border-top: 1px solid var(--workspace-line); }
 .source-document-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center; min-height: 76px; border-bottom: 1px solid var(--workspace-line); padding: 10px 4px; }
+.source-document-row.is-target { outline: 1px solid rgb(75 141 241 / .68); outline-offset: -1px; background: linear-gradient(90deg, rgb(47 124 246 / .12), transparent 72%); }
+.source-document-row.is-target:focus { outline-width: 2px; outline-color: #76a9fc; }
 .source-document-icon { display: grid; width: 40px; height: 40px; place-items: center; color: #7aaafe; background: rgb(47 124 246 / .11); }
 .source-document-row > div { display: grid; gap: 3px; min-width: 0; }
 .source-document-row strong { overflow: hidden; font-size: .84rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -891,6 +894,7 @@ a.favorite-resource-item:hover { border-color: rgb(73 137 230 / .46); background
 .agent-conversation-list nav { display: grid; gap: 4px; }
 .agent-conversation-list nav button { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px; align-items: start; min-height: 58px; border: 0; border-left: 2px solid transparent; padding: 10px 8px; color: var(--workspace-muted); background: transparent; text-align: left; }
 .agent-conversation-list nav button:hover, .agent-conversation-list nav button.is-selected { border-left-color: #4b8df1; color: var(--workspace-text); background: linear-gradient(90deg, rgb(47 124 246 / .1), transparent); }
+.agent-conversation-list button:disabled { cursor: not-allowed; opacity: .5; }
 .agent-conversation-list nav button > svg { margin-top: 1px; }
 .agent-conversation-list nav button > span { display: grid; gap: 4px; min-width: 0; }
 .agent-conversation-list nav strong, .agent-conversation-list nav small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

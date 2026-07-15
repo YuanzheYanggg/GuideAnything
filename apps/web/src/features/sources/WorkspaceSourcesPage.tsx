@@ -8,13 +8,14 @@ import {
   UploadSimple,
   WarningCircle,
 } from '@phosphor-icons/react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 
 import type { KnowledgeHealth } from '../knowledge/types';
 import type { FlowSnapshotSummary, SourcesApi, WorkspaceSource, WorkspaceSourcesResult } from './types';
 
 export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
   const { workspaceId } = useParams();
+  const [searchParams] = useSearchParams();
   const [sources, setSources] = useState<WorkspaceSourcesResult | null>(null);
   const [snapshots, setSnapshots] = useState<FlowSnapshotSummary[]>([]);
   const [vault, setVault] = useState<KnowledgeHealth | null>(null);
@@ -22,6 +23,14 @@ export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const targetRowRef = useRef<HTMLElement>(null);
+  const rawTargetDocumentId = searchParams.get('document');
+  const targetRequested = rawTargetDocumentId !== null;
+  const targetDocumentId = readLocatorParam(rawTargetDocumentId);
+  const targetFragment = readLocatorParam(searchParams.get('fragment'));
+  const targetSource = targetDocumentId
+    ? sources?.items.find((source) => source.documentId === targetDocumentId)
+    : undefined;
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -41,6 +50,14 @@ export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [api, workspaceId]);
+
+  useEffect(() => {
+    if (loading || !targetSource) return;
+    const target = targetRowRef.current;
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView?.({ block: 'center' });
+  }, [loading, targetSource]);
 
   const upload = async (file: File) => {
     if (!workspaceId || !sources?.capabilities.canUploadPersistentSource || uploading) return;
@@ -73,6 +90,10 @@ export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
     </header>
 
     {error ? <p className="workspace-error" role="alert">{error}</p> : null}
+    {targetRequested ? targetSource
+      ? <p className="source-reference-notice" role="status">已定位引用资料：{targetSource.title}</p>
+      : <p className="workspace-error" role="alert">引用资料不存在或当前不可访问</p>
+      : null}
 
     <div className="source-health-grid">
       <article className="source-health-card">
@@ -97,7 +118,16 @@ export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
     <section aria-labelledby="source-documents-heading">
       <div className="section-title"><div><span className="page-kicker">DOCUMENTS</span><h2 id="source-documents-heading">工作区文档</h2></div><span className="page-count">{sources.items.length}</span></div>
       {sources.items.length === 0 ? <div className="workspace-empty"><strong>尚未添加工作区资料</strong><span>作者或编辑者可以上传 Markdown、文本、PDF 或 DOCX。</span></div> : <div className="source-document-list">
-        {sources.items.map((source) => <SourceDocumentRow key={source.sourceId} source={source} />)}
+        {sources.items.map((source) => {
+          const targeted = source.documentId === targetDocumentId;
+          return <SourceDocumentRow
+            key={source.sourceId}
+            source={source}
+            targeted={targeted}
+            targetFragment={targeted ? targetFragment : undefined}
+            targetRef={targeted ? targetRowRef : undefined}
+          />;
+        })}
       </div>}
     </section>
   </section>;
@@ -113,9 +143,25 @@ function FlowSnapshotCard({ snapshot }: { snapshot: FlowSnapshotSummary }) {
   return snapshot.href ? <Link className="flow-snapshot-card" to={snapshot.href}>{content}</Link> : <article className="flow-snapshot-card is-invalid">{content}</article>;
 }
 
-function SourceDocumentRow({ source }: { source: WorkspaceSource }) {
+function SourceDocumentRow({
+  source,
+  targeted = false,
+  targetFragment,
+  targetRef,
+}: {
+  source: WorkspaceSource;
+  targeted?: boolean;
+  targetFragment?: string | undefined;
+  targetRef?: React.RefObject<HTMLElement | null> | undefined;
+}) {
   const ready = source.status === 'READY' && source.parseStatus === 'READY';
-  return <article className="source-document-row">
+  return <article
+    ref={targetRef}
+    className={`source-document-row${targeted ? ' is-target' : ''}`}
+    aria-label={`资料 ${source.title}`}
+    tabIndex={targeted ? -1 : undefined}
+    data-target-fragment={targetFragment}
+  >
     <span className="source-document-icon"><File size={20} /></span>
     <div><strong>{source.title}</strong><span>{formatBytes(source.size)} · 更新于 {formatDateTime(source.updatedAt)}</span>{source.failureMessage ? <small>{source.failureMessage}</small> : null}</div>
     <span className={`source-state is-${source.status.toLowerCase()}`}>{ready ? <><CheckCircle size={14} />可检索</> : <><WarningCircle size={14} />{source.status === 'FAILED' ? '处理失败' : '处理中'}</>}</span>
@@ -131,4 +177,9 @@ function formatBytes(size: number) {
 function formatDateTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.valueOf()) ? '—' : new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
+}
+
+function readLocatorParam(value: string | null): string | undefined {
+  if (!value || value.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(value)) return undefined;
+  return value;
 }

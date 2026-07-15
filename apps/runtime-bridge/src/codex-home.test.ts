@@ -113,6 +113,24 @@ describe('dedicated Codex runtime home', () => {
     await expect(lstat(skillsRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('safely adopts a legacy bridge home after validating its exact config, auth, and generated skills', async () => {
+    const { config } = await fixture();
+    await prepareCodexRuntime(config);
+    await import('node:fs/promises').then(({ rm }) => rm(path.join(config.runtimeHome, '.guideanything-runtime-home')));
+    const skillsRoot = path.join(config.runtimeHome, 'skills');
+    const systemRoot = path.join(skillsRoot, '.system');
+    await mkdir(path.join(systemRoot, 'generated-skill'), { recursive: true });
+    await writeFile(path.join(systemRoot, '.codex-system-skills.marker'), '');
+    await writeFile(path.join(systemRoot, 'generated-skill', 'SKILL.md'), 'generated');
+
+    await expect(prepareCodexRuntime(config)).resolves.toMatchObject({
+      home: await realpath(config.runtimeHome),
+    });
+    await expect(readFile(path.join(config.runtimeHome, '.guideanything-runtime-home'), 'utf8'))
+      .resolves.toBe('guideanything-runtime-home:v1\n');
+    await expect(lstat(skillsRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('does not purge a marker-owned skills tree when a personal sibling is present', async () => {
     const { config } = await fixture();
     await prepareCodexRuntime(config);
@@ -124,6 +142,49 @@ describe('dedicated Codex runtime home', () => {
 
     await expect(prepareCodexRuntime(config)).rejects.toThrow('skills');
     expect((await lstat(path.join(skillsRoot, 'personal-skill'))).isDirectory()).toBe(true);
+  });
+
+  it('does not claim or purge marker-looking skills from an unmanaged personal home', async () => {
+    const { config } = await fixture();
+    const systemRoot = path.join(config.runtimeHome, 'skills', '.system');
+    const personalSkill = path.join(systemRoot, 'personal-skill', 'SKILL.md');
+    await mkdir(path.dirname(personalSkill), { recursive: true });
+    await writeFile(path.join(systemRoot, '.codex-system-skills.marker'), '');
+    await writeFile(personalSkill, 'personal');
+    await writeFile(path.join(config.runtimeHome, 'config.toml'), 'personal = true\n');
+
+    await expect(prepareCodexRuntime(config)).rejects.toThrow('not managed by the runtime bridge');
+    await expect(readFile(personalSkill, 'utf8')).resolves.toBe('personal');
+    await expect(readFile(path.join(config.runtimeHome, 'config.toml'), 'utf8')).resolves.toBe('personal = true\n');
+  });
+
+  it('validates a managed config before purging generated system skills', async () => {
+    const { config } = await fixture();
+    await prepareCodexRuntime(config);
+    const systemRoot = path.join(config.runtimeHome, 'skills', '.system');
+    const generatedSkill = path.join(systemRoot, 'generated-skill', 'SKILL.md');
+    await mkdir(path.dirname(generatedSkill), { recursive: true });
+    await writeFile(path.join(systemRoot, '.codex-system-skills.marker'), '');
+    await writeFile(generatedSkill, 'generated');
+    await writeFile(path.join(config.runtimeHome, 'config.toml'), 'personal = true\n');
+
+    await expect(prepareCodexRuntime(config)).rejects.toThrow('config.toml');
+    await expect(readFile(generatedSkill, 'utf8')).resolves.toBe('generated');
+  });
+
+  it('validates managed auth before purging generated system skills', async () => {
+    const { config } = await fixture();
+    await prepareCodexRuntime(config);
+    const systemRoot = path.join(config.runtimeHome, 'skills', '.system');
+    const generatedSkill = path.join(systemRoot, 'generated-skill', 'SKILL.md');
+    await mkdir(path.dirname(generatedSkill), { recursive: true });
+    await writeFile(path.join(systemRoot, '.codex-system-skills.marker'), '');
+    await writeFile(generatedSkill, 'generated');
+    await import('node:fs/promises').then(({ rm }) => rm(path.join(config.runtimeHome, 'auth.json')));
+    await writeFile(path.join(config.runtimeHome, 'auth.json'), 'personal-auth');
+
+    await expect(prepareCodexRuntime(config)).rejects.toThrow('auth.json');
+    await expect(readFile(generatedSkill, 'utf8')).resolves.toBe('generated');
   });
 
   it('rejects an inherited config and a non-empty or symlinked runtime work directory', async () => {
