@@ -58,6 +58,26 @@ export const RouteTaskV1Schema = z.object({
   priority: z.number().int().min(1).max(5),
 }).strict();
 
+export const PublicRoutePlanTaskV1Schema = z.object({
+  id: IdV1Schema,
+  label: z.string().min(1).max(500),
+  sourceKind: z.enum([
+    'WORKSPACE_FLOW',
+    'WORKSPACE_DOCUMENT',
+    'SESSION_ATTACHMENT',
+    'SANTEXWELL',
+    'REDUCE',
+  ]),
+  status: z.enum(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'SKIPPED']).optional(),
+}).strict();
+
+export const PublicRoutePlanV1Schema = z.object({
+  route: z.enum(['DIRECT', 'FOCUSED', 'COMPOSITE', 'OPEN_RESEARCH']),
+  userFacingPlan: z.string().min(1).max(5_000),
+  executionMode: z.enum(['SEQUENTIAL', 'PARALLEL']),
+  tasks: z.array(PublicRoutePlanTaskV1Schema).max(5),
+}).strict();
+
 export const RouteDecisionV1Schema = z.object({
   intent: z.string().min(1).max(2_000),
   complexity: RouteComplexityV1Schema,
@@ -456,10 +476,10 @@ export const InternalDiagramArtifactV1Schema = z.object({
 }).strict().superRefine(validateDiagramTopology);
 
 export const ReferenceCollectionEntryV1Schema = z.object({
-  referenceId: OpaqueReferenceIdV1Schema,
+  ...PublicReferenceV1Shape,
   title: ShortTextV1Schema,
   summary: z.string().min(1).max(2_000),
-}).strict();
+}).strict().superRefine(validatePublicReference);
 
 export const ReferenceCollectionArtifactV1Schema = z.object({
   ...ArtifactBaseV1Shape,
@@ -636,7 +656,7 @@ export const AgentRunEventV1Schema = z.discriminatedUnion('type', [
   z.object({
     ...ProvisionalEventV1Shape,
     type: z.literal('plan.committed'),
-    payload: z.object({ decision: RouteDecisionV1Schema }).strict(),
+    payload: z.object({ plan: PublicRoutePlanV1Schema }).strict(),
   }).strict(),
   z.object({
     ...ProvisionalEventV1Shape,
@@ -812,6 +832,8 @@ export type SourceOptionsV1 = z.infer<typeof SourceOptionsV1Schema>;
 export type RouteBudgetV1 = z.infer<typeof RouteBudgetV1Schema>;
 export type RouteComplexityV1 = z.infer<typeof RouteComplexityV1Schema>;
 export type RouteTaskV1 = z.infer<typeof RouteTaskV1Schema>;
+export type PublicRoutePlanTaskV1 = z.infer<typeof PublicRoutePlanTaskV1Schema>;
+export type PublicRoutePlanV1 = z.infer<typeof PublicRoutePlanV1Schema>;
 export type RouteDecisionV1 = z.infer<typeof RouteDecisionV1Schema>;
 export type EvidenceSourceV1 = z.infer<typeof EvidenceSourceV1Schema>;
 export type SessionAttachmentLocatorV1 = z.infer<typeof SessionAttachmentLocatorV1Schema>;

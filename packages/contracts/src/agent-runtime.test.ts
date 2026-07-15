@@ -535,7 +535,7 @@ describe('agent runtime contracts', () => {
         ...common,
         id: 'artifact-4',
         kind: 'REFERENCE_COLLECTION',
-        references: [{ referenceId: 'reference-1', title: '订单复核规范', summary: '异常订单需要人工复核。' }],
+        references: [{ referenceId: 'reference-1', href: '/references/reference-1', title: '订单复核规范', summary: '异常订单需要人工复核。' }],
       },
     ];
 
@@ -561,7 +561,7 @@ describe('agent runtime contracts', () => {
       title: '参考资料',
       createdAt: '2026-07-15T00:00:00.000Z',
       kind: 'REFERENCE_COLLECTION',
-      references: [{ referenceId: 'reference-1', title: '订单规范', summary: '包含订单复核要求。' }],
+      references: [{ referenceId: 'reference-1', href: '/references/reference-1', title: '订单规范', summary: '包含订单复核要求。' }],
     };
     const parsed = ArtifactV1Schema.parse(collection);
 
@@ -584,6 +584,7 @@ describe('agent runtime contracts', () => {
       ...collection,
       references: Array.from({ length: 201 }, (_, index) => ({
         referenceId: `reference-${index}`,
+        href: `/references/reference-${index}`,
         title: `参考 ${index}`,
         summary: '摘要',
       })),
@@ -658,7 +659,7 @@ describe('agent runtime contracts', () => {
       title: '参考资料',
       createdAt: '2026-07-15T00:00:00.000Z',
       kind: 'REFERENCE_COLLECTION',
-      references: [{ referenceId: 'reference-1', title: '订单规范', summary: '包含订单复核要求。' }],
+      references: [{ referenceId: 'reference-1', href: '/references/reference-1', title: '订单规范', summary: '包含订单复核要求。' }],
     };
 
     expect(AgentInternalAnswerV1Schema.safeParse({

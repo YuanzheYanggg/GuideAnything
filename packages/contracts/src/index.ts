@@ -2,5 +2,6 @@ export * from './api';
 export * from './adapters';
 export * from './agent-runtime';
 export * from './canvas';
+export * from './conversation-api';
 export * from './flow-knowledge';
 export * from './workspace';
