@@ -21,17 +21,6 @@ try {
 } catch {
   // Flow indexing is derived state; an indexing failure must not prevent API startup.
 }
-if (config.santexwellVaultPath) {
-  try {
-    await indexSantexwellVault(
-      database,
-      config.santexwellVaultPath,
-      AbortSignal.timeout(Math.min(config.runTimeoutMs, 300_000)),
-    );
-  } catch {
-    // The vault indexer reports bounded reason codes when possible; keep serving the last good index.
-  }
-}
 const agentRuntime = createAgentRuntimeAssembly({
   database,
   config,
@@ -47,15 +36,16 @@ const app = await buildApp({
   agentRuntime,
 });
 
+let reconcileTimer: ReturnType<typeof setInterval> | null = null;
 const close = async () => {
-  clearInterval(reconcileTimer);
+  if (reconcileTimer) clearInterval(reconcileTimer);
   await app.close();
   database.close();
 };
 process.once('SIGINT', () => void close());
 process.once('SIGTERM', () => void close());
 
-const reconcileTimer = setInterval(() => {
+const refreshDerivedKnowledge = () => {
   try {
     reconcileGuideFlowSnapshots(database);
   } catch {
@@ -68,7 +58,27 @@ const reconcileTimer = setInterval(() => {
       AbortSignal.timeout(Math.min(config.runTimeoutMs, 300_000)),
     ).catch(() => undefined);
   }
-}, 5 * 60_000);
-reconcileTimer.unref();
+};
 
 await app.listen({ host: '127.0.0.1', port: config.port });
+
+// A slow iCloud hydration or full Vault scan must not delay the health endpoint.
+// The last good generation remains readable until this background refresh commits atomically.
+refreshDerivedKnowledge();
+void resumeQueuedRuns();
+reconcileTimer = setInterval(refreshDerivedKnowledge, 5 * 60_000);
+reconcileTimer.unref();
+
+async function resumeQueuedRuns(): Promise<void> {
+  const rows = database.prepare(
+    `SELECT id FROM agent_runs WHERE status = 'QUEUED' ORDER BY created_at, id`,
+  ).all() as unknown as Array<{ id: string }>;
+  for (const row of rows) {
+    try {
+      await agentRuntime.scheduleRun(row.id);
+    } catch {
+      // The orchestrator persists a terminal failure whenever execution can start.
+      // A still-queued run remains available for the explicit steer/retry recovery path.
+    }
+  }
+}
