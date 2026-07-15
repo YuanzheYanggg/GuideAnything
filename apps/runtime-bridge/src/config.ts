@@ -1,4 +1,7 @@
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { loadEnvFile } from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 import type { BridgeModelRoleV1 } from '@guideanything/contracts';
 
@@ -9,6 +12,8 @@ const MODEL_ROLE_ENV: Readonly<Record<BridgeModelRoleV1, string>> = {
   DEEP_WORKER: 'AGENT_MODEL_DEEP_WORKER',
   REDUCER: 'AGENT_MODEL_REDUCER',
 };
+
+export const projectRoot = fileURLToPath(new URL('../../..', import.meta.url));
 
 export type RuntimeBridgeEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -127,7 +132,9 @@ export function parseRuntimeBridgeEnv(
 }
 
 export function loadRuntimeBridgeConfig(): RuntimeBridgeConfig {
-  return parseRuntimeBridgeEnv(process.env);
+  const envPath = path.resolve(projectRoot, '.env');
+  if (existsSync(envPath)) loadEnvFile(envPath);
+  return parseRuntimeBridgeEnv(process.env, projectRoot);
 }
 
 function parseCodexBinary(value: string | undefined): string {
