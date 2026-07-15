@@ -523,6 +523,18 @@ describe('agent runtime contracts', () => {
       phase: 'COMMITTED',
       payload: { code: 'BRIDGE_FAILED', retryable: true },
     }).success).toBe(false);
+    expect(AgentRunEventV1Schema.safeParse({
+      ...routeCompleted,
+      type: 'run.failed',
+      phase: 'COMMITTED',
+      payload: { code: 'runtime-failed', message: '运行失败。', retryable: true },
+    }).success).toBe(false);
+    expect(AgentRunEventV1Schema.safeParse({
+      ...routeCompleted,
+      type: 'run.failed',
+      phase: 'COMMITTED',
+      payload: { code: 'RUNTIME_FAILED', message: '运行失败。', retryable: true },
+    }).success).toBe(true);
   });
 
   it('discriminates exactly four browser-safe artifact payloads', () => {

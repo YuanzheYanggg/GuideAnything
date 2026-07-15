@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { registerAuthRoutes } from './modules/auth/routes';
+import { registerConversationRoutes, type ConversationRouteRuntime } from './modules/conversations/routes';
 import { registerGuideRoutes } from './modules/guides/routes';
 import { registerMediaRoutes } from './modules/media/routes';
 import { registerPersonalRoutes } from './modules/personal/routes';
@@ -19,6 +20,7 @@ export interface BuildAppOptions {
   webOrigin?: string;
   logger?: boolean;
   uploadDir?: string;
+  agentRuntime?: ConversationRouteRuntime;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -55,6 +57,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   await registerAuthRoutes(app, options.database);
+  if (options.agentRuntime) await registerConversationRoutes(app, options.database, options.agentRuntime);
   await registerGuideRoutes(app, options.database);
   await registerMediaRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
   await registerPersonalRoutes(app, options.database);

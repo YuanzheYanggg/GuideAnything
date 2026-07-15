@@ -85,6 +85,41 @@ describe('conversation persistence', () => {
     });
   });
 
+  it('replays the original accepted run after a retry exists for the same message', () => {
+    const conversation = createConversation(database, {
+      scope: 'WORKSPACE', workspaceId: 'workspace-1', ownerId: 'owner-1', title: '流程问答',
+    });
+    const request = messageRequest();
+    const first = enqueueConversationRun(database, {
+      conversationId: conversation.id,
+      ownerId: 'owner-1',
+      request,
+    });
+    const now = '2026-07-15T01:00:00.000Z';
+    database.prepare(
+      `INSERT INTO agent_runs (
+        id, conversation_id, initiating_message_id, run_sequence, plan_version,
+        status, source_options_json, created_at, updated_at
+      ) VALUES ('retry-run', ?, ?, 2, 1, 'QUEUED', ?, ?, ?)`,
+    ).run(
+      conversation.id,
+      first.accepted.message.id,
+      JSON.stringify(request.sources),
+      now,
+      now,
+    );
+
+    const replay = enqueueConversationRun(database, {
+      conversationId: conversation.id,
+      ownerId: 'owner-1',
+      request,
+    });
+
+    expect(replay.created).toBe(false);
+    expect(replay.accepted.run.id).toBe(first.accepted.run.id);
+    expect(replay.accepted.run.runSequence).toBe(1);
+  });
+
   it('rejects a reused client message id with a different payload', () => {
     const conversation = createConversation(database, {
       scope: 'WORKSPACE', workspaceId: 'workspace-1', ownerId: 'owner-1', title: '流程问答',
@@ -107,6 +142,20 @@ describe('conversation persistence', () => {
       ownerId: 'owner-1',
       request: messageRequest(),
     })).toThrow(/全局会话只能使用 Santexwell/u);
+  });
+
+  it('refuses to enqueue through the repository after a conversation is archived', () => {
+    const conversation = createConversation(database, {
+      scope: 'WORKSPACE', workspaceId: 'workspace-1', ownerId: 'owner-1', title: '归档会话',
+    });
+    database.prepare("UPDATE conversations SET status = 'ARCHIVED' WHERE id = ?").run(conversation.id);
+
+    expect(() => enqueueConversationRun(database, {
+      conversationId: conversation.id,
+      ownerId: 'owner-1',
+      request: messageRequest(),
+    })).toThrow(/归档会话/u);
+    expect(database.prepare('SELECT COUNT(*) AS count FROM conversation_messages').get()).toEqual({ count: 0 });
   });
 
   it('persists a schema-validated event before notifying subscribers', () => {
@@ -137,6 +186,20 @@ describe('conversation persistence', () => {
       payload: { decision: { contextAssessment: 'internal reasoning' } },
     } as never)).toThrow();
     expect(database.prepare('SELECT COUNT(*) AS count FROM agent_run_events').get()).toEqual({ count: 1 });
+  });
+
+  it('rejects public failure codes that cannot be read back as a run snapshot', () => {
+    const { runId } = seedRun();
+    const store = new AgentRunEventStore(database, new RunEventBroker());
+
+    expect(() => store.append({
+      runId,
+      planVersion: 1,
+      phase: 'COMMITTED',
+      type: 'run.failed',
+      payload: { code: 'runtime-failed', message: '运行失败。', retryable: true },
+    } as never)).toThrow();
+    expect(database.prepare('SELECT COUNT(*) AS count FROM agent_run_events').get()).toEqual({ count: 0 });
   });
 
   it('does not turn a committed append into a caller-visible failure when a listener throws', () => {

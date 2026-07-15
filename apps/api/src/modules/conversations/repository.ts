@@ -158,6 +158,9 @@ export function enqueueConversationRun(
   if (!conversation) {
     throw new ConversationNotFoundError();
   }
+  if (conversation.status !== 'ACTIVE') {
+    throw new Error('归档会话不能创建新运行');
+  }
   if (conversation.scope === 'GLOBAL_SANTEXWELL' && !isGlobalSantexwellRequest(request)) {
     throw new Error('全局会话只能使用 Santexwell 来源与知识片段上下文');
   }
@@ -236,6 +239,22 @@ export function getRunById(database: DatabaseSync, runId: string): RunRow | null
   return row ?? null;
 }
 
+export function getRunSnapshotForOwner(
+  database: DatabaseSync,
+  runId: string,
+  ownerId: string,
+): AgentRunSnapshotV1 | null {
+  const owned = database.prepare(
+    `SELECT 1
+     FROM agent_runs AS run
+     JOIN conversations AS conversation ON conversation.id = run.conversation_id
+     WHERE run.id = ? AND conversation.owner_id = ?`,
+  ).get(runId, ownerId);
+  if (!owned) return null;
+  const row = getRunById(database, runId);
+  return row ? mapRunSnapshot(row) : null;
+}
+
 export function mapRunSnapshot(row: RunRow): AgentRunSnapshotV1 {
   const sources = SourceOptionsV1Schema.parse(JSON.parse(row.source_options_json));
   const error = row.error_code === null
@@ -297,7 +316,9 @@ function getRunByMessage(
             COALESCE((SELECT MAX(sequence) FROM agent_run_events WHERE run_id = run.id), 0)
               AS last_event_sequence
      FROM agent_runs AS run
-     WHERE run.conversation_id = ? AND run.initiating_message_id = ?`,
+     WHERE run.conversation_id = ? AND run.initiating_message_id = ?
+     ORDER BY run.run_sequence ASC, run.id ASC
+     LIMIT 1`,
   ).get(conversationId, messageId) as unknown as RunRow | undefined;
   return row ?? null;
 }

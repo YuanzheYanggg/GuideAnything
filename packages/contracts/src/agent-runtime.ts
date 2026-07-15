@@ -10,6 +10,7 @@ const OpaqueReferenceIdV1Schema = IdV1Schema.refine(
 const ShortTextV1Schema = z.string().min(1).max(500);
 const MarkdownV1Schema = z.string().max(200_000);
 const TimestampV1Schema = z.string().datetime();
+export const PublicErrorCodeV1Schema = z.string().regex(/^[A-Z0-9_]+$/).max(80);
 export const EvidenceSourceV1Schema = z.enum([
   'WORKSPACE_FLOW',
   'WORKSPACE_DOCUMENT',
@@ -752,8 +753,8 @@ export const AgentRunEventV1Schema = z.discriminatedUnion('type', [
     ...CommittedEventV1Shape,
     type: z.literal('run.failed'),
     payload: z.object({
-      code: IdV1Schema,
-      message: z.string().min(1).max(5_000),
+      code: PublicErrorCodeV1Schema,
+      message: z.string().min(1).max(2_000),
       retryable: z.boolean(),
     }).strict(),
   }).strict(),
@@ -857,6 +858,7 @@ function encodeURIComponentSafely(value: string): string | null {
 }
 
 export type SourceOptionsV1 = z.infer<typeof SourceOptionsV1Schema>;
+export type PublicErrorCodeV1 = z.infer<typeof PublicErrorCodeV1Schema>;
 export type RouteBudgetV1 = z.infer<typeof RouteBudgetV1Schema>;
 export type RouteComplexityV1 = z.infer<typeof RouteComplexityV1Schema>;
 export type RouteTaskV1 = z.infer<typeof RouteTaskV1Schema>;
