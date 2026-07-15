@@ -59,7 +59,16 @@ export function createRuntimeBridgeApp(options: RuntimeBridgeAppOptions): Fastif
   });
 
   app.get('/health', async (_request, reply) => {
-    return await reply.code(200).send(runtime.getHealth());
+    const health = runtime.getHealth();
+    const roles = Object.fromEntries(Object.entries(health.roles).map(([role, value]) => [
+      role,
+      { ready: value.ready, requiredEffort: value.requiredEffort },
+    ]));
+    return await reply.code(200).send({
+      status: health.status,
+      roles,
+      reasonCodes: health.reasonCodes,
+    });
   });
 
   app.post('/v1/generate', async (request, reply) => {

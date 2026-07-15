@@ -106,7 +106,8 @@ function handle(events: AsyncIterable<BridgeEventV1> = (async function* () {
 function runBody(overrides: Partial<BridgeRunRequestV1> = {}) {
   return {
     type: 'RUN', requestId: 'request-1', runId: 'run-1', planVersion: 1,
-    role: 'ROUTER', reasoningEffort: 'MEDIUM', prompt: '问题', allowedRoots: [],
+    role: 'FOCUSED_WORKER', reasoningEffort: 'MEDIUM', outputKind: 'ANSWER',
+    prompt: '问题', allowedRoots: [],
     ...overrides,
   };
 }
@@ -135,12 +136,27 @@ describe('runtime bridge HTTP facade', () => {
     const response = await app.inject({ method: 'GET', url: '/health' });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual(health);
+    expect(response.json()).toEqual({
+      status: 'READY',
+      roles: {
+        ROUTER: { ready: true, requiredEffort: 'MEDIUM' },
+        DEEP_ROUTER: { ready: true, requiredEffort: 'HIGH' },
+        FOCUSED_WORKER: { ready: true, requiredEffort: 'MEDIUM' },
+        DEEP_WORKER: { ready: true, requiredEffort: 'HIGH' },
+        REDUCER: { ready: true, requiredEffort: 'HIGH' },
+      },
+      reasonCodes: [],
+    });
     const serialized = response.body;
     expect(serialized).not.toContain(TOKEN);
     expect(serialized).not.toContain('/runtime');
     expect(serialized).not.toContain('prompt');
     expect(serialized).not.toContain('error');
+    expect(serialized).not.toContain('0.144.1');
+    expect(serialized).not.toContain('gpt-test');
+    expect(serialized).not.toContain('supportedEfforts');
+    expect(serialized).not.toContain('instructionSources');
+    expect(serialized).not.toContain('maxInputTokens');
   });
 
   it('requires a constant-time bearer token on every non-health route and ignores query auth', async () => {

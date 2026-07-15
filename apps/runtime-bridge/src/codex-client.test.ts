@@ -1,17 +1,21 @@
 import { z } from 'zod';
 import {
   AgentInternalAnswerV1Schema,
+  RouteDecisionV1Schema,
+  TaskFindingV1Schema,
   type BridgeEventV1,
   type BridgeModelRoleV1,
   type BridgeRunRequestV1,
 } from '@guideanything/contracts';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { parseRuntimeBridgeEnv, type RuntimeBridgeConfig } from './config';
 import {
   AGENT_INTERNAL_ANSWER_JSON_SCHEMA,
   CodexRuntime,
   CodexRuntimeError,
+  ROUTE_DECISION_JSON_SCHEMA,
+  TASK_FINDING_JSON_SCHEMA,
   type CodexRpc,
 } from './codex-client';
 import type { RpcNotification, RpcProtocolIssue, RpcServerRequest } from './json-rpc';
@@ -90,6 +94,50 @@ const VALID_ANSWER = {
   suggestedQuestions: [],
 };
 
+const VALID_ROUTE_DECISION = {
+  intent: '回答当前问题',
+  complexity: {
+    scopeBreadth: 1,
+    evidenceDepth: 1,
+    crossSourceNeed: 1,
+    decompositionNeed: 1,
+    ambiguity: 1,
+  },
+  contextAssessment: '现有上下文足够直接回答。',
+  route: 'DIRECT',
+  sources: {
+    workspaceFlows: false,
+    workspaceDocuments: false,
+    sessionAttachments: false,
+    santexwell: false,
+  },
+  tasks: [],
+  budget: {
+    maxWorkers: 0,
+    maxConcurrency: 1,
+    maxWorkspaceCandidates: 0,
+    maxFlowHops: 0,
+    maxVaultClusters: 0,
+    maxVaultDigests: 0,
+    allowRaw: false,
+    useReducer: false,
+  },
+  executionMode: 'SEQUENTIAL',
+  maxConcurrency: 1,
+  stopConditions: ['直接回答完成'],
+  confidence: 1,
+  userFacingPlan: '直接回答。',
+};
+
+const VALID_TASK_FINDING = {
+  taskId: 'task-1',
+  status: 'NO_EVIDENCE',
+  findings: [],
+  validatedEvidence: [],
+  conflicts: [],
+  gaps: ['未提供相关证据。'],
+};
+
 function config(overrides: Record<string, string | undefined> = {}): RuntimeBridgeConfig {
   return parseRuntimeBridgeEnv({
     AGENT_BRIDGE_TOKEN: 'runtime-bridge-test-token-000000000000',
@@ -136,8 +184,9 @@ function runRequest(overrides: Partial<BridgeRunRequestV1> = {}): BridgeRunReque
     requestId: 'request-1',
     runId: 'run-1',
     planVersion: 1,
-    role: 'ROUTER',
+    role: 'FOCUSED_WORKER',
     reasoningEffort: 'MEDIUM',
+    outputKind: 'ANSWER',
     prompt: '只使用给定证据回答。',
     allowedRoots: [],
     ...overrides,
@@ -183,6 +232,12 @@ async function collectEvents(handle: { events: AsyncIterable<BridgeEventV1> }): 
   const events: BridgeEventV1[] = [];
   for await (const event of handle.events) events.push(event);
   return events;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => { resolve = settle; });
+  return { promise, resolve };
 }
 
 function emitFinal(rpc: FakeRpc, threadId: string, turnId: string, answer: unknown = VALID_ANSWER): void {
@@ -401,6 +456,71 @@ describe('CodexRuntime thread and turn safety', () => {
       sandbox: 'read-only',
       personality: 'none',
       excludeTurns: true,
+    });
+  });
+
+  it('selects and emits the structured contract requested by each permitted role', async () => {
+    const routed = await initializedRuntime();
+    const routeHandle = await startHandle(
+      routed.runtime,
+      routed.rpc,
+      routed.runtimeConfig,
+      runRequest({ role: 'ROUTER', outputKind: 'ROUTE_DECISION' }),
+    );
+    const routeTurn = routed.rpc.requests.find(({ method }) => method === 'turn/start')?.params as Record<string, unknown>;
+    expect(routeTurn.outputSchema).toEqual(ROUTE_DECISION_JSON_SCHEMA);
+    expect(findObjectsWithOptionalProperties(ROUTE_DECISION_JSON_SCHEMA)).toEqual([]);
+    expect(restoreCodexUnionKeywords(ROUTE_DECISION_JSON_SCHEMA)).toEqual(
+      z.toJSONSchema(RouteDecisionV1Schema, { target: 'draft-7' }),
+    );
+    emitFinal(routed.rpc, 'thread-1', 'turn-1', VALID_ROUTE_DECISION);
+    routed.rpc.emit('turn/completed', {
+      threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] },
+    });
+    expect(await collectEvents(routeHandle)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'ROUTE_DECISION', payload: { decision: VALID_ROUTE_DECISION } }),
+      expect.objectContaining({ type: 'COMPLETED' }),
+    ]));
+
+    const worker = await initializedRuntime();
+    const findingHandle = await startHandle(
+      worker.runtime,
+      worker.rpc,
+      worker.runtimeConfig,
+      runRequest({ outputKind: 'TASK_FINDING' }),
+    );
+    const findingTurn = worker.rpc.requests.find(({ method }) => method === 'turn/start')?.params as Record<string, unknown>;
+    expect(findingTurn.outputSchema).toEqual(TASK_FINDING_JSON_SCHEMA);
+    expect(findingTurn.outputSchema).not.toEqual(routeTurn.outputSchema);
+    expect(findObjectsWithOptionalProperties(TASK_FINDING_JSON_SCHEMA)).toEqual([]);
+    expect(restoreCodexUnionKeywords(TASK_FINDING_JSON_SCHEMA)).toEqual(
+      z.toJSONSchema(TaskFindingV1Schema, { target: 'draft-7' }),
+    );
+    emitFinal(worker.rpc, 'thread-1', 'turn-1', VALID_TASK_FINDING);
+    worker.rpc.emit('turn/completed', {
+      threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] },
+    });
+    expect(await collectEvents(findingHandle)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'TASK_FINDING', payload: { finding: VALID_TASK_FINDING } }),
+      expect.objectContaining({ type: 'COMPLETED' }),
+    ]));
+  });
+
+  it('rejects a valid answer payload when a route decision was requested', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const handle = await startHandle(
+      runtime,
+      rpc,
+      runtimeConfig,
+      runRequest({ role: 'ROUTER', outputKind: 'ROUTE_DECISION' }),
+    );
+    emitFinal(rpc, 'thread-1', 'turn-1', VALID_ANSWER);
+    rpc.emit('turn/completed', {
+      threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] },
+    });
+
+    expect((await collectEvents(handle)).at(-1)).toMatchObject({
+      type: 'FAILED', payload: { code: 'INVALID_ROUTE_DECISION' },
     });
   });
 
@@ -687,6 +807,115 @@ describe('CodexRuntime cancel and steer', () => {
     expect(rpc.requests.find(({ method }) => method === 'turn/interrupt')?.params).toEqual({
       threadId: 'thread-1', turnId: 'turn-1',
     });
+    const cancelledEvents = await Promise.race([
+      collectEvents(handle),
+      new Promise<null>((resolve) => setImmediate(() => resolve(null))),
+    ]);
+    expect(cancelledEvents).not.toBeNull();
+    expect(cancelledEvents?.at(-1)).toMatchObject({
+      type: 'FAILED', payload: { code: 'TURN_INTERRUPTED', retryable: false },
+    });
+  });
+
+  it('terminates the run and degrades health when Codex cannot confirm interruption', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const handle = await startHandle(runtime, rpc, runtimeConfig);
+    rpc.enqueue('turn/interrupt', () => {
+      throw new Error('private interrupt failure /operator/path');
+    });
+
+    await expect(handle.cancel()).rejects.toMatchObject({
+      code: 'TURN_INTERRUPT_FAILED', retryable: true,
+    });
+    await expect(handle.cancel()).resolves.toBeUndefined();
+    const events = await collectEvents(handle);
+    expect(events.at(-1)).toMatchObject({
+      type: 'FAILED', payload: { code: 'TURN_INTERRUPT_FAILED', retryable: true },
+    });
+    expect(JSON.stringify(events)).not.toContain('/operator/path');
+    expect(runtime.getHealth()).toMatchObject({
+      status: 'DEGRADED', reasonCodes: ['TURN_INTERRUPT_FAILED'],
+    });
+  });
+
+  it('serializes concurrent steer requests for the same next plan version', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const handle = await startHandle(runtime, rpc, runtimeConfig);
+    const response = deferred<unknown>();
+    rpc.enqueue('turn/steer', () => response.promise);
+
+    const first = handle.steer(2, '第一次调整');
+    await expect(handle.steer(2, '并发调整')).rejects.toMatchObject({
+      code: 'STEER_IN_PROGRESS', retryable: true,
+    });
+    response.resolve({ turnId: 'turn-1' });
+    await expect(first).resolves.toBeUndefined();
+    expect(rpc.requests.filter(({ method }) => method === 'turn/steer')).toHaveLength(1);
+  });
+
+  it('keeps a timed-out run tracked until interruption is confirmed and degrades on interrupt failure', async () => {
+    vi.useFakeTimers();
+    try {
+      const runtimeConfig = config({ CODEX_TURN_TIMEOUT_MS: '1000' });
+      const { runtime, rpc } = await initializedRuntime({ runtimeConfig });
+      const handle = await startHandle(runtime, rpc, runtimeConfig);
+      rpc.enqueue('turn/interrupt', () => {
+        throw new Error('private timeout interrupt failure');
+      });
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      const events = await collectEvents(handle);
+      expect(events.at(-1)).toMatchObject({
+        type: 'FAILED', payload: { code: 'TURN_INTERRUPT_FAILED', retryable: true },
+      });
+      expect(runtime.getHealth()).toMatchObject({
+        status: 'DEGRADED', reasonCodes: ['TURN_INTERRUPT_FAILED'],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('CodexRuntime start reservations', () => {
+  it('reserves a run id before awaiting thread startup', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const response = deferred<unknown>();
+    rpc.enqueue('thread/start', () => response.promise);
+    rpc.enqueue('turn/start', { turn: { id: 'turn-1', status: 'inProgress', items: [] } });
+
+    const first = runtime.startRun(runRequest());
+    await expect(runtime.startRun(runRequest())).rejects.toMatchObject({ code: 'RUN_ALREADY_ACTIVE' });
+    response.resolve(threadResponse('thread-1', runtimeConfig));
+    await expect(first).resolves.toMatchObject({ runId: 'run-1', threadId: 'thread-1' });
+  });
+
+  it('counts pending thread startup against the concurrency limit', async () => {
+    const runtimeConfig = config({ RUNTIME_BRIDGE_MAX_CONCURRENCY: '1' });
+    const { runtime, rpc } = await initializedRuntime({ runtimeConfig });
+    const response = deferred<unknown>();
+    rpc.enqueue('thread/start', () => response.promise);
+    const first = runtime.startRun(runRequest());
+
+    await expect(runtime.startRun(runRequest({ requestId: 'request-2', runId: 'run-2' })))
+      .rejects.toMatchObject({ code: 'CONCURRENCY_LIMIT' });
+    response.resolve(threadResponse('thread-1', runtimeConfig));
+    rpc.enqueue('turn/start', { turn: { id: 'turn-1', status: 'inProgress', items: [] } });
+    await expect(first).resolves.toMatchObject({ runId: 'run-1' });
+  });
+
+  it('reserves a resumed thread id before awaiting Codex', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const response = deferred<unknown>();
+    rpc.enqueue('thread/resume', () => response.promise);
+    rpc.enqueue('turn/start', { turn: { id: 'turn-1', status: 'inProgress', items: [] } });
+    const first = runtime.startRun(runRequest({ resumeThreadId: 'existing-thread' }));
+
+    await expect(runtime.startRun(runRequest({
+      requestId: 'request-2', runId: 'run-2', resumeThreadId: 'existing-thread',
+    }))).rejects.toMatchObject({ code: 'THREAD_ALREADY_ACTIVE' });
+    response.resolve(threadResponse('existing-thread', runtimeConfig));
+    await expect(first).resolves.toMatchObject({ threadId: 'existing-thread' });
   });
 });
 

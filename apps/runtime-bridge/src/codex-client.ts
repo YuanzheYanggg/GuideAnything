@@ -3,10 +3,15 @@ import {
   AgentInternalAnswerV1Schema,
   BridgeEventV1Schema,
   BridgeRunRequestV1Schema,
+  RouteDecisionV1Schema,
+  TaskFindingV1Schema,
   type AgentInternalAnswerV1,
   type BridgeEventV1,
   type BridgeModelRoleV1,
+  type BridgeOutputKindV1,
   type BridgeRunRequestV1,
+  type RouteDecisionV1,
+  type TaskFindingV1,
 } from '@guideanything/contracts';
 
 import type { RuntimeBridgeConfig } from './config';
@@ -40,18 +45,25 @@ const BRIDGE_BASE_INSTRUCTIONS = [
   'The final assistant message must be JSON matching the supplied schema.',
 ].join(' ');
 
-const CONTRACT_ANSWER_JSON_SCHEMA = z.toJSONSchema(
-  AgentInternalAnswerV1Schema,
-  { target: 'draft-7' },
-);
-
 // Codex forwards this schema to the Responses API, whose structured-output
 // subset accepts `anyOf` but rejects the draft-7 `oneOf` emitted by Zod for
-// discriminated unions. The rewrite is semantics-preserving; the final value
-// is still parsed by AgentInternalAnswerV1Schema before it can leave the bridge.
+// discriminated unions. The rewrite is semantics-preserving; every final value
+// is still parsed by its original contract schema before it can leave the bridge.
 export const AGENT_INTERNAL_ANSWER_JSON_SCHEMA = Object.freeze(
-  makeCodexOutputSchema(CONTRACT_ANSWER_JSON_SCHEMA) as typeof CONTRACT_ANSWER_JSON_SCHEMA,
+  makeCodexOutputSchema(z.toJSONSchema(AgentInternalAnswerV1Schema, { target: 'draft-7' })) as object,
 );
+export const ROUTE_DECISION_JSON_SCHEMA = Object.freeze(
+  makeCodexOutputSchema(z.toJSONSchema(RouteDecisionV1Schema, { target: 'draft-7' })) as object,
+);
+export const TASK_FINDING_JSON_SCHEMA = Object.freeze(
+  makeCodexOutputSchema(z.toJSONSchema(TaskFindingV1Schema, { target: 'draft-7' })) as object,
+);
+
+const OUTPUT_SCHEMA_BY_KIND: Readonly<Record<BridgeOutputKindV1, object>> = Object.freeze({
+  ROUTE_DECISION: ROUTE_DECISION_JSON_SCHEMA,
+  TASK_FINDING: TASK_FINDING_JSON_SCHEMA,
+  ANSWER: AGENT_INTERNAL_ANSWER_JSON_SCHEMA,
+});
 
 export interface CodexRpc {
   request<T>(
@@ -95,12 +107,15 @@ interface RunContext {
   readonly threadId: string;
   turnId: string;
   planVersion: number;
+  readonly outputKind: BridgeOutputKindV1;
   readonly queue: AsyncEventQueue<BridgeEventV1>;
   readonly itemPhases: Map<string, 'commentary' | 'final_answer' | null>;
   sequence: number;
-  finalAnswer: AgentInternalAnswerV1 | null;
+  structuredOutput: RouteDecisionV1 | TaskFindingV1 | AgentInternalAnswerV1 | null;
   terminal: boolean;
   cancelRequested: boolean;
+  steerInFlight: boolean;
+  interruptPromise: Promise<void> | null;
   timeout: NodeJS.Timeout | null;
 }
 
@@ -115,6 +130,8 @@ export class CodexRuntime {
   readonly #roleHealth = new Map<BridgeModelRoleV1, ModelRoleHealth>();
   readonly #runsById = new Map<string, RunContext>();
   readonly #runsByThread = new Map<string, RunContext>();
+  readonly #startingRunIds = new Set<string>();
+  readonly #startingThreadIds = new Set<string>();
   readonly #disposeListeners: (() => void)[];
   #initialized = false;
   #instructionSources = 0;
@@ -224,39 +241,65 @@ export class CodexRuntime {
     if (REQUIRED_EFFORT[request.role] !== request.reasoningEffort) {
       throw new CodexRuntimeError('EFFORT_ROLE_MISMATCH');
     }
-    if (this.#runsById.has(request.runId)) throw new CodexRuntimeError('RUN_ALREADY_ACTIVE');
-    if (this.#runsById.size >= this.#config.maxConcurrency) {
-      throw new CodexRuntimeError('CONCURRENCY_LIMIT', true);
-    }
     const role = this.#roles.get(request.role);
     if (!role) throw new CodexRuntimeError('MODEL_ROLE_UNAVAILABLE', true);
+    if (this.#runsById.has(request.runId) || this.#startingRunIds.has(request.runId)) {
+      throw new CodexRuntimeError('RUN_ALREADY_ACTIVE');
+    }
+    if (
+      request.resumeThreadId
+      && (this.#runsByThread.has(request.resumeThreadId) || this.#startingThreadIds.has(request.resumeThreadId))
+    ) {
+      throw new CodexRuntimeError('THREAD_ALREADY_ACTIVE');
+    }
+    if (this.#runsById.size + this.#startingRunIds.size >= this.#config.maxConcurrency) {
+      throw new CodexRuntimeError('CONCURRENCY_LIMIT', true);
+    }
 
-    const thread = request.resumeThreadId
-      ? await this.#resumeThread(request.resumeThreadId, role)
-      : await this.#startThread(role);
-    const threadId = this.#validateThreadResponse(thread, role);
-    if (this.#runsByThread.has(threadId)) throw new CodexRuntimeError('THREAD_ALREADY_ACTIVE');
-
-    const queue = new AsyncEventQueue<BridgeEventV1>();
-    const context: RunContext = {
-      requestId: request.requestId,
-      runId: request.runId,
-      threadId,
-      turnId: '',
-      planVersion: request.planVersion,
-      queue,
-      itemPhases: new Map(),
-      sequence: 0,
-      finalAnswer: null,
-      terminal: false,
-      cancelRequested: false,
-      timeout: null,
-    };
-    this.#runsById.set(context.runId, context);
-    this.#runsByThread.set(context.threadId, context);
-    this.#push(context, 'THREAD_BOUND', { threadId });
-
+    this.#startingRunIds.add(request.runId);
+    if (request.resumeThreadId) this.#startingThreadIds.add(request.resumeThreadId);
+    let reservationHeld = true;
     try {
+      const thread = request.resumeThreadId
+        ? await this.#resumeThread(request.resumeThreadId, role)
+        : await this.#startThread(role);
+      const threadId = this.#validateThreadResponse(thread, role);
+      if (request.resumeThreadId && threadId !== request.resumeThreadId) {
+        this.#degrade('RESUMED_THREAD_ID_MISMATCH');
+        throw new CodexRuntimeError('RESUMED_THREAD_ID_MISMATCH');
+      }
+      const reservedByAnotherStart = this.#startingThreadIds.has(threadId)
+        && threadId !== request.resumeThreadId;
+      if (this.#runsByThread.has(threadId) || reservedByAnotherStart) {
+        throw new CodexRuntimeError('THREAD_ALREADY_ACTIVE');
+      }
+
+      this.#startingRunIds.delete(request.runId);
+      if (request.resumeThreadId) this.#startingThreadIds.delete(request.resumeThreadId);
+      reservationHeld = false;
+
+      const queue = new AsyncEventQueue<BridgeEventV1>();
+      const context: RunContext = {
+        requestId: request.requestId,
+        runId: request.runId,
+        threadId,
+        turnId: '',
+        planVersion: request.planVersion,
+        outputKind: request.outputKind,
+        queue,
+        itemPhases: new Map(),
+        sequence: 0,
+        structuredOutput: null,
+        terminal: false,
+        cancelRequested: false,
+        steerInFlight: false,
+        interruptPromise: null,
+        timeout: null,
+      };
+      this.#runsById.set(context.runId, context);
+      this.#runsByThread.set(context.threadId, context);
+      this.#push(context, 'THREAD_BOUND', { threadId });
+
       const turnResponse = await this.#rpc.request<unknown>('turn/start', {
         threadId,
         clientUserMessageId: request.requestId,
@@ -270,7 +313,7 @@ export class CodexRuntime {
         effort: request.reasoningEffort.toLowerCase(),
         summary: 'none',
         personality: 'none',
-        outputSchema: AGENT_INTERNAL_ANSWER_JSON_SCHEMA,
+        outputSchema: OUTPUT_SCHEMA_BY_KIND[request.outputKind],
       }, { timeoutMs: this.#config.rpcTimeoutMs });
       const turn = isRecord(turnResponse) && isRecord(turnResponse.turn) ? turnResponse.turn : null;
       if (!turn || typeof turn.id !== 'string' || turn.status !== 'inProgress') {
@@ -278,40 +321,58 @@ export class CodexRuntime {
       }
       context.turnId = turn.id;
       context.timeout = setTimeout(() => {
-        this.#fail(context, 'TURN_TIMEOUT', true);
-        void this.#interrupt(context).catch(() => undefined);
+        void this.#handleTurnTimeout(context);
       }, this.#config.turnTimeoutMs);
       context.timeout.unref?.();
+      return new RuntimeRunHandle(this, context);
     } catch (error) {
-      this.#finish(context);
+      const active = this.#runsById.get(request.runId);
+      if (active) this.#finish(active);
       throw error;
+    } finally {
+      if (reservationHeld) {
+        this.#startingRunIds.delete(request.runId);
+        if (request.resumeThreadId) this.#startingThreadIds.delete(request.resumeThreadId);
+      }
     }
-
-    return new RuntimeRunHandle(this, context);
   }
 
   async cancelRun(context: RunContext): Promise<void> {
     if (context.terminal || context.cancelRequested) return;
     context.cancelRequested = true;
-    await this.#interrupt(context);
+    try {
+      await this.#interruptOnce(context);
+    } catch {
+      this.#degrade('TURN_INTERRUPT_FAILED');
+      this.#fail(context, 'TURN_INTERRUPT_FAILED', true);
+      throw new CodexRuntimeError('TURN_INTERRUPT_FAILED', true);
+    }
+    if (!context.terminal) this.#fail(context, 'TURN_INTERRUPTED', false);
   }
 
   async steerRun(context: RunContext, planVersion: number, instruction: string): Promise<void> {
     if (context.terminal) throw new CodexRuntimeError('RUN_NOT_ACTIVE');
     if (context.cancelRequested) throw new CodexRuntimeError('RUN_CANCELLING');
+    if (context.steerInFlight) throw new CodexRuntimeError('STEER_IN_PROGRESS', true);
     if (planVersion !== context.planVersion + 1) throw new CodexRuntimeError('PLAN_VERSION_MISMATCH');
     if (!instruction.trim() || instruction.length > 20_000) throw new CodexRuntimeError('STEER_INSTRUCTION_INVALID');
-    const result = await this.#rpc.request<unknown>('turn/steer', {
-      threadId: context.threadId,
-      expectedTurnId: context.turnId,
-      input: [{ type: 'text', text: instruction }],
-    }, { timeoutMs: this.#config.rpcTimeoutMs });
-    if (!isRecord(result) || result.turnId !== context.turnId) {
-      this.#degrade('STEER_TURN_MISMATCH');
-      this.#fail(context, 'STEER_TURN_MISMATCH', false);
-      throw new CodexRuntimeError('STEER_TURN_MISMATCH');
+    context.steerInFlight = true;
+    try {
+      const result = await this.#rpc.request<unknown>('turn/steer', {
+        threadId: context.threadId,
+        expectedTurnId: context.turnId,
+        input: [{ type: 'text', text: instruction }],
+      }, { timeoutMs: this.#config.rpcTimeoutMs });
+      if (context.terminal) throw new CodexRuntimeError('RUN_NOT_ACTIVE');
+      if (!isRecord(result) || result.turnId !== context.turnId) {
+        this.#degrade('STEER_TURN_MISMATCH');
+        this.#fail(context, 'STEER_TURN_MISMATCH', false);
+        throw new CodexRuntimeError('STEER_TURN_MISMATCH');
+      }
+      context.planVersion = planVersion;
+    } finally {
+      context.steerInFlight = false;
     }
-    context.planVersion = planVersion;
   }
 
   async close(): Promise<void> {
@@ -498,7 +559,7 @@ export class CodexRuntime {
       : null;
     context.itemPhases.set(value.id, phase);
     if (!completed || phase !== 'final_answer') return;
-    if (context.finalAnswer) {
+    if (context.structuredOutput) {
       this.#fail(context, 'DUPLICATE_FINAL_ANSWER', false);
       return;
     }
@@ -507,11 +568,10 @@ export class CodexRuntime {
       return;
     }
     try {
-      context.finalAnswer = AgentInternalAnswerV1Schema.parse(
-        removeStructuredOutputNullPlaceholders(JSON.parse(value.text)),
-      );
+      const normalized = removeStructuredOutputNullPlaceholders(JSON.parse(value.text));
+      context.structuredOutput = parseStructuredOutput(context.outputKind, normalized);
     } catch {
-      this.#fail(context, 'INVALID_FINAL_ANSWER', false);
+      this.#fail(context, invalidOutputCode(context.outputKind), false);
     }
   }
 
@@ -551,11 +611,17 @@ export class CodexRuntime {
       this.#fail(context, turn.status === 'interrupted' ? 'TURN_INTERRUPTED' : 'TURN_FAILED', true);
       return;
     }
-    if (!context.finalAnswer) {
-      this.#fail(context, 'FINAL_ANSWER_MISSING', false);
+    if (!context.structuredOutput) {
+      this.#fail(context, missingOutputCode(context.outputKind), false);
       return;
     }
-    this.#push(context, 'FINAL_ANSWER', { answer: context.finalAnswer });
+    if (context.outputKind === 'ROUTE_DECISION') {
+      this.#push(context, 'ROUTE_DECISION', { decision: context.structuredOutput });
+    } else if (context.outputKind === 'TASK_FINDING') {
+      this.#push(context, 'TASK_FINDING', { finding: context.structuredOutput });
+    } else {
+      this.#push(context, 'FINAL_ANSWER', { answer: context.structuredOutput });
+    }
     this.#push(context, 'COMPLETED', {});
     this.#finish(context);
   }
@@ -601,6 +667,24 @@ export class CodexRuntime {
     this.#runsById.delete(context.runId);
     this.#runsByThread.delete(context.threadId);
     context.queue.close();
+  }
+
+  async #handleTurnTimeout(context: RunContext): Promise<void> {
+    if (context.terminal) return;
+    try {
+      await this.#interruptOnce(context);
+    } catch {
+      if (context.terminal) return;
+      this.#degrade('TURN_INTERRUPT_FAILED');
+      this.#fail(context, 'TURN_INTERRUPT_FAILED', true);
+      return;
+    }
+    if (!context.terminal) this.#fail(context, 'TURN_TIMEOUT', true);
+  }
+
+  #interruptOnce(context: RunContext): Promise<void> {
+    context.interruptPromise ??= this.#interrupt(context);
+    return context.interruptPromise;
   }
 
   async #interrupt(context: RunContext): Promise<void> {
@@ -754,6 +838,27 @@ function removeStructuredOutputNullPlaceholders(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value)
     .filter(([, nested]) => nested !== null)
     .map(([key, nested]) => [key, removeStructuredOutputNullPlaceholders(nested)]));
+}
+
+function parseStructuredOutput(
+  outputKind: BridgeOutputKindV1,
+  value: unknown,
+): RouteDecisionV1 | TaskFindingV1 | AgentInternalAnswerV1 {
+  if (outputKind === 'ROUTE_DECISION') return RouteDecisionV1Schema.parse(value);
+  if (outputKind === 'TASK_FINDING') return TaskFindingV1Schema.parse(value);
+  return AgentInternalAnswerV1Schema.parse(value);
+}
+
+function invalidOutputCode(outputKind: BridgeOutputKindV1): string {
+  if (outputKind === 'ROUTE_DECISION') return 'INVALID_ROUTE_DECISION';
+  if (outputKind === 'TASK_FINDING') return 'INVALID_TASK_FINDING';
+  return 'INVALID_FINAL_ANSWER';
+}
+
+function missingOutputCode(outputKind: BridgeOutputKindV1): string {
+  if (outputKind === 'ROUTE_DECISION') return 'ROUTE_DECISION_MISSING';
+  if (outputKind === 'TASK_FINDING') return 'TASK_FINDING_MISSING';
+  return 'FINAL_ANSWER_MISSING';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
