@@ -98,6 +98,34 @@ describe('dedicated Codex runtime home', () => {
     await expect(prepareCodexRuntime(config)).rejects.toThrow(entry);
   });
 
+  it('purges only marker-owned system skills created by a previous app-server process', async () => {
+    const { config } = await fixture();
+    await prepareCodexRuntime(config);
+    const skillsRoot = path.join(config.runtimeHome, 'skills');
+    const systemRoot = path.join(skillsRoot, '.system');
+    await mkdir(path.join(systemRoot, 'generated-skill'), { recursive: true });
+    await writeFile(path.join(systemRoot, '.codex-system-skills.marker'), '');
+    await writeFile(path.join(systemRoot, 'generated-skill', 'SKILL.md'), 'generated');
+
+    await expect(prepareCodexRuntime(config)).resolves.toMatchObject({
+      home: await realpath(config.runtimeHome),
+    });
+    await expect(lstat(skillsRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not purge a marker-owned skills tree when a personal sibling is present', async () => {
+    const { config } = await fixture();
+    await prepareCodexRuntime(config);
+    const skillsRoot = path.join(config.runtimeHome, 'skills');
+    const systemRoot = path.join(skillsRoot, '.system');
+    await mkdir(systemRoot, { recursive: true });
+    await writeFile(path.join(systemRoot, '.codex-system-skills.marker'), '');
+    await mkdir(path.join(skillsRoot, 'personal-skill'));
+
+    await expect(prepareCodexRuntime(config)).rejects.toThrow('skills');
+    expect((await lstat(path.join(skillsRoot, 'personal-skill'))).isDirectory()).toBe(true);
+  });
+
   it('rejects an inherited config and a non-empty or symlinked runtime work directory', async () => {
     const { root, config } = await fixture();
     await mkdir(config.runtimeHome, { recursive: true });

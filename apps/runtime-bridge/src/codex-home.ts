@@ -99,6 +99,7 @@ export async function prepareCodexRuntime(config: RuntimeBridgeConfig): Promise<
   await ensureEmptyPrivateDirectory(config.runtimeWorkDir);
   const home = await realpath(config.runtimeHome);
   const workDir = await realpath(config.runtimeWorkDir);
+  await purgeGeneratedSystemSkills(home);
   await rejectForbiddenHomeEntries(home);
 
   const configPath = path.join(home, 'config.toml');
@@ -160,8 +161,34 @@ async function ensureEmptyPrivateDirectory(directory: string): Promise<void> {
 
 async function rejectForbiddenHomeEntries(home: string): Promise<void> {
   const entries = await readdir(home);
-  const forbidden = entries.find((entry) => FORBIDDEN_HOME_ENTRIES.has(entry.toLowerCase()));
+  const forbidden = entries.find((entry) =>
+    FORBIDDEN_HOME_ENTRIES.has(entry.toLowerCase())
+    || entry.startsWith('.runtime-skills-purge-'));
   if (forbidden) throw new Error(`CODEX_RUNTIME_HOME contains forbidden personal entry: ${forbidden}`);
+}
+
+async function purgeGeneratedSystemSkills(home: string): Promise<void> {
+  const skillsRoot = path.join(home, 'skills');
+  const skills = await lstatIfExists(skillsRoot);
+  if (!skills || skills.isSymbolicLink() || !skills.isDirectory()) return;
+  const entries = await readdir(skillsRoot);
+  if (entries.length !== 1 || entries[0] !== '.system') return;
+
+  const systemRoot = path.join(skillsRoot, '.system');
+  const system = await lstatIfExists(systemRoot);
+  const marker = await lstatIfExists(path.join(systemRoot, '.codex-system-skills.marker'));
+  if (
+    !system
+    || system.isSymbolicLink()
+    || !system.isDirectory()
+    || !marker
+    || marker.isSymbolicLink()
+    || !marker.isFile()
+  ) return;
+
+  const quarantine = path.join(home, `.runtime-skills-purge-${randomUUID()}`);
+  await rename(skillsRoot, quarantine);
+  await rm(quarantine, { recursive: true, force: true });
 }
 
 async function installExactConfig(target: string): Promise<void> {
