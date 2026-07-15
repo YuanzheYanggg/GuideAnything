@@ -3,4 +3,5 @@ export * from './adapters';
 export * from './agent-runtime';
 export * from './canvas';
 export * from './flow-knowledge';
+export * from './knowledge';
 export * from './workspace';
