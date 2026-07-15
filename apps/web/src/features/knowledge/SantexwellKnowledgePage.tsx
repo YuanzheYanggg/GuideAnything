@@ -13,6 +13,8 @@ import {
 } from '@phosphor-icons/react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 
+import { AgentConversationPanel } from '../agents/AgentConversationPanel';
+import type { AgentApi } from '../agents/types';
 import { SanitizedMarkdown } from '../markdown/SanitizedMarkdown';
 import type {
   KnowledgeApi,
@@ -29,7 +31,7 @@ const clusterCopy: Record<KnowledgeCluster, { title: string; eyebrow: string; de
   'complaint-case': { title: '投诉案例', eyebrow: 'CASEBOOK', description: '可追溯的异常、投诉与处置经验。' },
 };
 
-export function SantexwellKnowledgePage({ api }: { api: KnowledgeApi }) {
+export function SantexwellKnowledgePage({ api, agentApi }: { api: KnowledgeApi; agentApi?: AgentApi }) {
   const { documentId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const [health, setHealth] = useState<KnowledgeHealth | null>(null);
@@ -93,6 +95,13 @@ export function SantexwellKnowledgePage({ api }: { api: KnowledgeApi }) {
   if (loading) return <div className="workspace-loading" role="status"><span className="spinner" /><span>正在连接知识索引…</span></div>;
   if (error) return <section className="page-stack"><p className="workspace-error" role="alert">{error}</p></section>;
   if (!health) return null;
+
+  if (searchParams.has('conversation') && agentApi) {
+    return <section className="knowledge-chat-page page-stack">
+      <header className="page-heading"><div><span className="page-kicker">SANTEXWELL QA</span><h1>知识问答</h1><p>调度器会先判断难度，再选择直接回答、聚焦检索或有限的并行任务。</p></div><Link className="knowledge-back-link" to="/knowledge/santexwell"><ArrowLeft size={17} />返回知识门户</Link></header>
+      <AgentConversationPanel api={agentApi} scope={{ kind: 'GLOBAL' }} />
+    </section>;
+  }
 
   if (document) {
     return <KnowledgeReader document={document} fragmentId={searchParams.get('fragment')} />;

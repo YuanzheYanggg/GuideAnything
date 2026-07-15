@@ -1,4 +1,7 @@
 import type { AuthUser, Session } from '../features/auth/types';
+import type { AgentApi } from '../features/agents/types';
+import { decodeAgentEventStream } from '../features/agents/useAgentRunStream';
+import type { ArtifactsApi } from '../features/artifacts/types';
 import type { DraftItem, LibraryApi, SearchItem } from '../features/library/LibraryPage';
 import type { EditorApi, GuideDraftDetail, SearchPage } from '../features/editor/GuideEditor';
 import type { KnowledgeApi, KnowledgeDocument, KnowledgeHealth, KnowledgeOverview, KnowledgeSearchHit } from '../features/knowledge/types';
@@ -158,6 +161,106 @@ export class ApiClient {
     };
   }
 
+  agentApi(): AgentApi {
+    return {
+      listGlobal: async () => (await this.request<{ items: Awaited<ReturnType<AgentApi['listGlobal']>> }>(
+        '/knowledge/santexwell/conversations',
+      )).items,
+      createGlobal: async (title) => (await this.request<{ conversation: Awaited<ReturnType<AgentApi['createGlobal']>> }>(
+        '/knowledge/santexwell/conversations',
+        { method: 'POST', body: JSON.stringify(title ? { title } : {}) },
+      )).conversation,
+      getGlobal: (conversationId) => this.request(
+        `/knowledge/santexwell/conversations/${encodeURIComponent(conversationId)}`,
+      ),
+      sendGlobal: (conversationId, message) => this.request(
+        `/knowledge/santexwell/conversations/${encodeURIComponent(conversationId)}/messages`,
+        { method: 'POST', body: JSON.stringify(message) },
+      ),
+      listWorkspace: async (workspaceId) => (await this.request<{ items: Awaited<ReturnType<AgentApi['listWorkspace']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/conversations`,
+      )).items,
+      createWorkspace: async (workspaceId, title) => (await this.request<{ conversation: Awaited<ReturnType<AgentApi['createWorkspace']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/conversations`,
+        { method: 'POST', body: JSON.stringify(title ? { title } : {}) },
+      )).conversation,
+      getWorkspace: (workspaceId, conversationId) => this.request(
+        `/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}`,
+      ),
+      sendWorkspace: (workspaceId, conversationId, message) => this.request(
+        `/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
+        { method: 'POST', body: JSON.stringify(message) },
+      ),
+      getRun: async (runId) => (await this.request<{ run: Awaited<ReturnType<AgentApi['getRun']>> }>(
+        `/agent-runs/${encodeURIComponent(runId)}`,
+      )).run,
+      streamRun: (eventsPath, options) => this.#streamAgentRun(eventsPath, options),
+      cancelRun: async (runId, reason) => (await this.request<{ run: Awaited<ReturnType<AgentApi['cancelRun']>> }>(
+        `/agent-runs/${encodeURIComponent(runId)}/cancel`,
+        { method: 'POST', body: JSON.stringify(reason ? { reason } : {}) },
+      )).run,
+      steerRun: async (runId, request) => (await this.request<{ run: Awaited<ReturnType<AgentApi['steerRun']>> }>(
+        `/agent-runs/${encodeURIComponent(runId)}/steer`,
+        { method: 'POST', body: JSON.stringify(request) },
+      )).run,
+    };
+  }
+
+  artifactsApi(): ArtifactsApi {
+    return {
+      listWorkspace: async (workspaceId) => (await this.request<{ items: Awaited<ReturnType<ArtifactsApi['listWorkspace']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/artifacts`,
+      )).items,
+      listWorkspaceConversations: async (workspaceId) => (await this.request<{ items: Awaited<ReturnType<ArtifactsApi['listWorkspaceConversations']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/conversations`,
+      )).items,
+      resolveReference: (referenceId) => this.request(`/references/${encodeURIComponent(referenceId)}`),
+    };
+  }
+
+  async *#streamAgentRun(
+    eventsPath: string,
+    options: { afterSequence?: number; signal: AbortSignal },
+  ) {
+    if (!/^\/agent-runs\/[^/]+\/events$/u.test(eventsPath) || eventsPath.includes('..')) {
+      throw new Error('事件流地址无效');
+    }
+    let afterSequence = options.afterSequence ?? 0;
+    let retry = 0;
+    while (!options.signal.aborted) {
+      const headers = new Headers({ Accept: 'text/event-stream' });
+      if (this.#token) headers.set('Authorization', `Bearer ${this.#token}`);
+      if (afterSequence > 0) headers.set('Last-Event-ID', String(afterSequence));
+      let response: Response;
+      try {
+        response = await fetch(`/api${eventsPath}`, { headers, signal: options.signal });
+      } catch (reason) {
+        if (options.signal.aborted) return;
+        if (retry >= 2) throw reason;
+        await waitForStreamRetry(150 * (2 ** retry), options.signal);
+        retry += 1;
+        continue;
+      }
+      if (!response.ok || !response.body) {
+        if (response.status === 401) this.logout();
+        const payload = await response.json().catch(() => ({})) as { message?: string };
+        throw new Error(payload.message ?? `事件流连接失败（${response.status}）`);
+      }
+      let terminal = false;
+      for await (const event of decodeAgentEventStream(response.body, options.signal)) {
+        if (event.sequence <= afterSequence) continue;
+        afterSequence = event.sequence;
+        terminal = event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled';
+        yield event;
+        if (terminal) return;
+      }
+      if (options.signal.aborted || terminal) return;
+      if (retry >= 2) throw new Error('事件流意外断开，请刷新后继续');
+      await waitForStreamRetry(150 * (2 ** retry), options.signal);
+      retry += 1;
+    }
+  }
+
   async request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
     const headers = new Headers(init.headers);
     if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json');
@@ -173,3 +276,16 @@ export class ApiClient {
 }
 
 export const apiClient = new ApiClient();
+
+async function waitForStreamRetry(milliseconds: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timer = window.setTimeout(done, milliseconds);
+    signal.addEventListener('abort', done, { once: true });
+    function done() {
+      window.clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    }
+  });
+}

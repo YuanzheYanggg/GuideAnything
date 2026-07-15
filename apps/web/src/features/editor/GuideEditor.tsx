@@ -90,7 +90,7 @@ const defaultEdgeOptions = { type: 'orthogonal', markerEnd: { type: MarkerType.A
 const snapGrid: [number, number] = [20, 20];
 const multiSelectionKeyCode = ['Meta', 'Control'];
 
-export function GuideEditor({ guideId, api, personalApi, onBack }: { guideId: string; api: EditorApi; personalApi?: PersonalApi; onBack: () => void }) {
+export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: { guideId: string; api: EditorApi; personalApi?: PersonalApi; focusNodeId?: string; onBack: () => void }) {
   const [guide, setGuide] = useState<GuideDraftDetail | null>(null);
   const [document, setDocument] = useState<CanvasDocument | null>(null);
   const [flowNodes, setFlowNodes] = useState<Node[]>([]);
@@ -115,6 +115,7 @@ export function GuideEditor({ guideId, api, personalApi, onBack }: { guideId: st
   const connectSourceRef = useRef<{ sourceId: string; sourceHandle?: string } | null>(null);
   const saveInFlightRef = useRef<Promise<void> | null>(null);
   const saveRetryRef = useRef(false);
+  const appliedFocusRef = useRef<string | null>(null);
   const latestEditorStateRef = useRef<{ document: CanvasDocument | null; title: string; summary: string; tags: string[] }>({ document: null, title: '', summary: '', tags: [] });
   const saveRef = useRef<() => Promise<void>>(async () => undefined);
   latestEditorStateRef.current = { document, title, summary, tags };
@@ -127,6 +128,15 @@ export function GuideEditor({ guideId, api, personalApi, onBack }: { guideId: st
     }, 0);
     return () => window.clearTimeout(timer);
   }, [flowInstance, layoutPreview]);
+
+  useEffect(() => {
+    if (!document || !flowInstance || !focusNodeId || !document.nodes.some((node) => node.id === focusNodeId)) return;
+    const focusKey = `${guideId}:${focusNodeId}`;
+    if (appliedFocusRef.current === focusKey) return;
+    appliedFocusRef.current = focusKey;
+    setSelectedIds([focusNodeId]);
+    void flowInstance.fitView({ nodes: [{ id: focusNodeId }], duration: 280, padding: 0.8, minZoom: 0.25, maxZoom: 1.4 });
+  }, [document, flowInstance, focusNodeId, guideId]);
 
   useEffect(() => {
     let active = true;
