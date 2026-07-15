@@ -70,6 +70,51 @@ describe('AgentConversationPanel', () => {
       sources: { workspaceFlows: false, workspaceDocuments: false, sessionAttachments: false, santexwell: true },
     }));
   });
+
+  it('uploads a private attachment and binds it explicitly to the next workspace message', async () => {
+    const user = userEvent.setup();
+    const mock = api({
+      listWorkspace: vi.fn().mockResolvedValue([conversation('WORKSPACE')]),
+      getWorkspace: vi.fn().mockResolvedValue({ ...detail('WORKSPACE'), latestRun: null }),
+      uploadAttachment: vi.fn().mockResolvedValue({
+        id: 'attachment-1', originalName: '验货清单.md', mimeType: 'text/markdown', size: 12,
+        status: 'READY', expiresAt: '2026-07-22T00:00:00.000Z',
+        createdAt: '2026-07-15T00:00:00.000Z', updatedAt: '2026-07-15T00:00:00.000Z',
+      }),
+    });
+    renderPanel(mock, { kind: 'WORKSPACE', workspaceId: 'workspace-1' }, '/workspaces/workspace-1/agents?conversation=conversation-1');
+
+    const file = new File(['验货检查内容'], '验货清单.md', { type: 'text/markdown' });
+    await user.upload(await screen.findByLabelText('添加会话附件'), file);
+    expect(mock.uploadAttachment).toHaveBeenCalledWith('workspace-1', 'conversation-1', file);
+    expect(await screen.findByText('验货清单.md')).toBeVisible();
+
+    await user.type(screen.getByRole('textbox', { name: '向 Agent 提问' }), '这份清单和当前流程有冲突吗？');
+    await user.click(screen.getByRole('button', { name: '发送问题' }));
+    expect(mock.sendWorkspace).toHaveBeenCalledWith('workspace-1', 'conversation-1', expect.objectContaining({
+      attachmentIds: ['attachment-1'],
+      sources: expect.objectContaining({ sessionAttachments: true }),
+    }));
+  });
+
+  it('creates a private workspace conversation before uploading its first attachment', async () => {
+    const user = userEvent.setup();
+    const mock = api({
+      uploadAttachment: vi.fn().mockResolvedValue({
+        id: 'attachment-first', originalName: '说明.txt', mimeType: 'text/plain', size: 4,
+        status: 'READY', expiresAt: '2026-07-22T00:00:00.000Z',
+        createdAt: '2026-07-15T00:00:00.000Z', updatedAt: '2026-07-15T00:00:00.000Z',
+      }),
+    });
+    renderPanel(mock, { kind: 'WORKSPACE', workspaceId: 'workspace-1' });
+
+    const file = new File(['说明'], '说明.txt', { type: 'text/plain' });
+    await user.upload(await screen.findByLabelText('添加会话附件'), file);
+
+    expect(mock.createWorkspace).toHaveBeenCalledWith('workspace-1', '新对话');
+    expect(mock.uploadAttachment).toHaveBeenCalledWith('workspace-1', 'conversation-1', file);
+    expect(await screen.findByRole('checkbox', { name: '本轮使用附件 说明.txt' })).toBeChecked();
+  });
 });
 
 const committedAnswer: AgentCommittedAnswerV1 = {
@@ -99,6 +144,7 @@ function api(overrides: Partial<AgentApi> = {}): AgentApi {
     createWorkspace: vi.fn().mockResolvedValue(workspaceConversation),
     getWorkspace: vi.fn().mockResolvedValue(detail('WORKSPACE')),
     sendWorkspace: vi.fn().mockResolvedValue(accepted(workspaceConversation)),
+    uploadAttachment: vi.fn(),
     getRun: vi.fn().mockResolvedValue(run()),
     streamRun: vi.fn(() => stream([])),
     cancelRun: vi.fn().mockResolvedValue({ ...run(), status: 'CANCELLED', completedAt: '2026-07-15T00:00:03.000Z' }),

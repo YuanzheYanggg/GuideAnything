@@ -191,6 +191,14 @@ export class ApiClient {
         `/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/messages`,
         { method: 'POST', body: JSON.stringify(message) },
       ),
+      uploadAttachment: async (workspaceId, conversationId, file) => {
+        const body = new FormData();
+        body.append('file', file);
+        return (await this.request<{ attachment: Awaited<ReturnType<AgentApi['uploadAttachment']>> }>(
+          `/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/attachments`,
+          { method: 'POST', body },
+        )).attachment;
+      },
       getRun: async (runId) => (await this.request<{ run: Awaited<ReturnType<AgentApi['getRun']>> }>(
         `/agent-runs/${encodeURIComponent(runId)}`,
       )).run,

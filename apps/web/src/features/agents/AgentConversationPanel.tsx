@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
   ArrowRight,
   ChatCircleDots,
@@ -6,6 +6,7 @@ import {
   FlowArrow,
   GlobeHemisphereWest,
   PaperPlaneTilt,
+  Paperclip,
   Plus,
   SlidersHorizontal,
   Stop,
@@ -49,6 +50,8 @@ export function AgentConversationPanel({
   const [error, setError] = useState('');
   const [steering, setSteering] = useState(false);
   const [steerText, setSteerText] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<string[]>([]);
   const conversationParam = searchParams.get('conversation');
   const conversationId = conversationParam && conversationParam !== 'new' ? conversationParam : null;
   const workspaceId = scope.kind === 'WORKSPACE' ? scope.workspaceId : null;
@@ -74,13 +77,16 @@ export function AgentConversationPanel({
     if (!conversationId) {
       setDetail(null);
       setEventsPath(null);
+      setSelectedAttachmentIds([]);
       return;
     }
     let active = true;
     setError('');
     read(conversationId).then((next) => {
       if (!active) return;
-      setDetail(next);
+      setDetail((current) => current?.conversation.id === next.conversation.id
+        ? { ...next, attachments: mergeAttachments(next.attachments, current.attachments) }
+        : next);
       const latest = next.latestRun;
       if (latest && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(latest.status)) {
         setEventsPath(`/agent-runs/${encodeURIComponent(latest.id)}/events`);
@@ -100,6 +106,8 @@ export function AgentConversationPanel({
     const next = new URLSearchParams(searchParams);
     if (id) next.set('conversation', id);
     else next.set('conversation', 'new');
+    setSelectedAttachmentIds([]);
+    setSources((current) => ({ ...current, sessionAttachments: false }));
     setSearchParams(next);
   };
 
@@ -128,7 +136,7 @@ export function AgentConversationPanel({
           sources: { workspaceFlows: false, workspaceDocuments: false, sessionAttachments: false, santexwell: true },
         })
         : await api.sendWorkspace(scope.workspaceId, targetId, {
-          clientMessageId: createClientId(), text: prompt, attachmentIds: [], sources,
+          clientMessageId: createClientId(), text: prompt, attachmentIds: selectedAttachmentIds, sources,
         });
       setDetail((current) => current ? {
         ...current, messages: [...current.messages, accepted.message], latestRun: accepted.run,
@@ -137,11 +145,53 @@ export function AgentConversationPanel({
       } : current);
       setEventsPath(accepted.eventsPath);
       setText('');
+      setSelectedAttachmentIds([]);
+      setSources((current) => ({ ...current, sessionAttachments: false }));
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : '消息发送失败');
     } finally {
       setSending(false);
     }
+  };
+
+  const uploadAttachment = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file || scope.kind !== 'WORKSPACE' || uploading || runActive) return;
+    setUploading(true);
+    setError('');
+    try {
+      let targetId = conversationId;
+      let targetConversation = detail?.conversation ?? conversations.find((conversation) => conversation.id === targetId) ?? null;
+      if (!targetId) {
+        const created = await api.createWorkspace(scope.workspaceId, '新对话');
+        targetId = created.id;
+        targetConversation = created;
+        setConversations((items) => [created, ...items.filter((item) => item.id !== created.id)]);
+        setDetail({ conversation: created, messages: [], latestRun: null, attachments: [] });
+        selectConversation(created.id);
+      }
+      const attachment = await api.uploadAttachment(scope.workspaceId, targetId, file);
+      setDetail((current) => current?.conversation.id === targetId
+        ? { ...current, attachments: mergeAttachments(current.attachments, [attachment]) }
+        : targetConversation ? { conversation: targetConversation, messages: [], latestRun: null, attachments: [attachment] } : current);
+      if (attachment.status === 'READY') {
+        setSelectedAttachmentIds((ids) => [...new Set([...ids, attachment.id])]);
+        setSources((current) => ({ ...current, sessionAttachments: true }));
+      }
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : '会话附件上传失败');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const toggleAttachment = (attachmentId: string, checked: boolean) => {
+    setSelectedAttachmentIds((ids) => {
+      const next = checked ? [...new Set([...ids, attachmentId])] : ids.filter((id) => id !== attachmentId);
+      setSources((current) => ({ ...current, sessionAttachments: next.length > 0 }));
+      return next;
+    });
   };
 
   const cancel = async () => {
@@ -206,7 +256,34 @@ export function AgentConversationPanel({
       </form> : null}
 
       <form className="agent-composer" onSubmit={submit}>
-        {scope.kind === 'WORKSPACE' ? <SourceSwitches value={sources} disabled={runActive} onChange={setSources} /> : <div className="agent-global-source"><GlobeHemisphereWest size={16} />本轮仅访问 Santexwell Vault</div>}
+        {scope.kind === 'WORKSPACE' ? <>
+          <SourceSwitches value={sources} disabled={runActive} onChange={(next) => {
+            if (!next.sessionAttachments) setSelectedAttachmentIds([]);
+            setSources(next);
+          }} />
+          <div className="agent-attachment-bar">
+            <label className={uploading || runActive ? 'is-disabled' : undefined}>
+              <Paperclip size={15} />{uploading ? '正在解析…' : '添加附件'}
+              <input
+                type="file"
+                aria-label="添加会话附件"
+                accept=".md,.txt,.pdf,.docx,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                disabled={uploading || runActive}
+                onChange={(event) => { void uploadAttachment(event); }}
+              />
+            </label>
+            {detail?.attachments.map((attachment) => <label className={`agent-attachment-chip is-${attachment.status.toLowerCase()}`} key={attachment.id}>
+              <input
+                type="checkbox"
+                aria-label={`本轮使用附件 ${attachment.originalName}`}
+                disabled={runActive || attachment.status !== 'READY'}
+                checked={selectedAttachmentIds.includes(attachment.id)}
+                onChange={(event) => toggleAttachment(attachment.id, event.target.checked)}
+              />
+              <span>{attachment.originalName}</span><small>{attachment.status === 'READY' ? '已就绪' : attachment.status === 'FAILED' ? '解析失败' : '解析中'}</small>
+            </label>)}
+          </div>
+        </> : <div className="agent-global-source"><GlobeHemisphereWest size={16} />本轮仅访问 Santexwell Vault</div>}
         <div className="agent-composer-input">
           <textarea
             aria-label="向 Agent 提问"
@@ -265,4 +342,8 @@ function artifactLabel(kind: string) {
 
 function createClientId() {
   return globalThis.crypto?.randomUUID?.() ?? `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function mergeAttachments<T extends { id: string }>(left: readonly T[], right: readonly T[]): T[] {
+  return [...new Map([...left, ...right].map((attachment) => [attachment.id, attachment])).values()];
 }

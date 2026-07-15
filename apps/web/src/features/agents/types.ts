@@ -2,6 +2,7 @@ import type {
   AgentMessageAcceptedV1,
   AgentRunEventV1,
   AgentRunSnapshotV1,
+  ConversationAttachmentSummaryV1,
   ConversationDetailV1,
   ConversationSummaryV1,
   SendConversationMessageRequestV1,
@@ -14,6 +15,7 @@ export type {
   AgentMessageAcceptedV1,
   AgentRunEventV1,
   AgentRunSnapshotV1,
+  ConversationAttachmentSummaryV1,
   ConversationDetailV1,
   ConversationSummaryV1,
   SourceOptionsV1,
@@ -28,6 +30,7 @@ export interface AgentApi {
   createWorkspace: (workspaceId: string, title?: string) => Promise<ConversationSummaryV1>;
   getWorkspace: (workspaceId: string, conversationId: string) => Promise<ConversationDetailV1>;
   sendWorkspace: (workspaceId: string, conversationId: string, request: SendConversationMessageRequestV1) => Promise<AgentMessageAcceptedV1>;
+  uploadAttachment: (workspaceId: string, conversationId: string, file: File) => Promise<ConversationAttachmentSummaryV1>;
   getRun: (runId: string) => Promise<AgentRunSnapshotV1>;
   streamRun: (eventsPath: string, options: { afterSequence?: number; signal: AbortSignal }) => AsyncIterable<AgentRunEventV1>;
   cancelRun: (runId: string, reason?: string) => Promise<AgentRunSnapshotV1>;
