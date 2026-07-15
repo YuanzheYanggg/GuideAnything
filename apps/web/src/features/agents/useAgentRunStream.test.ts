@@ -1,4 +1,5 @@
 import type { AgentRunEventV1 } from '@guideanything/contracts';
+import { renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiClient } from '../../lib/api';
@@ -6,6 +7,7 @@ import {
   agentRunReducer,
   createAgentRunState,
   decodeAgentEventStream,
+  useAgentRunStream,
 } from './useAgentRunStream';
 
 describe('agent run stream', () => {
@@ -66,6 +68,22 @@ describe('agent run stream', () => {
     expect(state.draft).toBe('暂定结论');
     expect(state.answer?.conclusion).toBe(answer.conclusion);
     expect(state.answer?.conclusion).not.toBe(state.draft);
+  });
+
+  it('clears the previous run timeline when the authoritative events path becomes null', async () => {
+    const stream = vi.fn(async function* () {
+      yield event(1, 'route.completed', { route: 'FOCUSED', userFacingPlan: '旧会话计划' });
+      yield event(2, 'answer.draft.delta', { delta: '旧会话草稿' });
+    });
+    const { result, rerender } = renderHook(
+      ({ eventsPath }) => useAgentRunStream(eventsPath, stream),
+      { initialProps: { eventsPath: '/agent-runs/old/events' as string | null } },
+    );
+    await waitFor(() => expect(result.current.draft).toBe('旧会话草稿'));
+
+    rerender({ eventsPath: null });
+
+    await waitFor(() => expect(result.current).toEqual(createAgentRunState()));
   });
 
   it('rejects an SSE id that does not match the validated event sequence', async () => {

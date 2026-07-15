@@ -40,6 +40,21 @@ describe('agent production assembly', () => {
     expect(assembly.scheduleRun).toEqual(expect.any(Function));
     expect(assembly.cancelRun).toEqual(expect.any(Function));
     expect(assembly.steerRun).toEqual(expect.any(Function));
+    expect(assembly.close).toEqual(expect.any(Function));
+  });
+
+  it('assembles the deterministic runtime only for explicit non-production fake mode', () => {
+    database = createDatabase(':memory:');
+    migrateDatabase(database);
+    const fakeConfig = config();
+    fakeConfig.runtimeMode = 'fake';
+    fakeConfig.bridgeToken = null;
+
+    expect(() => createAgentRuntimeAssembly({
+      database: database!,
+      config: fakeConfig,
+      knowledgeAdapters: createUnavailableKnowledgeAdapters(),
+    })).not.toThrow();
   });
 });
 

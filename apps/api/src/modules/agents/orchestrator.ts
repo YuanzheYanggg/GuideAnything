@@ -140,6 +140,9 @@ export interface AgentOrchestratorOptions {
   outputCommitter: AgentOutputCommitter;
   configuredMaxConcurrency?: number;
   trustedHarness?: readonly string[];
+  trustedSantexwellHarness?: (
+    context: AgentRunExecutionContext,
+  ) => { revision: string; items: readonly string[] } | null;
   createId?: () => string;
   now?: () => Date;
   timeouts?: Partial<AgentOrchestratorTimeouts>;
@@ -162,6 +165,8 @@ interface ActiveRun {
   cancelReason?: string;
   pendingSteerVersion?: number;
   timedOut: boolean;
+  settled: Promise<void>;
+  markSettled: () => void;
 }
 
 interface RetrievalState {
@@ -205,10 +210,12 @@ export class AgentOrchestrator {
   readonly #outputCommitter: AgentOutputCommitter;
   readonly #configuredMaxConcurrency: number;
   readonly #trustedHarness: readonly string[];
+  readonly #trustedSantexwellHarness: AgentOrchestratorOptions['trustedSantexwellHarness'];
   readonly #createId: () => string;
   readonly #now: () => Date;
   readonly #timeouts: AgentOrchestratorTimeouts;
   readonly #activeRuns = new Map<string, ActiveRun>();
+  #shuttingDown = false;
 
   constructor(options: AgentOrchestratorOptions) {
     if (
@@ -229,6 +236,7 @@ export class AgentOrchestrator {
     this.#outputCommitter = options.outputCommitter;
     this.#configuredMaxConcurrency = options.configuredMaxConcurrency ?? 3;
     this.#trustedHarness = options.trustedHarness ?? [];
+    this.#trustedSantexwellHarness = options.trustedSantexwellHarness;
     this.#createId = options.createId ?? randomUUID;
     this.#now = options.now ?? (() => new Date());
     this.#timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
@@ -236,9 +244,18 @@ export class AgentOrchestrator {
   }
 
   async execute(runId: string, externalSignal?: AbortSignal): Promise<AgentRunExecutionResult> {
+    if (this.#shuttingDown) {
+      throw new AgentOrchestrationError(
+        'AGENT_RUNTIME_SHUTTING_DOWN',
+        'Agent Runtime 正在安全关闭。',
+        true,
+      );
+    }
     if (this.#activeRuns.has(runId)) {
       throw new AgentOrchestrationError('RUN_ALREADY_ACTIVE', '运行已经在执行。', false);
     }
+    let markSettled: () => void = () => {};
+    const settled = new Promise<void>((resolve) => { markSettled = resolve; });
     const active: ActiveRun = {
       runController: new AbortController(),
       planController: new AbortController(),
@@ -246,6 +263,8 @@ export class AgentOrchestrator {
       planVersion: 1,
       committing: false,
       timedOut: false,
+      settled,
+      markSettled,
     };
     this.#activeRuns.set(runId, active);
     const onExternalAbort = () => {
@@ -319,7 +338,17 @@ export class AgentOrchestrator {
       clearTimeout(runTimeout);
       externalSignal?.removeEventListener('abort', onExternalAbort);
       this.#activeRuns.delete(runId);
+      active.markSettled();
     }
+  }
+
+  async shutdown(): Promise<void> {
+    this.#shuttingDown = true;
+    const activeRuns = [...this.#activeRuns.entries()];
+    await Promise.all(activeRuns.map(async ([runId, active]) => {
+      await this.cancel(runId, '服务正在安全关闭');
+      await settleWithin(active.settled, this.#timeouts.cancelMs);
+    }));
   }
 
   async cancel(runId: string, reason?: string): Promise<void> {
@@ -736,10 +765,14 @@ export class AgentOrchestrator {
     evidence: readonly ValidatedEvidenceV1[],
     role: 'FOCUSED_WORKER' | 'DEEP_WORKER',
   ): string {
+    const santexwellHarness = this.#workerNeedsSantexwellHarness(context, task, evidence)
+      ? this.#loadSantexwellHarness(context)
+      : [];
     return buildPromptHarness({
       role,
       trustedHarness: [
         ...this.#trustedHarness,
+        ...santexwellHarness,
         '只能使用 retrievedContext 中由服务端提供的证据 ID 与 locator；不得新增、猜测或改写 locator。',
       ],
       retrievedContext: {
@@ -749,6 +782,39 @@ export class AgentOrchestrator {
       },
       userRequest: publicUserRequest(context),
     });
+  }
+
+  #workerNeedsSantexwellHarness(
+    context: AgentRunExecutionContext,
+    task: RouteTaskV1 | undefined,
+    evidence: readonly ValidatedEvidenceV1[],
+  ): boolean {
+    return context.scope === 'GLOBAL_SANTEXWELL'
+      || task?.kind === 'SANTEXWELL'
+      || evidence.some((item) => item.source === 'SANTEXWELL');
+  }
+
+  #loadSantexwellHarness(context: AgentRunExecutionContext): readonly string[] {
+    let bundle: ReturnType<NonNullable<AgentOrchestratorOptions['trustedSantexwellHarness']>>;
+    try {
+      bundle = this.#trustedSantexwellHarness?.(context) ?? null;
+    } catch {
+      bundle = null;
+    }
+    if (
+      !bundle
+      || !bundle.revision.trim()
+      || bundle.revision.length > 200
+      || bundle.items.length === 0
+      || bundle.items.some((item) => !item.trim())
+    ) {
+      throw new AgentOrchestrationError(
+        'SANTEXWELL_HARNESS_UNAVAILABLE',
+        'Santexwell 只读问答规则仍在准备中，请稍后重试。',
+        true,
+      );
+    }
+    return bundle.items;
   }
 
   #reducerPrompt(

@@ -228,6 +228,65 @@ describe('AgentOrchestrator', () => {
     ]);
   });
 
+  it('injects the trusted Santexwell harness only into the vault worker', async () => {
+    const flowEvidence = evidence('flow-harness', 'WORKSPACE_FLOW');
+    const vaultEvidence = evidence('vault-harness', 'SANTEXWELL');
+    const runtime = new ScriptedRuntime([
+      routeScript(compositeDecision()),
+      findingScript(finding('flow', [flowEvidence])),
+      findingScript(finding('vault', [vaultEvidence])),
+      answerScript(answer([flowEvidence, vaultEvidence])),
+    ]);
+    const result = await createOrchestrator({
+      runtime,
+      retriever: retrieverFrom({ WORKSPACE_FLOW: [flowEvidence], SANTEXWELL: [vaultEvidence] }),
+      trustedSantexwellHarness: () => ({
+        revision: 'harness-r1',
+        items: ['SANTEXWELL_QA_HARNESS_MARKER'],
+      }),
+    }).execute('public-run-harness');
+
+    expect(result.status).toBe('COMPLETED');
+    const vaultWorker = runtime.requests.find((request) => (
+      request.role === 'DEEP_WORKER' && request.prompt.includes('vault-harness')
+    ));
+    expect(vaultWorker?.prompt).toContain('SANTEXWELL_QA_HARNESS_MARKER');
+    expect(runtime.requests.filter((request) => request !== vaultWorker).every(
+      (request) => !request.prompt.includes('SANTEXWELL_QA_HARNESS_MARKER'),
+    )).toBe(true);
+  });
+
+  it('fails closed when a Santexwell worker has no validated last-good harness', async () => {
+    const vaultEvidence = evidence('vault-no-harness', 'SANTEXWELL');
+    const runtime = new ScriptedRuntime([routeScript(vaultFocusedDecision())]);
+    const events = new RecordingEventSink();
+    const result = await createOrchestrator({
+      runtime,
+      events,
+      loadContext: async (runId) => ({
+        ...executionContext(),
+        runId,
+        scope: 'GLOBAL_SANTEXWELL',
+        workspaceId: null,
+        sources: {
+          workspaceFlows: false,
+          workspaceDocuments: false,
+          sessionAttachments: false,
+          santexwell: true,
+        },
+      }),
+      retriever: retrieverFrom({ SANTEXWELL: [vaultEvidence] }),
+      trustedSantexwellHarness: () => null,
+    }).execute('public-run-no-harness');
+
+    expect(result.status).toBe('FAILED');
+    expect(runtime.requests).toHaveLength(1);
+    expect(events.items.at(-1)).toMatchObject({
+      type: 'run.failed',
+      payload: { code: 'SANTEXWELL_HARNESS_UNAVAILABLE', retryable: true },
+    });
+  });
+
   it('degrades one failed map worker to a partial finding with a visible gap', async () => {
     const flowEvidence = evidence('flow-partial', 'WORKSPACE_FLOW');
     const vaultEvidence = evidence('vault-found', 'SANTEXWELL');
@@ -380,6 +439,22 @@ describe('AgentOrchestrator', () => {
     expect(events.items.at(-1)?.type).toBe('run.cancelled');
   });
 
+  it('cancels active work and rejects new runs during graceful shutdown', async () => {
+    const runtime = new BlockingRuntime();
+    const events = new RecordingEventSink();
+    const orchestrator = createOrchestrator({ runtime, events });
+    const execution = orchestrator.execute('public-run-shutdown');
+    await runtime.started;
+
+    await orchestrator.shutdown();
+
+    await expect(execution).resolves.toEqual({ status: 'CANCELLED' });
+    expect(events.items.at(-1)).toMatchObject({
+      type: 'run.cancelled', payload: { reason: '服务正在安全关闭' },
+    });
+    await expect(orchestrator.execute('public-run-after-shutdown')).rejects.toThrow('安全关闭');
+  });
+
   it('keeps the total run deadline bounded through the commit phase', async () => {
     const flowEvidence = evidence('flow-commit-timeout', 'WORKSPACE_FLOW');
     const events = new RecordingEventSink();
@@ -413,6 +488,7 @@ function createOrchestrator(overrides: {
   resolver?: AgentEvidenceResolver;
   committer?: AgentOutputCommitter;
   loadContext?: (runId: string) => AgentRunExecutionContext | Promise<AgentRunExecutionContext>;
+  trustedSantexwellHarness?: () => { revision: string; items: readonly string[] } | null;
   timeouts?: { routerMs: number; workerMs: number; reducerMs: number; runMs: number; cancelMs: number };
 } = {}): AgentOrchestrator {
   let id = 0;
@@ -425,6 +501,10 @@ function createOrchestrator(overrides: {
     outputCommitter: overrides.committer ?? recordingCommitter(),
     configuredMaxConcurrency: 3,
     trustedHarness: ['只读回答，不得执行任何写入。'],
+    trustedSantexwellHarness: overrides.trustedSantexwellHarness ?? (() => ({
+      revision: 'test-harness-r1',
+      items: ['测试用 Santexwell 只读 QA Harness。'],
+    })),
     createId: () => `generated-${++id}`,
     ...(overrides.timeouts ? { timeouts: overrides.timeouts } : {}),
   });
@@ -745,6 +825,28 @@ function compositeDecision(overrides: Partial<RouteDecisionV1> = {}): RouteDecis
     maxConcurrency: 2,
     userFacingPlan: '先查工作区流程，再补充知识库，最后汇总。',
     ...overrides,
+  };
+}
+
+function vaultFocusedDecision(): RouteDecisionV1 {
+  return {
+    ...focusedDecision(),
+    intent: '查询 Santexwell 知识库',
+    contextAssessment: '问题限定在 Santexwell 知识库。',
+    sources: {
+      workspaceFlows: false,
+      workspaceDocuments: false,
+      sessionAttachments: false,
+      santexwell: true,
+    },
+    tasks: [{
+      id: 'vault', kind: 'SANTEXWELL', objective: '查询知识库', dependsOn: [], priority: 1,
+    }],
+    budget: {
+      maxWorkers: 1, maxConcurrency: 1, maxWorkspaceCandidates: 0, maxFlowHops: 0,
+      maxVaultClusters: 1, maxVaultDigests: 2, allowRaw: false, useReducer: false,
+    },
+    userFacingPlan: '查询 Santexwell 知识库后直接回答。',
   };
 }
 

@@ -5,10 +5,12 @@ import type { ConversationRouteRuntime } from '../conversations/routes';
 import { AgentRunEventStore, RunEventBroker } from '../conversations/events';
 import { getRunById } from '../conversations/repository';
 import { loadAgentRunExecutionContext } from './execution-context';
+import { DeterministicFakeAgentRuntimeClient } from './fake-runtime-client';
 import {
   AgentOrchestrator,
   type AgentEvidenceResolver,
   type AgentEvidenceRetriever,
+  type AgentOrchestratorOptions,
 } from './orchestrator';
 import { DatabaseAgentOutputCommitter } from './output-committer';
 import { HttpAgentRuntimeClient, type AgentRuntimeClient } from './runtime-client';
@@ -23,6 +25,7 @@ export interface CreateAgentRuntimeAssemblyOptions {
   config: AppConfig;
   knowledgeAdapters?: AgentKnowledgeAdapters;
   runtime?: AgentRuntimeClient;
+  trustedSantexwellHarness?: AgentOrchestratorOptions['trustedSantexwellHarness'];
 }
 
 export function createAgentRuntimeAssembly(
@@ -46,6 +49,9 @@ export function createAgentRuntimeAssembly(
       '所有网页用户只读；不得写回工作区、知识库、文件系统或外部系统。',
       '只能引用服务端已验证证据；不得泄露本机路径、凭据或隐藏推理。',
     ],
+    ...(options.trustedSantexwellHarness
+      ? { trustedSantexwellHarness: options.trustedSantexwellHarness }
+      : {}),
     timeouts: {
       routerMs: options.config.routerTimeoutMs,
       workerMs: options.config.workerTimeoutMs,
@@ -63,6 +69,7 @@ export function createAgentRuntimeAssembly(
   return {
     broker,
     scheduleRun,
+    close: () => orchestrator.shutdown(),
     async cancelRun(runId, reason) {
       if (orchestrator.isActive(runId)) {
         await orchestrator.cancel(runId, reason);
@@ -109,9 +116,8 @@ export function createUnavailableKnowledgeAdapters(): AgentKnowledgeAdapters {
 }
 
 function createRuntimeClient(config: AppConfig): AgentRuntimeClient {
-  if (config.runtimeMode !== 'bridge' || !config.bridgeToken) {
-    throw new Error('Production Agent assembly requires bridge runtime mode and token');
-  }
+  if (config.runtimeMode === 'fake') return new DeterministicFakeAgentRuntimeClient();
+  if (!config.bridgeToken) throw new Error('Bridge runtime mode requires a token');
   return new HttpAgentRuntimeClient({
     baseUrl: config.bridgeUrl,
     token: config.bridgeToken,

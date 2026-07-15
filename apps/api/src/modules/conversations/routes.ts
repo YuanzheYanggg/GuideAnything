@@ -25,6 +25,7 @@ export interface ConversationRouteRuntime {
   scheduleRun: (runId: string) => Promise<void>;
   cancelRun: (runId: string, reason?: string) => Promise<void>;
   steerRun: (runId: string, planVersion: number, instruction: string) => Promise<void>;
+  close?: () => Promise<void>;
   onScheduleError?: (runId: string, error: unknown) => void;
 }
 

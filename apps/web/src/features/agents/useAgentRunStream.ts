@@ -119,9 +119,9 @@ export function useAgentRunStream(
 ) {
   const [state, dispatch] = useReducer(agentRunReducer, undefined, createAgentRunState);
   useEffect(() => {
+    dispatch({ type: 'viewer.reset' });
     if (!eventsPath) return;
     const controller = new AbortController();
-    dispatch({ type: 'viewer.reset' });
     dispatch({ type: 'viewer.connecting' });
     void (async () => {
       try {

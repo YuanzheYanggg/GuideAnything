@@ -6,8 +6,9 @@ import { seedDatabase } from './db/seed';
 import { upgradeWorkspaceV1 } from './db/workspace-upgrade';
 import {
   createAgentRuntimeAssembly,
-  createUnavailableKnowledgeAdapters,
 } from './modules/agents/assembly';
+import { createDatabaseAgentKnowledgeAdapters } from './modules/agents/knowledge-adapters';
+import { getTrustedSantexwellHarness } from './modules/agents/trusted-harness';
 import { reconcileGuideFlowSnapshots } from './modules/knowledge/flow-indexer';
 import { indexSantexwellVault } from './modules/knowledge/vault-indexer';
 
@@ -24,7 +25,10 @@ try {
 const agentRuntime = createAgentRuntimeAssembly({
   database,
   config,
-  knowledgeAdapters: createUnavailableKnowledgeAdapters(),
+  knowledgeAdapters: createDatabaseAgentKnowledgeAdapters({ database }),
+  trustedSantexwellHarness: config.santexwellVaultPath
+    ? () => getTrustedSantexwellHarness(config.santexwellVaultPath!)
+    : () => null,
 });
 
 const app = await buildApp({
@@ -39,6 +43,7 @@ const app = await buildApp({
 let reconcileTimer: ReturnType<typeof setInterval> | null = null;
 const close = async () => {
   if (reconcileTimer) clearInterval(reconcileTimer);
+  await agentRuntime.close?.();
   await app.close();
   database.close();
 };
