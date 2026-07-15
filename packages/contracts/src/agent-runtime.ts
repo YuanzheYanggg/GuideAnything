@@ -844,6 +844,11 @@ export const BridgeEventV1Schema = z.discriminatedUnion('type', [
   }).strict(),
   z.object({
     ...BridgeEventBaseV1Shape,
+    type: z.literal('STRUCTURED_OUTPUT_DELTA'),
+    payload: z.object({ delta: z.string().min(1).max(50_000) }).strict(),
+  }).strict(),
+  z.object({
+    ...BridgeEventBaseV1Shape,
     type: z.literal('ROUTE_DECISION'),
     payload: z.object({ decision: RouteDecisionV1Schema }).strict(),
   }).strict(),

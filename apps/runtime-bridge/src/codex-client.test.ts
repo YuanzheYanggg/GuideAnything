@@ -408,8 +408,7 @@ describe('CodexRuntime thread and turn safety', () => {
       environments: [],
       dynamicTools: [],
       selectedCapabilityRoots: [],
-      ephemeral: false,
-      historyMode: 'legacy',
+      ephemeral: true,
       experimentalRawEvents: false,
     });
     const turnStart = rpc.requests.find(({ method }) => method === 'turn/start')?.params as Record<string, unknown>;
@@ -477,10 +476,12 @@ describe('CodexRuntime thread and turn safety', () => {
     routed.rpc.emit('turn/completed', {
       threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] },
     });
-    expect(await collectEvents(routeHandle)).toEqual(expect.arrayContaining([
+    const routeEvents = await collectEvents(routeHandle);
+    expect(routeEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'ROUTE_DECISION', payload: { decision: VALID_ROUTE_DECISION } }),
       expect.objectContaining({ type: 'COMPLETED' }),
     ]));
+    expect(routeEvents.some(({ type }) => type === 'STRUCTURED_OUTPUT_DELTA')).toBe(false);
 
     const worker = await initializedRuntime();
     const findingHandle = await startHandle(
@@ -500,10 +501,12 @@ describe('CodexRuntime thread and turn safety', () => {
     worker.rpc.emit('turn/completed', {
       threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] },
     });
-    expect(await collectEvents(findingHandle)).toEqual(expect.arrayContaining([
+    const findingEvents = await collectEvents(findingHandle);
+    expect(findingEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'TASK_FINDING', payload: { finding: VALID_TASK_FINDING } }),
       expect.objectContaining({ type: 'COMPLETED' }),
     ]));
+    expect(findingEvents.some(({ type }) => type === 'STRUCTURED_OUTPUT_DELTA')).toBe(false);
   });
 
   it('rejects a valid answer payload when a route decision was requested', async () => {
@@ -556,7 +559,27 @@ describe('CodexRuntime thread and turn safety', () => {
 });
 
 describe('CodexRuntime event projection and fail-closed behavior', () => {
-  it('streams phase-less/commentary text provisionally and commits only one validated final answer', async () => {
+  it('keeps emitted event sequences contiguous when a final-answer delta is invalid', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const handle = await startHandle(runtime, rpc, runtimeConfig);
+    rpc.emit('item/started', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'final-item', type: 'agentMessage', text: '', phase: 'final_answer' },
+    });
+    rpc.emit('item/agentMessage/delta', {
+      threadId: 'thread-1', turnId: 'turn-1', itemId: 'final-item', delta: 'x'.repeat(50_001),
+    });
+
+    const events = await collectEvents(handle);
+    expect(events.map(({ type }) => type)).toEqual(['THREAD_BOUND', 'FAILED']);
+    expect(events.map(({ sequence }) => sequence)).toEqual([1, 2]);
+    expect(events[1]).toMatchObject({
+      payload: { code: 'STRUCTURED_OUTPUT_DELTA_INVALID', retryable: false },
+    });
+  });
+
+  it('keeps commentary separate and streams only owned final-answer JSON deltas in sequence', async () => {
     const { runtime, rpc, runtimeConfig } = await initializedRuntime();
     const handle = await startHandle(runtime, rpc, runtimeConfig);
 
@@ -575,13 +598,20 @@ describe('CodexRuntime event projection and fail-closed behavior', () => {
 
     const events = await collectEvents(handle);
     expect(events.map(({ type }) => type)).toEqual([
-      'THREAD_BOUND', 'COMMENTARY', 'FINAL_ANSWER', 'COMPLETED',
+      'THREAD_BOUND', 'COMMENTARY', 'STRUCTURED_OUTPUT_DELTA', 'FINAL_ANSWER', 'COMPLETED',
     ]);
-    expect(events.map(({ sequence }) => sequence)).toEqual([1, 2, 3, 4]);
+    expect(events.map(({ sequence }) => sequence)).toEqual([1, 2, 3, 4, 5]);
+    expect(events.every(({ requestId, runId }) => requestId === 'request-1' && runId === 'run-1')).toBe(true);
     expect(events[1]).toMatchObject({ payload: { text: '正在检查流程' } });
-    expect(events[2]).toMatchObject({ payload: { answer: VALID_ANSWER } });
+    expect(events[2]).toMatchObject({
+      payload: { delta: JSON.stringify(VALID_ANSWER).slice(0, 10) },
+    });
+    expect(events[3]).toMatchObject({ payload: { answer: VALID_ANSWER } });
     expect(events.filter(({ type }) => type === 'COMMENTARY')).toEqual([
       expect.objectContaining({ payload: { text: '正在检查流程' } }),
+    ]);
+    expect(events.filter(({ type }) => type === 'STRUCTURED_OUTPUT_DELTA')).toEqual([
+      expect.objectContaining({ payload: { delta: JSON.stringify(VALID_ANSWER).slice(0, 10) } }),
     ]);
   });
 
@@ -611,16 +641,19 @@ describe('CodexRuntime event projection and fail-closed behavior', () => {
     });
 
     const events = await collectEvents(handle);
-    expect(events.map(({ type }) => type)).toEqual(['THREAD_BOUND', 'FINAL_ANSWER', 'COMPLETED']);
-    expect(events[1]).toMatchObject({
+    expect(events.map(({ type }) => type)).toEqual([
+      'THREAD_BOUND', 'STRUCTURED_OUTPUT_DELTA', 'FINAL_ANSWER', 'COMPLETED',
+    ]);
+    const finalEvent = events.find(({ type }) => type === 'FINAL_ANSWER');
+    expect(finalEvent).toMatchObject({
       payload: {
         answer: {
           evidence: [{ locator: { kind: 'SANTEXWELL', documentId: 'document-1' } }],
         },
       },
     });
-    expect(JSON.stringify(events[1])).not.toContain('fragmentId');
-    expect(JSON.stringify(events[1])).not.toContain('"heading"');
+    expect(JSON.stringify(finalEvent)).not.toContain('fragmentId');
+    expect(JSON.stringify(finalEvent)).not.toContain('"heading"');
   });
 
   it.each([
@@ -779,7 +812,9 @@ describe('CodexRuntime event projection and fail-closed behavior', () => {
     });
 
     const events = await collectEvents(runHandle);
-    expect(events.map(({ type }) => type)).toEqual(['THREAD_BOUND', 'FINAL_ANSWER', 'COMPLETED']);
+    expect(events.map(({ type }) => type)).toEqual([
+      'THREAD_BOUND', 'STRUCTURED_OUTPUT_DELTA', 'FINAL_ANSWER', 'COMPLETED',
+    ]);
     expect(JSON.stringify(events)).not.toContain('secret');
     expect(runtime.getHealth()).toMatchObject({
       status: 'READY', counters: { unexpectedCapabilities: 0 },

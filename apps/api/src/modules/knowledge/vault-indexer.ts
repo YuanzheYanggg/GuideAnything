@@ -102,13 +102,74 @@ export async function readTrustedPromptHarness(
   const revision = sha256(Buffer.from(
     files.map((file) => `${file.name}\u0000${file.checksum}`).sort().join('\n'),
   ));
-  const bundle = { revision, files, content, lineCount: lines };
-  lastGoodHarness.set(resolve(root), bundle);
-  return bundle;
+  return { revision, files, content, lineCount: lines };
 }
 
 export function getLastGoodPromptHarness(root: string): PromptHarnessBundle | null {
   return lastGoodHarness.get(resolve(root)) ?? null;
+}
+
+export type VaultIndexFunction = (
+  database: DatabaseSync,
+  root: string,
+  signal: AbortSignal,
+) => Promise<IndexSummary>;
+
+export interface SantexwellVaultRefreshController {
+  refresh(): Promise<IndexSummary>;
+  close(): Promise<void>;
+}
+
+export function createSantexwellVaultRefreshController(options: {
+  database: DatabaseSync;
+  root: string;
+  timeoutMs: number;
+  indexVault?: VaultIndexFunction;
+}): SantexwellVaultRefreshController {
+  const indexVault = options.indexVault ?? indexSantexwellVault;
+  let closed = false;
+  let active: {
+    abortController: AbortController;
+    promise: Promise<IndexSummary>;
+  } | null = null;
+
+  return {
+    refresh(): Promise<IndexSummary> {
+      if (closed) return Promise.resolve(skippedRefreshSummary('REFRESH_CLOSED'));
+      if (active) return Promise.resolve(skippedRefreshSummary('SCAN_ALREADY_RUNNING'));
+
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => abortController.abort(), options.timeoutMs);
+      timeout.unref();
+      const promise = Promise.resolve()
+        .then(() => indexVault(options.database, options.root, abortController.signal))
+        .finally(() => {
+          clearTimeout(timeout);
+          if (active?.promise === promise) active = null;
+        });
+      active = { abortController, promise };
+      return promise;
+    },
+
+    async close(): Promise<void> {
+      closed = true;
+      const current = active;
+      if (!current) return;
+      current.abortController.abort();
+      await current.promise.catch(() => undefined);
+    },
+  };
+}
+
+function skippedRefreshSummary(reason: string): IndexSummary {
+  return {
+    status: 'SKIPPED',
+    revision: null,
+    indexedDocuments: 0,
+    indexedFragments: 0,
+    changedDocuments: 0,
+    reasonCodes: [reason],
+  };
 }
 
 export async function indexSantexwellVault(
@@ -224,6 +285,7 @@ async function performIndex(database: DatabaseSync, root: string, signal: AbortS
       harnessFileCount: harness.files.length,
       indexedFragments,
     }).changedDocuments;
+    lastGoodHarness.set(resolve(root), harness);
   } catch (error) {
     const reason = safeReason(error, 'DOCUMENT_APPLY_FAILED');
     const status = markVaultScanFailure(database, [reason], {

@@ -644,6 +644,7 @@ function ftsCandidates(database: DatabaseSync, query: string, scope: KnowledgeSe
   const kinds = databaseSourceKinds(scope.sourceKinds);
   if (kinds.length === 0) return [];
   const placeholders = kinds.map(() => '?').join(', ');
+  const scoped = sqlCandidateScope(scope);
   return database.prepare(
     `SELECT d.id, d.source_id, d.relative_locator, d.title, d.checksum, d.revision,
             d.parse_status, d.metadata_json, d.created_at, d.updated_at,
@@ -656,8 +657,9 @@ function ftsCandidates(database: DatabaseSync, query: string, scope: KnowledgeSe
      WHERE knowledge_fragment_search MATCH ?
        AND d.parse_status = 'READY' AND s.status IN ('READY', 'STALE')
        AND s.kind IN (${placeholders})
+       ${scoped.clause}
      ORDER BY rank ASC, d.id ASC LIMIT ?`,
-  ).all(match, ...kinds, limit) as unknown as SearchRow[];
+  ).all(match, ...kinds, ...scoped.parameters, limit) as unknown as SearchRow[];
 }
 
 function singleCharacterCandidates(
@@ -669,6 +671,7 @@ function singleCharacterCandidates(
   const kinds = databaseSourceKinds(scope.sourceKinds);
   if (kinds.length === 0) return [];
   const placeholders = kinds.map(() => '?').join(', ');
+  const scoped = sqlCandidateScope(scope);
   const rows = database.prepare(
     `SELECT d.id, d.source_id, d.relative_locator, d.title, d.checksum, d.revision,
             d.parse_status, d.metadata_json, d.created_at, d.updated_at,
@@ -679,14 +682,137 @@ function singleCharacterCandidates(
      JOIN knowledge_fragments f ON f.document_id = d.id AND f.ordinal = 0
      WHERE d.parse_status = 'READY' AND s.status IN ('READY', 'STALE')
        AND s.kind IN (${placeholders})
+       ${scoped.clause}
      ORDER BY d.updated_at DESC LIMIT 1000`,
-  ).all(...kinds) as unknown as SearchRow[];
+  ).all(...kinds, ...scoped.parameters) as unknown as SearchRow[];
   const normalized = normalizeKnowledgeText(query);
   return rows.filter((row) => {
     const metadata = parseMetadata(row.metadata_json);
     return normalizeKnowledgeText(row.title).startsWith(normalized)
       || (metadata.aliases ?? []).some((alias) => normalizeKnowledgeText(alias).startsWith(normalized));
   }).slice(0, limit * 2);
+}
+
+function sqlCandidateScope(scope: KnowledgeSearchScope): {
+  clause: string;
+  parameters: Array<string | number>;
+} {
+  const predicates: string[] = [];
+  const parameters: Array<string | number> = [];
+  if (scope.workspaceId !== undefined) {
+    predicates.push('s.workspace_id = ?');
+    parameters.push(scope.workspaceId);
+  }
+  if (scope.conversationId !== undefined) {
+    predicates.push('s.conversation_id = ?');
+    parameters.push(scope.conversationId);
+  }
+  appendJsonArrayPredicate(predicates, parameters, scope.pageTypes, "json_extract(d.metadata_json, '$.pageType')");
+  appendJsonArrayPredicate(predicates, parameters, scope.statuses, "json_extract(d.metadata_json, '$.status')");
+  appendOptionalJsonPredicate(predicates, parameters, scope.cluster, "json_extract(d.metadata_json, '$.sourceProfile.cluster')");
+  appendOptionalJsonPredicate(predicates, parameters, scope.bucket, "json_extract(d.metadata_json, '$.sourceProfile.bucket')");
+  appendOptionalJsonPredicate(predicates, parameters, scope.coverage, "json_extract(d.metadata_json, '$.sourceProfile.coverage')");
+  if (scope.minimumAttention !== undefined) {
+    predicates.push("COALESCE(json_extract(d.metadata_json, '$.sourceProfile.attention'), -1) >= ?");
+    parameters.push(scope.minimumAttention);
+  }
+
+  if (scope.userId) {
+    predicates.push(`(
+      s.kind NOT IN ('WORKSPACE_DOCUMENT', 'WORKSPACE_FLOW')
+      OR EXISTS (
+        SELECT 1
+        FROM workspaces AS authorized_workspace
+        JOIN workspace_members AS authorized_member
+          ON authorized_member.workspace_id = authorized_workspace.id
+         AND authorized_member.user_id = ?
+        WHERE authorized_workspace.id = s.workspace_id
+          AND authorized_workspace.status = 'ACTIVE'
+      )
+    )`);
+    parameters.push(scope.userId);
+    predicates.push(`(
+      s.kind <> 'WORKSPACE_FLOW'
+      OR EXISTS (
+        SELECT 1
+        FROM flow_knowledge_snapshots AS authorized_snapshot
+        JOIN guides AS authorized_guide ON authorized_guide.id = authorized_snapshot.guide_id
+        LEFT JOIN guide_collaborators AS authorized_collaborator
+          ON authorized_collaborator.guide_id = authorized_guide.id
+         AND authorized_collaborator.user_id = ?
+        WHERE authorized_snapshot.id = d.flow_snapshot_id
+          AND (
+            authorized_snapshot.origin_type = 'PUBLISHED'
+            OR authorized_guide.owner_id = ?
+            OR authorized_collaborator.user_id IS NOT NULL
+          )
+      )
+    )`);
+    parameters.push(scope.userId, scope.userId);
+  } else {
+    predicates.push("s.kind NOT IN ('WORKSPACE_DOCUMENT', 'WORKSPACE_FLOW')");
+  }
+
+  if (scope.userId && scope.conversationId) {
+    predicates.push(`(
+      s.kind <> 'SESSION_ATTACHMENT'
+      OR EXISTS (
+        SELECT 1
+        FROM conversations AS authorized_conversation
+        JOIN workspaces AS attachment_workspace
+          ON attachment_workspace.id = authorized_conversation.workspace_id
+         AND attachment_workspace.status = 'ACTIVE'
+        JOIN workspace_members AS attachment_member
+          ON attachment_member.workspace_id = authorized_conversation.workspace_id
+         AND attachment_member.user_id = authorized_conversation.owner_id
+        JOIN conversation_attachments AS authorized_attachment
+          ON authorized_attachment.conversation_id = authorized_conversation.id
+         AND authorized_attachment.owner_id = authorized_conversation.owner_id
+         AND authorized_attachment.source_id = s.id
+        WHERE authorized_conversation.id = ?
+          AND authorized_conversation.id = s.conversation_id
+          AND authorized_conversation.owner_id = ?
+          AND authorized_conversation.scope = 'WORKSPACE'
+          AND authorized_conversation.status = 'ACTIVE'
+          AND authorized_attachment.status = 'READY'
+          AND authorized_attachment.expires_at > ?
+      )
+    )`);
+    parameters.push(scope.conversationId, scope.userId, new Date().toISOString());
+  } else {
+    predicates.push("s.kind <> 'SESSION_ATTACHMENT'");
+  }
+
+  return {
+    clause: predicates.map((predicate) => `AND ${predicate}`).join('\n       '),
+    parameters,
+  };
+}
+
+function appendJsonArrayPredicate(
+  predicates: string[],
+  parameters: Array<string | number>,
+  values: readonly string[] | undefined,
+  expression: string,
+): void {
+  if (values === undefined) return;
+  if (values.length === 0) {
+    predicates.push('0');
+    return;
+  }
+  predicates.push(`${expression} IN (${values.map(() => '?').join(', ')})`);
+  parameters.push(...values);
+}
+
+function appendOptionalJsonPredicate(
+  predicates: string[],
+  parameters: Array<string | number>,
+  value: string | undefined,
+  expression: string,
+): void {
+  if (value === undefined) return;
+  predicates.push(`${expression} = ?`);
+  parameters.push(value);
 }
 
 function documentMatchesScope(database: DatabaseSync, row: SearchRow, scope: KnowledgeSearchScope): boolean {

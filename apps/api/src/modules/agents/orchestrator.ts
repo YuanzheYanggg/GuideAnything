@@ -26,6 +26,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 import { commitValidatedAnswer } from './validator';
+import { evaluateFastGate } from './fast-gate';
 import { buildPromptHarness } from './prompt-harness';
 import {
   assertDeepReviewTightens,
@@ -36,6 +37,7 @@ import {
 import type { AgentRuntimeClient } from './runtime-client';
 import { RuntimeClientError } from './runtime-client';
 import { enforceSchedulePolicy, SchedulePolicyError } from './scheduler';
+import { StructuredAnswerPreviewDecoder } from './structured-answer-preview';
 import {
   AgentInvocationError,
   runFinalAnswer,
@@ -384,39 +386,56 @@ export class AgentOrchestrator {
     this.#appendPlan(active, context, 'PROVISIONAL', 'route.started', {
       intent: conciseText(context.text, 2_000),
     });
-    const mediumDecision = await this.#invokeRoute(
-      active,
-      context,
-      'ROUTER',
-      'MEDIUM',
-      'medium-router',
-      this.#routerPrompt(context, 'ROUTER'),
-    );
-    assertCurrentPlan(active, context);
-
-    const needsDeepReview = requiresDeepRouterReview(mediumDecision, {
-      requestedVaultClusters: mediumDecision.budget.maxVaultClusters,
-      userRequestedComprehensive: userRequestsComprehensiveResearch(
-        `${context.text}\n${context.steeringInstruction ?? ''}`,
-      ),
-      crossStagePlan: mediumDecision.complexity.scopeBreadth >= 4,
+    const fastGate = evaluateFastGate({
+      text: context.text,
+      sources: context.sources,
+      ...(context.selectedContext ? { selectedContext: context.selectedContext } : {}),
     });
-    const finalDecision = needsDeepReview
-      ? await this.#invokeRoute(
+    let scheduled: RouteDecisionV1;
+    if (fastGate.kind === 'DIRECT') {
+      scheduled = fastGate.decision;
+    } else {
+      if (fastGate.kind !== 'ROUTER_REQUIRED') {
+        throw new AgentOrchestrationError(
+          'FAST_GATE_CONTEXT_UNAVAILABLE',
+          '当前请求缺少可验证的快速路径上下文。',
+          false,
+        );
+      }
+      const mediumDecision = await this.#invokeRoute(
+        active,
+        context,
+        'ROUTER',
+        'MEDIUM',
+        'medium-router',
+        this.#routerPrompt(context, 'ROUTER'),
+      );
+      assertCurrentPlan(active, context);
+
+      const needsDeepReview = requiresDeepRouterReview(mediumDecision, {
+        requestedVaultClusters: mediumDecision.budget.maxVaultClusters,
+        userRequestedComprehensive: userRequestsComprehensiveResearch(
+          `${context.text}\n${context.steeringInstruction ?? ''}`,
+        ),
+        crossStagePlan: mediumDecision.complexity.scopeBreadth >= 4,
+      });
+      const finalDecision = needsDeepReview
+        ? await this.#invokeRoute(
           active,
           context,
           'DEEP_ROUTER',
           'HIGH',
           'deep-router',
           this.#routerPrompt(context, 'DEEP_ROUTER', mediumDecision),
-        )
-      : mediumDecision;
-    if (needsDeepReview) assertDeepReviewTightens(mediumDecision, finalDecision);
-    const scheduled = enforceSchedulePolicy(finalDecision, {
-      allowedSources: context.sources,
-      allowRawApproved: needsDeepReview,
-      configuredMaxConcurrency: this.#configuredMaxConcurrency,
-    });
+          )
+        : mediumDecision;
+      if (needsDeepReview) assertDeepReviewTightens(mediumDecision, finalDecision);
+      scheduled = enforceSchedulePolicy(finalDecision, {
+        allowedSources: context.sources,
+        allowRawApproved: needsDeepReview,
+        configuredMaxConcurrency: this.#configuredMaxConcurrency,
+      });
+    }
     assertAtMostThreeWorkers(scheduled);
     const publicPlan = toPublicPlan(scheduled);
     this.#appendPlan(active, context, 'PROVISIONAL', 'route.completed', {
@@ -472,6 +491,8 @@ export class AgentOrchestrator {
     });
     let remainingWorkspace = decision.budget.maxWorkspaceCandidates;
     let remainingVault = decision.budget.maxVaultDigests;
+    let remainingWorkspaceTasks = ordered.filter((task) => task.kind !== 'SANTEXWELL').length;
+    let remainingVaultTasks = ordered.length - remainingWorkspaceTasks;
     const evidenceByTaskId = new Map<string, ValidatedEvidenceV1[]>();
     const globallySeen = new Map<string, ValidatedEvidenceV1>();
     const skippedTaskIds = new Set<string>();
@@ -479,6 +500,9 @@ export class AgentOrchestrator {
     for (const task of ordered) {
       assertCurrentPlan(active, context);
       const isVault = task.kind === 'SANTEXWELL';
+      const remainingTasks = isVault ? remainingVaultTasks : remainingWorkspaceTasks;
+      if (isVault) remainingVaultTasks -= 1;
+      else remainingWorkspaceTasks -= 1;
       if (isVault && workspaceSufficient === undefined && this.#retriever.isWorkspaceEvidenceSufficient) {
         const workspaceEvidence = [...globallySeen.values()].filter((item) => item.source !== 'SANTEXWELL');
         workspaceSufficient = workspaceEvidence.length > 0 && await runBounded(
@@ -498,7 +522,10 @@ export class AgentOrchestrator {
         skippedTaskIds.add(task.id);
         continue;
       }
-      const maxCandidates = isVault ? remainingVault : remainingWorkspace;
+      const remainingCandidates = isVault ? remainingVault : remainingWorkspace;
+      const maxCandidates = remainingTasks === 0
+        ? 0
+        : Math.ceil(remainingCandidates / remainingTasks);
       const raw = maxCandidates === 0
         ? []
         : await runBounded(
@@ -569,9 +596,6 @@ export class AgentOrchestrator {
       this.#workerPrompt(context, decision, worker, candidates, 'FOCUSED_WORKER'),
     );
     const canonical = canonicalizeAnswer(answer, candidates);
-    this.#appendPlan(active, context, 'PROVISIONAL', 'answer.draft.delta', {
-      delta: canonical.conclusion,
-    });
     if (worker) {
       this.#appendPlan(active, context, 'PROVISIONAL', 'task.completed', {
         taskId: worker.id,
@@ -654,9 +678,6 @@ export class AgentOrchestrator {
       this.#reducerPrompt(context, decision, findings),
     );
     const answer = canonicalizeAnswer(untrustedAnswer, reducerCandidates);
-    this.#appendPlan(active, context, 'PROVISIONAL', 'answer.draft.delta', {
-      delta: answer.conclusion,
-    });
     return { answer, allowedFlowEvidence: reducerCandidates };
   }
 
@@ -765,7 +786,7 @@ export class AgentOrchestrator {
     evidence: readonly ValidatedEvidenceV1[],
     role: 'FOCUSED_WORKER' | 'DEEP_WORKER',
   ): string {
-    const santexwellHarness = this.#workerNeedsSantexwellHarness(context, task, evidence)
+    const santexwellHarness = this.#workerNeedsSantexwellHarness(context, decision, task, evidence)
       ? this.#loadSantexwellHarness(context)
       : [];
     return buildPromptHarness({
@@ -786,10 +807,11 @@ export class AgentOrchestrator {
 
   #workerNeedsSantexwellHarness(
     context: AgentRunExecutionContext,
+    decision: RouteDecisionV1,
     task: RouteTaskV1 | undefined,
     evidence: readonly ValidatedEvidenceV1[],
   ): boolean {
-    return context.scope === 'GLOBAL_SANTEXWELL'
+    return (context.scope === 'GLOBAL_SANTEXWELL' && decision.sources.santexwell)
       || task?.kind === 'SANTEXWELL'
       || evidence.some((item) => item.source === 'SANTEXWELL');
   }
@@ -919,6 +941,8 @@ export class AgentOrchestrator {
     prompt: string,
   ): Promise<AgentInternalAnswerV1> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      const preview = new StructuredAnswerPreviewDecoder();
+      let emittedDraft = false;
       const request = this.#request(
         active,
         context,
@@ -929,8 +953,20 @@ export class AgentOrchestrator {
         attempt === 0 ? prompt : repairPrompt(prompt),
       );
       try {
-        return await runBounded(
-          (signal) => runFinalAnswer(this.#runtime, request, signal),
+        const answer = await runBounded(
+          (signal) => runFinalAnswer(this.#runtime, request, signal, (rawDelta) => {
+            let publicDelta: string;
+            try {
+              publicDelta = preview.push(rawDelta);
+            } catch {
+              throw new AgentInvocationError('BRIDGE_EVENT_INVALID', true);
+            }
+            if (!publicDelta) return;
+            this.#appendPlan(active, context, 'PROVISIONAL', 'answer.draft.delta', {
+              delta: publicDelta,
+            });
+            emittedDraft = true;
+          }),
           active.planController.signal,
           role === 'REDUCER' ? this.#timeouts.reducerMs : this.#timeouts.workerMs,
           new AgentOrchestrationError(
@@ -939,11 +975,21 @@ export class AgentOrchestrator {
             true,
           ),
         );
-      } catch (error) {
-        if (isPhaseTimeout(error) || (attempt === 0 && isRepairableTypedOutput(error))) {
-          await this.#cancelChild(request.runId);
+        let remaining: string;
+        try {
+          remaining = preview.finalize(answer.conclusion);
+        } catch {
+          throw new AgentInvocationError('BRIDGE_EVENT_INVALID', true);
         }
-        if (attempt === 0 && isRepairableTypedOutput(error)) continue;
+        if (remaining) {
+          this.#appendPlan(active, context, 'PROVISIONAL', 'answer.draft.delta', {
+            delta: remaining,
+          });
+        }
+        return answer;
+      } catch (error) {
+        await this.#cancelChild(request.runId);
+        if (attempt === 0 && !emittedDraft && isRepairableTypedOutput(error)) continue;
         throw error;
       } finally {
         active.childIds.delete(request.runId);

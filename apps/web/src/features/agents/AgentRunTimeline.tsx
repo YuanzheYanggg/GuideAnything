@@ -19,7 +19,7 @@ export function AgentRunTimeline({ state }: { state: AgentRunViewState }) {
     {state.userFacingPlan ? <p className="agent-public-plan">{state.userFacingPlan}</p> : null}
     {state.tasks.length > 0 ? <ol className="agent-task-list">
       {state.tasks.map((task) => <TaskRow task={task} key={task.id} />)}
-    </ol> : <div className="agent-routing-state"><CircleNotch className="spin" size={17} />正在判断问题范围与最小检索路径…</div>}
+    </ol> : <div className="agent-routing-state"><CircleNotch className="spin" size={17} />{state.route === 'DIRECT' ? '正在生成简短回答…' : '正在判断问题范围与最小检索路径…'}</div>}
     {state.draft ? <div className="agent-draft" aria-label="生成中的草稿"><span>生成中的回答</span><p>{state.draft}</p></div> : null}
     {state.error ? <p className="agent-run-error" role="alert"><Warning size={16} />{state.error}</p> : null}
     <span className="sr-only" aria-live="polite">{phaseTitle(state.status)}</span>

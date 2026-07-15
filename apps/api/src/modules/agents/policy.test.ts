@@ -32,6 +32,18 @@ describe('agent orchestration policy', () => {
       kind: 'SELECTED_CONTEXT',
       selectedContext: { kind: 'FLOW_NODE', snapshotId: 'snapshot-1', nodeId: 'approve' },
     });
+
+    expect(evaluateFastGate({
+      text: '你好！',
+      sources: sources({ workspaceFlows: true, workspaceDocuments: true, santexwell: true }),
+    })).toMatchObject({
+      kind: 'DIRECT',
+      decision: { route: 'DIRECT', tasks: [], sources: sources() },
+    });
+    expect(evaluateFastGate({
+      text: '你好！',
+      sources: sources({ sessionAttachments: true }),
+    })).toEqual({ kind: 'ROUTER_REQUIRED' });
   });
 
   it('uses exact cache only when the server-provided request fingerprint matches', () => {

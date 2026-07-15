@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -13,6 +13,7 @@ import {
 } from '@phosphor-icons/react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 
+import { safeInternalPath } from '../../lib/navigation';
 import { AgentConversationPanel } from '../agents/AgentConversationPanel';
 import type { AgentApi } from '../agents/types';
 import { SanitizedMarkdown } from '../markdown/SanitizedMarkdown';
@@ -41,12 +42,13 @@ export function SantexwellKnowledgePage({ api, agentApi }: { api: KnowledgeApi; 
   const [results, setResults] = useState<KnowledgeSearchHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [searchError, setSearchError] = useState('');
 
   useEffect(() => {
     let active = true;
     setLoading(true);
-    setError('');
+    setLoadError('');
     const load = documentId
       ? Promise.all([api.status(), api.readDocument(documentId)]).then(([nextHealth, nextDocument]) => {
         if (active) {
@@ -62,7 +64,7 @@ export function SantexwellKnowledgePage({ api, agentApi }: { api: KnowledgeApi; 
         }
       });
     load.catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : '知识库载入失败');
+      if (active) setLoadError(reason instanceof Error ? reason.message : '知识库载入失败');
     }).finally(() => {
       if (active) setLoading(false);
     });
@@ -72,18 +74,32 @@ export function SantexwellKnowledgePage({ api, agentApi }: { api: KnowledgeApi; 
   useEffect(() => {
     if (documentId) return;
     const initialQuery = searchParams.get('q')?.trim();
-    if (!initialQuery) return;
+    if (!initialQuery) {
+      setSearchError('');
+      setResults([]);
+      return;
+    }
+    if (!health || health.status === 'UNAVAILABLE') {
+      setSearching(false);
+      setSearchError('');
+      setResults([]);
+      return;
+    }
     let active = true;
     setSearching(true);
+    setSearchError('');
     api.search(initialQuery).then((items) => {
       if (active) setResults(items);
     }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : '搜索失败');
+      if (active) {
+        setResults([]);
+        setSearchError(reason instanceof Error ? reason.message : '搜索失败');
+      }
     }).finally(() => {
       if (active) setSearching(false);
     });
     return () => { active = false; };
-  }, [api, documentId, searchParams]);
+  }, [api, documentId, health, searchParams]);
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
@@ -93,8 +109,17 @@ export function SantexwellKnowledgePage({ api, agentApi }: { api: KnowledgeApi; 
   };
 
   if (loading) return <div className="workspace-loading" role="status"><span className="spinner" /><span>正在连接知识索引…</span></div>;
-  if (error) return <section className="page-stack"><p className="workspace-error" role="alert">{error}</p></section>;
+  if (loadError) return <section className="page-stack"><p className="workspace-error" role="alert">{loadError}</p></section>;
   if (!health) return null;
+
+  if (searchParams.has('conversation') && health.status === 'UNAVAILABLE') {
+    return <section className="knowledge-chat-page page-stack">
+      <header className="page-heading"><div><span className="page-kicker">SANTEXWELL QA</span><h1>知识问答</h1></div><Link className="knowledge-back-link" to="/knowledge/santexwell"><ArrowLeft size={17} />返回知识门户</Link></header>
+      <div className="knowledge-status-banner is-unavailable" role="alert">
+        <WarningCircle size={22} /><div><strong>知识问答暂不可用</strong><span>Vault 索引恢复后即可继续只读问答。</span></div>
+      </div>
+    </section>;
+  }
 
   if (searchParams.has('conversation') && agentApi) {
     return <section className="knowledge-chat-page page-stack">
@@ -104,7 +129,11 @@ export function SantexwellKnowledgePage({ api, agentApi }: { api: KnowledgeApi; 
   }
 
   if (document) {
-    return <KnowledgeReader document={document} fragmentId={searchParams.get('fragment')} />;
+    return <KnowledgeReader
+      document={document}
+      fragmentId={searchParams.get('fragment')}
+      returnTo={safeInternalPath(searchParams.get('returnTo'))}
+    />;
   }
 
   const unavailable = health.status === 'UNAVAILABLE';
@@ -136,7 +165,7 @@ export function SantexwellKnowledgePage({ api, agentApi }: { api: KnowledgeApi; 
       <WarningCircle size={22} /><div><strong>正在使用最近一次可用索引</strong><span>后台更新未完成，引用打开时仍会重新验证。</span></div>
     </div> : null}
 
-    {searchParams.get('q') ? <SearchResults query={searchParams.get('q')!} items={results} searching={searching} /> : <>
+    {searchParams.get('q') ? <SearchResults query={searchParams.get('q')!} items={results} searching={searching} error={searchError} /> : <>
       <section aria-labelledby="knowledge-clusters-heading">
         <div className="section-title"><div><span className="page-kicker">KNOWLEDGE CLUSTERS</span><h2 id="knowledge-clusters-heading">知识集群</h2></div></div>
         <div className="knowledge-cluster-grid">
@@ -162,7 +191,9 @@ export function SantexwellKnowledgePage({ api, agentApi }: { api: KnowledgeApi; 
           <span className="page-kicker">READ-ONLY QA</span>
           <h2>带着问题进入知识库</h2>
           <p>Agent 会先判断问题范围。聚焦问题只读取最相关页面；复杂问题才拆分任务并汇总。</p>
-          <Link to="/knowledge/santexwell?conversation=new">开始新的问答 <ArrowRight size={17} /></Link>
+          {unavailable
+            ? <span aria-disabled="true">知识问答暂不可用</span>
+            : <Link to="/knowledge/santexwell?conversation=new">开始新的问答 <ArrowRight size={17} /></Link>}
           <small><ShieldCheck size={15} /> 只读访问 · 证据可定位 · 不写回 Vault</small>
         </aside>
       </div>
@@ -190,24 +221,38 @@ function ClusterCard({ cluster }: { cluster: KnowledgeOverview['clusters'][numbe
   </article>;
 }
 
-function SearchResults({ query, items, searching }: { query: string; items: KnowledgeSearchHit[]; searching: boolean }) {
+function SearchResults({ query, items, searching, error }: { query: string; items: KnowledgeSearchHit[]; searching: boolean; error: string }) {
   return <section className="knowledge-results" aria-labelledby="knowledge-results-heading">
     <div className="section-title"><div><span className="page-kicker">SEARCH RESULTS</span><h2 id="knowledge-results-heading">“{query}”的结果</h2></div><Link className="text-link" to="/knowledge/santexwell">返回知识首页</Link></div>
-    {searching ? <div className="workspace-loading"><span className="spinner" /><span>正在定位相关知识…</span></div> : items.length === 0 ? <div className="workspace-empty"><strong>没有找到可验证内容</strong><span>尝试使用更具体的术语或流程节点名称。</span></div> : <div className="knowledge-result-list">
+    {error ? <p className="workspace-error" role="alert">{error}</p> : null}
+    {searching ? <div className="workspace-loading"><span className="spinner" /><span>正在定位相关知识…</span></div> : !error && items.length === 0 ? <div className="workspace-empty"><strong>没有找到可验证内容</strong><span>尝试使用更具体的术语或流程节点名称。</span></div> : !error ? <div className="knowledge-result-list">
       {items.map((item) => <Link key={item.fragmentId} className="knowledge-result-card" to={item.href}>
         <div><span className={`knowledge-evidence-pill is-${item.evidenceRole.toLowerCase()}`}>{evidenceLabel(item.evidenceRole)}</span><span>{item.pageType ?? 'page'}</span></div>
         <h3>{item.title}{item.heading ? <small> / {item.heading}</small> : null}</h3>
         <p>{item.excerpt}</p>
         <span className="knowledge-open-label">打开证据 <ArrowRight size={16} /></span>
       </Link>)}
-    </div>}
+    </div> : null}
   </section>;
 }
 
-function KnowledgeReader({ document, fragmentId }: { document: KnowledgeDocument; fragmentId: string | null }) {
+function KnowledgeReader({ document, fragmentId, returnTo }: { document: KnowledgeDocument; fragmentId: string | null; returnTo: string | null }) {
+  const targetRef = useRef<HTMLElement>(null);
+  const focusedFragmentRef = useRef<string | null>(null);
+  const targetExists = Boolean(fragmentId && document.sections.some((section) => section.fragmentId === fragmentId));
+
+  useEffect(() => {
+    if (!fragmentId || !targetExists || focusedFragmentRef.current === fragmentId) return;
+    const target = targetRef.current;
+    if (!target) return;
+    focusedFragmentRef.current = fragmentId;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView?.({ block: 'center' });
+  }, [fragmentId, targetExists]);
+
   return <article className="knowledge-reader page-stack">
     <header className="knowledge-reader-header">
-      <Link className="knowledge-back-link" to="/knowledge/santexwell"><ArrowLeft size={17} /> 返回知识库</Link>
+      <Link className="knowledge-back-link" to={returnTo ?? '/knowledge/santexwell'}><ArrowLeft size={17} /> {returnTo ? '返回原页面' : '返回知识库'}</Link>
       <div><span className="page-kicker">{document.pageType ?? 'KNOWLEDGE PAGE'}</span><h1>{document.title}</h1></div>
       <div className="knowledge-reader-meta"><span><CheckCircle size={16} /> 只读页面</span><span>索引于 {formatDateTime(document.indexedAt)}</span></div>
       {document.aliases.length > 0 ? <p className="knowledge-aliases">别名：{document.aliases.join(' · ')}</p> : null}
@@ -217,7 +262,9 @@ function KnowledgeReader({ document, fragmentId }: { document: KnowledgeDocument
         {document.sections.map((section) => <section
           key={section.fragmentId}
           id={`fragment-${section.fragmentId}`}
+          ref={section.fragmentId === fragmentId ? targetRef : undefined}
           className={section.fragmentId === fragmentId ? 'is-target-fragment' : undefined}
+          tabIndex={section.fragmentId === fragmentId ? -1 : undefined}
         >
           {section.heading ? <h2>{section.heading}</h2> : null}
           <SanitizedMarkdown>{section.content}</SanitizedMarkdown>

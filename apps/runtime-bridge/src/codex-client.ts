@@ -392,8 +392,7 @@ export class CodexRuntime {
       ...this.#threadSecurityParams(role),
       allowProviderModelFallback: false,
       serviceName: 'guideanything',
-      ephemeral: false,
-      historyMode: 'legacy',
+      ephemeral: true,
       sessionStartSource: 'startup',
       threadSource: 'guideanything-runtime-bridge',
       environments: [],
@@ -587,7 +586,15 @@ export class CodexRuntime {
       return;
     }
     if (!params.delta) return;
-    if (context.itemPhases.get(params.itemId) === 'final_answer') return;
+    if (context.itemPhases.get(params.itemId) === 'final_answer') {
+      if (context.outputKind !== 'ANSWER') return;
+      try {
+        this.#push(context, 'STRUCTURED_OUTPUT_DELTA', { delta: params.delta });
+      } catch {
+        this.#fail(context, 'STRUCTURED_OUTPUT_DELTA_INVALID', false);
+      }
+      return;
+    }
     try {
       this.#push(context, 'COMMENTARY', { text: params.delta });
     } catch {
@@ -644,14 +651,15 @@ export class CodexRuntime {
   }
 
   #push(context: RunContext, type: BridgeEventV1['type'], payload: unknown): void {
-    context.sequence += 1;
+    const sequence = context.sequence + 1;
     const event = BridgeEventV1Schema.parse({
       requestId: context.requestId,
       runId: context.runId,
-      sequence: context.sequence,
+      sequence,
       type,
       payload,
     });
+    context.sequence = sequence;
     context.queue.push(event);
   }
 

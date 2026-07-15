@@ -899,6 +899,14 @@ describe('agent runtime contracts', () => {
       requestId: 'bridge-request-1', runId: 'run-1', sequence: 3,
       type: 'TASK_FINDING', payload: { finding: santexwellFinding() },
     }).success).toBe(true);
+    expect(BridgeEventV1Schema.parse({
+      requestId: 'bridge-request-1', runId: 'run-1', sequence: 4,
+      type: 'STRUCTURED_OUTPUT_DELTA', payload: { delta: '{"conclusion":"公开结论' },
+    }).payload).toEqual({ delta: '{"conclusion":"公开结论' });
+    expect(BridgeEventV1Schema.safeParse({
+      requestId: 'bridge-request-1', runId: 'run-1', sequence: 5,
+      type: 'STRUCTURED_OUTPUT_DELTA', payload: { delta: '', locator: '/private' },
+    }).success).toBe(false);
   });
 
   it('binds bridge output kinds to model roles and validates each structured event payload', () => {

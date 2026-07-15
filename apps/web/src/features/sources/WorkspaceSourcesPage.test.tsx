@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -79,7 +79,7 @@ describe('WorkspaceSourcesPage', () => {
     const row = screen.getByRole('article', { name: '资料 验货标准.pdf' });
     expect(row).toHaveClass('is-target');
     expect(row).toHaveAttribute('data-target-fragment', 'fragment-7');
-    expect(row).toHaveFocus();
+    await waitFor(() => expect(row).toHaveFocus());
   });
 
   it('reports an unavailable document query without exposing an internal locator', async () => {

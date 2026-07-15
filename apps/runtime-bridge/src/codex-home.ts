@@ -14,7 +14,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { RuntimeBridgeConfig } from './config';
+import type { RuntimeBridgeConfig, RuntimeBridgeEnvironment } from './config';
 
 export const MINIMAL_CODEX_CONFIG = [
   'web_search = "disabled"',
@@ -96,8 +96,15 @@ export interface PreparedCodexRuntime {
   readonly appServerArgs: readonly string[];
 }
 
-export async function prepareCodexRuntime(config: RuntimeBridgeConfig): Promise<PreparedCodexRuntime> {
-  const home = await ensureManagedRuntimeHome(config.runtimeHome, config.runtimeAuthFile);
+export async function prepareCodexRuntime(
+  config: RuntimeBridgeConfig,
+  sourceEnvironment: RuntimeBridgeEnvironment = process.env,
+): Promise<PreparedCodexRuntime> {
+  const home = await ensureManagedRuntimeHome(
+    config.runtimeHome,
+    config.runtimeAuthFile,
+    sourceEnvironment,
+  );
   await ensureEmptyPrivateDirectory(config.runtimeWorkDir);
   const workDir = await realpath(config.runtimeWorkDir);
   await validateManagedRuntimeBeforePurge(home, config.runtimeAuthFile);
@@ -118,7 +125,12 @@ export async function prepareCodexRuntime(config: RuntimeBridgeConfig): Promise<
   });
 }
 
-async function ensureManagedRuntimeHome(directory: string, explicitAuthSource: string | null): Promise<string> {
+async function ensureManagedRuntimeHome(
+  directory: string,
+  explicitAuthSource: string | null,
+  sourceEnvironment: RuntimeBridgeEnvironment,
+): Promise<string> {
+  await rejectPersonalRuntimeHome(directory, sourceEnvironment);
   const existing = await lstatIfExists(directory);
   if (existing?.isSymbolicLink()) throw new Error('CODEX_RUNTIME_HOME must not be a symbolic link');
   if (existing && !existing.isDirectory()) throw new Error('CODEX_RUNTIME_HOME must be a directory');
@@ -150,6 +162,44 @@ async function ensureManagedRuntimeHome(directory: string, explicitAuthSource: s
   }
   await chmod(home, 0o700);
   return home;
+}
+
+async function rejectPersonalRuntimeHome(
+  directory: string,
+  sourceEnvironment: RuntimeBridgeEnvironment,
+): Promise<void> {
+  const candidate = await canonicalPathIdentity(directory);
+  const personalHome = sourceEnvironment.HOME?.trim();
+  if (
+    personalHome
+    && candidate === await canonicalPathIdentity(path.join(personalHome, '.codex'))
+  ) {
+    throw new Error('CODEX_RUNTIME_HOME must not use the personal CODEX_HOME at ~/.codex');
+  }
+
+  const inheritedCodexHome = sourceEnvironment.CODEX_HOME?.trim();
+  if (
+    inheritedCodexHome
+    && candidate === await canonicalPathIdentity(inheritedCodexHome)
+  ) {
+    throw new Error('CODEX_RUNTIME_HOME must not reuse the inherited CODEX_HOME');
+  }
+}
+
+async function canonicalPathIdentity(target: string): Promise<string> {
+  let existingAncestor = path.resolve(target);
+  const missingSegments: string[] = [];
+  while (true) {
+    try {
+      return path.join(await realpath(existingAncestor), ...missingSegments);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) return path.resolve(target);
+    missingSegments.unshift(path.basename(existingAncestor));
+    existingAncestor = parent;
+  }
 }
 
 async function isClaimableAuthOnlyHome(

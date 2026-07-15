@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 export const projectRoot = fileURLToPath(new URL('../../..', import.meta.url));
 export const LOCAL_AGENT_BRIDGE_TOKEN = 'guideanything-local-runtime-token-change-me';
+const LOCAL_JWT_SECRET = 'guideanything-local-development-secret-change-me';
+const EXAMPLE_JWT_SECRET = 'replace-with-at-least-32-characters-for-local-development';
 
 export interface AgentModelRoles {
   router: string | null;
@@ -80,14 +82,14 @@ export function parseConfig(env: NodeJS.ProcessEnv, root: string): AppConfig {
   if (isProduction && runtimeMode === 'fake') {
     throw new Error('AGENT_RUNTIME_MODE=fake is not allowed in production');
   }
-  const bridgeToken = parseBridgeToken(env.AGENT_BRIDGE_TOKEN, runtimeMode, isProduction);
+  const bridgeToken = parseBridgeToken(env.AGENT_BRIDGE_TOKEN, runtimeMode);
 
   return {
     port,
     webOrigin: env.WEB_ORIGIN ?? 'http://localhost:5173',
     databasePath: resolve(root, env.DATABASE_PATH ?? 'data/guideanything.sqlite'),
     uploadDir: resolve(root, env.UPLOAD_DIR ?? 'data/uploads'),
-    jwtSecret: env.JWT_SECRET ?? 'guideanything-local-development-secret-change-me',
+    jwtSecret: parseJwtSecret(env.JWT_SECRET, isProduction),
     seedDemo: env.SEED_DEMO !== 'false',
     runtimeMode,
     santexwellVaultPath: resolveOptionalPath(env.SANTEXWELL_VAULT_PATH, root),
@@ -144,16 +146,31 @@ function parseBridgeUrl(value: string): string {
 function parseBridgeToken(
   rawValue: string | undefined,
   runtimeMode: AppConfig['runtimeMode'],
-  isProduction: boolean,
 ): string | null {
-  if (runtimeMode === 'fake' && !isProduction && (rawValue === undefined || rawValue.trim() === '')) {
-    return null;
-  }
-  const token = rawValue === undefined ? LOCAL_AGENT_BRIDGE_TOKEN : rawValue.trim();
-  if (token.length < 32 || (isProduction && token === LOCAL_AGENT_BRIDGE_TOKEN)) {
+  if (runtimeMode === 'fake') return null;
+
+  const token = rawValue?.trim() ?? '';
+  if (token.length < 32 || token === LOCAL_AGENT_BRIDGE_TOKEN) {
     throw new Error('AGENT_BRIDGE_TOKEN must be a non-sentinel token with at least 32 characters');
   }
   return token;
+}
+
+function parseJwtSecret(rawValue: string | undefined, isProduction: boolean): string {
+  const secret = rawValue ?? LOCAL_JWT_SECRET;
+  const normalized = secret.trim();
+  if (
+    isProduction
+    && (
+      rawValue === undefined
+      || normalized.length < 32
+      || normalized === LOCAL_JWT_SECRET
+      || normalized === EXAMPLE_JWT_SECRET
+    )
+  ) {
+    throw new Error('JWT_SECRET must be an explicit non-sentinel secret with at least 32 characters');
+  }
+  return secret;
 }
 
 function parseBoundedInteger(

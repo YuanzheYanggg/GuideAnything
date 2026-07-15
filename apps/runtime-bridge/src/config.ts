@@ -13,6 +13,8 @@ const MODEL_ROLE_ENV: Readonly<Record<BridgeModelRoleV1, string>> = {
   REDUCER: 'AGENT_MODEL_REDUCER',
 };
 
+const PUBLIC_BRIDGE_TOKEN_SENTINEL = 'guideanything-local-runtime-token-change-me';
+
 export const projectRoot = fileURLToPath(new URL('../../..', import.meta.url));
 
 export type RuntimeBridgeEnvironment = Readonly<Record<string, string | undefined>>;
@@ -44,6 +46,9 @@ export function parseRuntimeBridgeEnv(
   }
 
   const bridgeToken = requiredBoundedString(environment.AGENT_BRIDGE_TOKEN, 'AGENT_BRIDGE_TOKEN', 32, 512);
+  if (bridgeToken === PUBLIC_BRIDGE_TOKEN_SENTINEL) {
+    throw new Error('AGENT_BRIDGE_TOKEN must not use the public example sentinel');
+  }
   const runtimeHome = resolveConfiguredPath(
     environment.CODEX_RUNTIME_HOME ?? './data/runtime-bridge/codex-home',
     'CODEX_RUNTIME_HOME',

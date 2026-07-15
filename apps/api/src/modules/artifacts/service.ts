@@ -326,9 +326,13 @@ export class ArtifactReferenceService {
     reasonCode: InvalidReasonCode,
     invalidReason: string,
   ): ReferenceResolutionV1 {
+    const forbidden = reasonCode === 'FORBIDDEN';
     return ReferenceResolutionV1Schema.parse({
       status: 'INVALID', referenceId: citation.reference_id,
-      title: citation.title, excerpt: citation.excerpt, reasonCode, invalidReason,
+      title: forbidden ? '引用不可用' : citation.title,
+      excerpt: forbidden ? '当前用户无权查看该引用内容。' : citation.excerpt,
+      reasonCode,
+      invalidReason,
     });
   }
 

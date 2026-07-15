@@ -20,6 +20,7 @@ export interface AgentRunTaskState {
 }
 
 export interface AgentRunViewState {
+  runId: string | null;
   lastSequence: number;
   planVersion: number;
   route: PublicRoutePlanV1['route'] | null;
@@ -30,6 +31,8 @@ export interface AgentRunViewState {
   answer: AgentCommittedAnswerV1 | null;
   citations: CitationV1[];
   artifacts: ArtifactV1[];
+  committedMessageId: string | null;
+  committedAt: string | null;
   status: 'IDLE' | 'CONNECTING' | 'ROUTING' | 'RUNNING' | 'VALIDATING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
   error: string;
 }
@@ -38,6 +41,7 @@ type StreamAction = AgentRunEventV1 | { type: 'viewer.reset' } | { type: 'viewer
 
 export function createAgentRunState(): AgentRunViewState {
   return {
+    runId: null,
     lastSequence: 0,
     planVersion: 0,
     route: null,
@@ -48,6 +52,8 @@ export function createAgentRunState(): AgentRunViewState {
     answer: null,
     citations: [],
     artifacts: [],
+    committedMessageId: null,
+    committedAt: null,
     status: 'IDLE',
     error: '',
   };
@@ -59,7 +65,7 @@ export function agentRunReducer(state: AgentRunViewState, action: StreamAction):
   if (action.type === 'viewer.error') return { ...state, error: action.message, status: isTerminalStatus(state.status) ? state.status : 'FAILED' };
   if (action.sequence <= state.lastSequence) return state;
 
-  const latest = { ...state, lastSequence: action.sequence };
+  const latest = { ...state, runId: action.runId, lastSequence: action.sequence };
   if (action.phase === 'PROVISIONAL' && (action.stale === true || action.planVersion < state.planVersion)) return latest;
   const next = action.planVersion > state.planVersion
     ? { ...latest, planVersion: action.planVersion, route: null, userFacingPlan: '', executionMode: null, tasks: [], draft: '' }
@@ -105,7 +111,12 @@ export function agentRunReducer(state: AgentRunViewState, action: StreamAction):
     case 'answer.committed':
       return { ...next, answer: action.payload.answer, citations: action.payload.answer.citations, artifacts: action.payload.answer.artifacts, status: 'VALIDATING' };
     case 'run.completed':
-      return { ...next, status: 'COMPLETED' };
+      return {
+        ...next,
+        committedMessageId: action.payload.messageId,
+        committedAt: action.createdAt,
+        status: 'COMPLETED',
+      };
     case 'run.failed':
       return { ...next, status: 'FAILED', error: action.payload.message };
     case 'run.cancelled':

@@ -54,6 +54,61 @@ describe('AgentOrchestrator', () => {
     expect(committer.commit).toHaveBeenCalledOnce();
   });
 
+  it('skips the model router and every retrieval source for a deterministic no-evidence greeting', async () => {
+    const runtime = new ScriptedRuntime([answerScript(answer([]))]);
+    const events = new RecordingEventSink();
+    const retriever = retrieverFrom({});
+    const context: AgentRunExecutionContext = {
+      ...executionContext(),
+      text: '你好！',
+      sources: {
+        workspaceFlows: true,
+        workspaceDocuments: true,
+        sessionAttachments: false,
+        santexwell: true,
+      },
+    };
+
+    const result = await createOrchestrator({
+      runtime,
+      events,
+      retriever,
+      loadContext: async (runId) => ({ ...context, runId }),
+    }).execute('public-run-direct');
+
+    expect(result.status).toBe('COMPLETED');
+    expect(runtime.requests.map(({ role }) => role)).toEqual(['FOCUSED_WORKER']);
+    expect(retriever.retrieve).not.toHaveBeenCalled();
+    expect(events.items.find((item) => item.type === 'route.completed')).toMatchObject({
+      payload: { route: 'DIRECT' },
+    });
+  });
+
+  it('publishes only decoded conclusion fragments while a structured answer is still streaming', async () => {
+    const flowEvidence = evidence('flow-stream', 'WORKSPACE_FLOW');
+    const streamed = answer([flowEvidence]);
+    const runtime = new ScriptedRuntime([
+      routeScript(focusedDecision()),
+      streamingAnswerScript(streamed),
+    ]);
+    const events = new RecordingEventSink();
+
+    const result = await createOrchestrator({
+      runtime,
+      events,
+      retriever: retrieverFrom({ WORKSPACE_FLOW: [flowEvidence] }),
+    }).execute('public-run-streaming');
+
+    const drafts = events.items.filter((item) => item.type === 'answer.draft.delta');
+    expect(result.status).toBe('COMPLETED');
+    expect(drafts).toHaveLength(2);
+    expect(drafts.map((item) => item.payload.delta).join('')).toBe(streamed.conclusion);
+    expect(JSON.stringify(drafts)).not.toContain('flow-stream');
+    expect(events.items.indexOf(drafts[0]!)).toBeLessThan(
+      events.items.findIndex((item) => item.type === 'answer.validating'),
+    );
+  });
+
   it('deep-reviews a complex route, retrieves workspace before vault, then maps findings and reduces without retrieval', async () => {
     const flowEvidence = evidence('flow-evidence', 'WORKSPACE_FLOW');
     const vaultEvidence = evidence('vault-evidence', 'SANTEXWELL');
@@ -88,6 +143,46 @@ describe('AgentOrchestrator', () => {
     expect(reducer?.prompt).toContain('vault-evidence');
     expect(events.items.filter((event) => event.type === 'task.finding')).toHaveLength(2);
     expect(events.items.map((event) => event.type)).toContain('reduce.started');
+  });
+
+  it('reserves a fair share of one source budget for every map task', async () => {
+    const firstEvidence = [1, 2, 3].map((index) => evidence(`vault-first-${index}`, 'SANTEXWELL'));
+    const secondEvidence = [1, 2, 3].map((index) => evidence(`vault-second-${index}`, 'SANTEXWELL'));
+    const decision = vaultOpenResearchDecision();
+    const runtime = new ScriptedRuntime([
+      routeScript(decision),
+      findingScript(finding('vault-first', firstEvidence)),
+      findingScript(finding('vault-second', secondEvidence)),
+      answerScript(answer([...firstEvidence, ...secondEvidence])),
+    ]);
+    const retriever: AgentEvidenceRetriever = {
+      retrieve: vi.fn(async ({ task, maxCandidates }) => (
+        Array.from({ length: maxCandidates }, (_, index) => (
+          evidence(`${task.id}-${index + 1}`, 'SANTEXWELL')
+        ))
+      )),
+    };
+    const context: AgentRunExecutionContext = {
+      ...executionContext(),
+      scope: 'GLOBAL_SANTEXWELL',
+      workspaceId: null,
+      text: '比较主题甲与主题乙的依据。',
+      sources: {
+        workspaceFlows: false,
+        workspaceDocuments: false,
+        sessionAttachments: false,
+        santexwell: true,
+      },
+    };
+
+    const result = await createOrchestrator({
+      runtime,
+      retriever,
+      loadContext: async (runId) => ({ ...context, runId }),
+    }).execute('public-run-fair-budget');
+
+    expect(vi.mocked(retriever.retrieve).mock.calls.map(([request]) => request.maxCandidates)).toEqual([3, 3]);
+    expect(result.status).toBe('COMPLETED');
   });
 
   it('fails closed when a worker returns evidence that deterministic retrieval did not provide', async () => {
@@ -674,6 +769,21 @@ function answerScript(value: AgentInternalAnswerV1): RuntimeScript {
   };
 }
 
+function streamingAnswerScript(value: AgentInternalAnswerV1): RuntimeScript {
+  return async function* streamingAnswerOutput(request) {
+    const encoded = JSON.stringify(value);
+    const marker = '"conclusion":"';
+    const conclusionStart = encoded.indexOf(marker);
+    if (conclusionStart < 0) throw new Error('answer conclusion missing');
+    const splitAt = conclusionStart + marker.length + 4;
+    yield event(request, 1, 'COMMENTARY', { text: 'PRIVATE CHAIN OF THOUGHT' });
+    yield event(request, 2, 'STRUCTURED_OUTPUT_DELTA', { delta: encoded.slice(0, splitAt) });
+    yield event(request, 3, 'STRUCTURED_OUTPUT_DELTA', { delta: encoded.slice(splitAt) });
+    yield event(request, 4, 'FINAL_ANSWER', { answer: value });
+    yield event(request, 5, 'COMPLETED', {});
+  };
+}
+
 function event<T extends BridgeEventV1['type']>(
   request: BridgeRunRequestV1,
   sequence: number,
@@ -847,6 +957,39 @@ function vaultFocusedDecision(): RouteDecisionV1 {
       maxVaultClusters: 1, maxVaultDigests: 2, allowRaw: false, useReducer: false,
     },
     userFacingPlan: '查询 Santexwell 知识库后直接回答。',
+  };
+}
+
+function vaultOpenResearchDecision(): RouteDecisionV1 {
+  const workers: RouteDecisionV1['tasks'] = [
+    {
+      id: 'vault-first', kind: 'SANTEXWELL', objective: '研究主题甲', dependsOn: [], priority: 1,
+    },
+    {
+      id: 'vault-second', kind: 'SANTEXWELL', objective: '研究主题乙', dependsOn: [], priority: 2,
+    },
+  ];
+  return {
+    ...vaultFocusedDecision(),
+    intent: '比较两个知识库主题',
+    complexity: {
+      scopeBreadth: 3, evidenceDepth: 3, crossSourceNeed: 1, decompositionNeed: 3, ambiguity: 2,
+    },
+    route: 'OPEN_RESEARCH',
+    tasks: [
+      ...workers,
+      {
+        id: 'reduce', kind: 'REDUCE', objective: '汇总比较',
+        dependsOn: workers.map(({ id }) => id), priority: 3,
+      },
+    ],
+    budget: {
+      maxWorkers: 2, maxConcurrency: 2, maxWorkspaceCandidates: 0, maxFlowHops: 0,
+      maxVaultClusters: 1, maxVaultDigests: 6, allowRaw: false, useReducer: true,
+    },
+    executionMode: 'PARALLEL',
+    maxConcurrency: 2,
+    userFacingPlan: '分别研究两个主题，再汇总比较。',
   };
 }
 

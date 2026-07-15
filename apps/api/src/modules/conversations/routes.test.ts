@@ -103,6 +103,74 @@ describe('conversation and run routes', () => {
     expect(run.statusCode).toBe(404);
   });
 
+  it('revokes workspace run snapshots and persisted event streams with membership', async () => {
+    const conversationId = await createWorkspaceConversation();
+    const accepted = await sendWorkspaceMessage(conversationId);
+    const store = new AgentRunEventStore(context.database, broker);
+    store.append({
+      runId: accepted.run.id,
+      planVersion: 1,
+      phase: 'COMMITTED',
+      type: 'run.failed',
+      payload: { code: 'TEST_FAILURE', message: '测试终止。', retryable: true },
+    });
+    context.database.prepare(
+      'DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?',
+    ).run('workspace-agent', context.userIds.author);
+
+    const snapshot = await context.app.inject({
+      method: 'GET',
+      url: `/api/agent-runs/${accepted.run.id}`,
+      headers: authorization(context.tokens.author),
+    });
+    const events = await context.app.inject({
+      method: 'GET',
+      url: `/api/agent-runs/${accepted.run.id}/events`,
+      headers: {
+        ...authorization(context.tokens.author),
+        accept: 'text/event-stream',
+      },
+    });
+
+    expect(snapshot.statusCode).toBe(404);
+    expect(events.statusCode).toBe(404);
+  });
+
+  it('revokes workspace run cancellation and steering with membership', async () => {
+    const conversationId = await createWorkspaceConversation();
+    const accepted = await sendWorkspaceMessage(conversationId);
+    const steerPayload = { clientSteerId: 'revoked-steer', instruction: '撤权后调整。' };
+    const initialSteer = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/steer`,
+      headers: authorization(context.tokens.author),
+      payload: steerPayload,
+    });
+    expect(initialSteer.statusCode).toBe(202);
+    steerRun.mockClear();
+    context.database.prepare(
+      'DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?',
+    ).run('workspace-agent', context.userIds.author);
+
+    const cancelled = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/cancel`,
+      headers: authorization(context.tokens.author),
+      payload: { reason: '撤权后取消' },
+    });
+    const steered = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/steer`,
+      headers: authorization(context.tokens.author),
+      payload: steerPayload,
+    });
+
+    expect(cancelled.statusCode).toBe(404);
+    expect(steered.statusCode).toBe(404);
+    expect(cancelRun).not.toHaveBeenCalled();
+    expect(steerRun).not.toHaveBeenCalled();
+  });
+
   it('replays authenticated SSE with event ids and stops at terminal state', async () => {
     const conversationId = await createWorkspaceConversation();
     const accepted = await sendWorkspaceMessage(conversationId);

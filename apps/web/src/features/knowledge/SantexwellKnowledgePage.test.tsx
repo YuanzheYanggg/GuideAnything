@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -79,5 +79,57 @@ describe('SantexwellKnowledgePage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('知识库当前不可用');
     expect(screen.getByRole('searchbox', { name: '搜索知识库' })).toBeDisabled();
+    expect(screen.queryByRole('link', { name: /开始新的问答/u })).not.toBeInTheDocument();
+  });
+
+  it('does not mount the QA composer when the vault is unavailable', async () => {
+    renderPage(api({
+      status: vi.fn().mockResolvedValue({ ...ready, status: 'UNAVAILABLE', revision: null, indexedDocuments: 0, indexedFragments: 0, reasonCodes: ['NOT_INDEXED'], indexedAt: null }),
+    }), '/knowledge/santexwell?conversation=new');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('知识问答暂不可用');
+    expect(screen.queryByRole('textbox', { name: '向 Agent 提问' })).not.toBeInTheDocument();
+  });
+
+  it('recovers in place after a search error', async () => {
+    const user = userEvent.setup();
+    const knowledgeApi = api({
+      search: vi.fn()
+        .mockRejectedValueOnce(new Error('索引暂时繁忙'))
+        .mockResolvedValueOnce([{
+          sourceKind: 'SANTEXWELL', documentId: 'doc-yarn', fragmentId: 'fragment-types',
+          title: '花式纱线', heading: '分类', excerpt: '恢复后的可验证结果。',
+          evidenceRole: 'SUPPORT', revision: 'revision-1', indexedAt: ready.indexedAt!, rawEvidenceAvailable: true,
+          href: '/knowledge/santexwell/documents/doc-yarn?fragment=fragment-types', score: 920,
+        }]),
+    });
+    renderPage(knowledgeApi);
+
+    const searchbox = await screen.findByRole('searchbox', { name: '搜索知识库' });
+    await user.type(searchbox, '第一次查询');
+    await user.click(screen.getByRole('button', { name: '搜索' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('索引暂时繁忙');
+    expect(searchbox).toBeVisible();
+
+    await user.clear(searchbox);
+    await user.type(searchbox, '花式纱');
+    await user.click(screen.getByRole('button', { name: '搜索' }));
+    expect(await screen.findByText('恢复后的可验证结果。')).toBeVisible();
+    expect(screen.queryByText('索引暂时繁忙')).not.toBeInTheDocument();
+  });
+
+  it('focuses a referenced knowledge fragment and preserves a safe return target', async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderPage(api(), '/knowledge/santexwell/documents/doc-yarn?fragment=fragment-types&returnTo=%2Fknowledge%2Fsantexwell%3Fconversation%3Dconversation-1');
+
+    expect(await screen.findByRole('heading', { name: '花式纱线' })).toBeVisible();
+    const target = document.getElementById('fragment-fragment-types');
+    await waitFor(() => expect(target).toHaveFocus());
+    expect(target).toHaveClass('is-target-fragment');
+    expect(scrollIntoView).toHaveBeenCalled();
+    expect(screen.getByRole('link', { name: /返回原页面/u })).toHaveAttribute(
+      'href', '/knowledge/santexwell?conversation=conversation-1',
+    );
   });
 });

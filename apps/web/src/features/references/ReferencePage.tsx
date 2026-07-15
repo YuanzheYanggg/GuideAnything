@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 
 import type { ArtifactsApi } from '../artifacts/types';
+import { appendSafeReturnTo, safeInternalPath } from '../../lib/navigation';
 
 export function ReferencePage({ api }: { api: Pick<ArtifactsApi, 'resolveReference'> }) {
   const { referenceId } = useParams();
@@ -37,10 +38,9 @@ export function ReferencePage({ api }: { api: Pick<ArtifactsApi, 'resolveReferen
 }
 
 export function withReturnTo(href: string, returnTo: string) {
-  const separator = href.includes('?') ? '&' : '?';
-  return `${href}${separator}returnTo=${encodeURIComponent(safeReturnPath(returnTo))}`;
+  return appendSafeReturnTo(href, returnTo);
 }
 
 function safeReturnPath(value: string | null | undefined) {
-  return value?.startsWith('/') && !value.startsWith('//') ? value : '/library';
+  return safeInternalPath(value) ?? '/library';
 }

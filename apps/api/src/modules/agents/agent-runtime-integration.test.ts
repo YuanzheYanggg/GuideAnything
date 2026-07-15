@@ -122,6 +122,9 @@ describe('read-only Agent runtime integration', () => {
     expect(eventStream.statusCode).toBe(200);
     expect(eventStream.body).toContain('event: route.completed');
     expect(eventStream.body).toContain('event: answer.draft.delta');
+    expect(eventStream.body.match(/event: answer\.draft\.delta/gu)).toHaveLength(2);
+    expect(eventStream.body).not.toContain('STRUCTURED_OUTPUT_DELTA');
+    expect(eventStream.body).not.toContain('"locator"');
     expect(eventStream.body).toContain('event: run.completed');
 
     const referenceId = relevantCitation.referenceId as string;

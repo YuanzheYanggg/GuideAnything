@@ -167,6 +167,24 @@ const CONVERSATION_SELECT = `
   FROM conversations AS conversation
 `;
 
+const OWNED_RUN_ACCESS_PREDICATE = `
+  conversation.owner_id = ?
+  AND (
+    conversation.scope = 'GLOBAL_SANTEXWELL'
+    OR (
+      conversation.scope = 'WORKSPACE'
+      AND EXISTS (
+        SELECT 1
+        FROM workspaces AS workspace
+        JOIN workspace_members AS member
+          ON member.workspace_id = workspace.id AND member.user_id = ?
+        WHERE workspace.id = conversation.workspace_id
+          AND workspace.status = 'ACTIVE'
+      )
+    )
+  )
+`;
+
 export function createConversation(
   database: DatabaseSync,
   input: CreateConversationInput,
@@ -379,8 +397,8 @@ export function getRunSnapshotForOwner(
     `SELECT 1
      FROM agent_runs AS run
      JOIN conversations AS conversation ON conversation.id = run.conversation_id
-     WHERE run.id = ? AND conversation.owner_id = ?`,
-  ).get(runId, ownerId);
+     WHERE run.id = ? AND ${OWNED_RUN_ACCESS_PREDICATE}`,
+  ).get(runId, ownerId, ownerId);
   if (!owned) return null;
   const row = getRunById(database, runId);
   return row ? mapRunSnapshot(row) : null;
@@ -424,8 +442,12 @@ export function steerAgentRunForOwner(
       `SELECT run.plan_version, run.status
        FROM agent_runs AS run
        JOIN conversations AS conversation ON conversation.id = run.conversation_id
-       WHERE run.id = ? AND conversation.owner_id = ? AND conversation.status = 'ACTIVE'`,
-    ).get(input.runId, input.ownerId) as { plan_version: number; status: AgentRunStatusV1 } | undefined;
+       WHERE run.id = ? AND ${OWNED_RUN_ACCESS_PREDICATE}
+         AND conversation.status = 'ACTIVE'`,
+    ).get(input.runId, input.ownerId, input.ownerId) as {
+      plan_version: number;
+      status: AgentRunStatusV1;
+    } | undefined;
     if (!run) throw new AgentRunNotFoundError();
     if (run.status === 'VALIDATING' || isTerminalRunStatus(run.status)) {
       throw new AgentRunNotControllableError();
@@ -513,8 +535,12 @@ function getSteerForOwner(
      FROM agent_run_steers AS steer
      JOIN agent_runs AS run ON run.id = steer.run_id
      JOIN conversations AS conversation ON conversation.id = run.conversation_id
-     WHERE steer.run_id = ? AND steer.client_steer_id = ? AND conversation.owner_id = ?`,
-  ).get(runId, clientSteerId, ownerId) as { plan_version: number; instruction: string } | undefined;
+     WHERE steer.run_id = ? AND steer.client_steer_id = ?
+       AND ${OWNED_RUN_ACCESS_PREDICATE}`,
+  ).get(runId, clientSteerId, ownerId, ownerId) as {
+    plan_version: number;
+    instruction: string;
+  } | undefined;
   return row ?? null;
 }
 

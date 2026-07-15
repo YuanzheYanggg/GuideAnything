@@ -36,7 +36,10 @@ const PublicUserRequestSchema = z.object({
 }).passthrough();
 
 const FocusedContextSchema = z.object({
-  task: RouteTaskV1Schema,
+  task: z.union([
+    RouteTaskV1Schema,
+    z.object({ id: z.literal('direct-answer'), objective: z.string().min(1).max(5_000) }).strict(),
+  ]),
   evidence: z.array(ValidatedEvidenceV1Schema),
 }).passthrough();
 
@@ -62,21 +65,28 @@ export class DeterministicFakeAgentRuntimeClient implements AgentRuntimeClient {
       yield bridgeEvent(request, 1, 'COMMENTARY', { text: '正在按本地只读策略处理已授权上下文。' });
       assertAvailable(request.runId, this.#cancelled, signal);
       const envelope = parsePromptEnvelope(request.prompt);
+      let sequence = 2;
       if (request.outputKind === 'ROUTE_DECISION') {
-        yield bridgeEvent(request, 2, 'ROUTE_DECISION', {
+        yield bridgeEvent(request, sequence, 'ROUTE_DECISION', {
           decision: routeDecision(request, envelope),
         });
       } else if (request.outputKind === 'TASK_FINDING') {
-        yield bridgeEvent(request, 2, 'TASK_FINDING', {
+        yield bridgeEvent(request, sequence, 'TASK_FINDING', {
           finding: taskFinding(envelope.retrievedContext),
         });
       } else {
-        yield bridgeEvent(request, 2, 'FINAL_ANSWER', {
-          answer: finalAnswer(request, envelope.retrievedContext),
+        const answer = finalAnswer(request, envelope.retrievedContext);
+        for (const delta of splitStructuredOutput(JSON.stringify(answer))) {
+          yield bridgeEvent(request, sequence, 'STRUCTURED_OUTPUT_DELTA', { delta });
+          sequence += 1;
+        }
+        yield bridgeEvent(request, sequence, 'FINAL_ANSWER', {
+          answer,
         });
       }
+      sequence += 1;
       assertAvailable(request.runId, this.#cancelled, signal);
-      yield bridgeEvent(request, 3, 'COMPLETED', {});
+      yield bridgeEvent(request, sequence, 'COMPLETED', {});
     } finally {
       this.#cancelled.delete(request.runId);
     }
@@ -89,6 +99,19 @@ export class DeterministicFakeAgentRuntimeClient implements AgentRuntimeClient {
   async steer(): Promise<void> {
     // A steer creates a new orchestrator plan and therefore a new child run ID.
   }
+}
+
+function splitStructuredOutput(value: string): string[] {
+  const conclusionStart = value.indexOf('"conclusion":"');
+  const preferredFirstChunk = conclusionStart < 0
+    ? Math.min(16_000, value.length)
+    : Math.min(value.length, conclusionStart + '"conclusion":"'.length + 8);
+  const chunks: string[] = [];
+  if (preferredFirstChunk > 0) chunks.push(value.slice(0, preferredFirstChunk));
+  for (let offset = preferredFirstChunk; offset < value.length; offset += 16_000) {
+    chunks.push(value.slice(offset, offset + 16_000));
+  }
+  return chunks;
 }
 
 function parsePromptEnvelope(prompt: string): z.infer<typeof PromptEnvelopeSchema> {

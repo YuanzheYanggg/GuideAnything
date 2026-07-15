@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent, type RefObject } from 'react';
 import {
+  ArrowLeft,
   ArrowRight,
   ChatCircleDots,
   FileText,
@@ -11,8 +12,10 @@ import {
   SlidersHorizontal,
   Stop,
 } from '@phosphor-icons/react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 
+import { appendSafeReturnTo, safeInternalPath } from '../../lib/navigation';
+import { ArtifactViewer } from '../artifacts/ArtifactViewer';
 import { SanitizedMarkdown } from '../markdown/SanitizedMarkdown';
 import { AgentRunTimeline } from './AgentRunTimeline';
 import type { AgentApi, ConversationDetailV1, ConversationSummaryV1, SourceOptionsV1 } from './types';
@@ -41,6 +44,7 @@ export function AgentConversationPanel({
   scope: ConversationScope;
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const [conversations, setConversations] = useState<ConversationSummaryV1[]>([]);
   const [detail, setDetail] = useState<ConversationDetailV1 | null>(null);
   const [text, setText] = useState('');
@@ -49,10 +53,15 @@ export function AgentConversationPanel({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [steering, setSteering] = useState(false);
+  const [steerPending, setSteerPending] = useState(false);
   const [steerText, setSteerText] = useState('');
   const [uploading, setUploading] = useState(false);
   const conversationParam = searchParams.get('conversation');
   const conversationId = conversationParam && conversationParam !== 'new' ? conversationParam : null;
+  const targetMessageRequested = searchParams.has('message');
+  const targetMessageId = readLocatorParam(searchParams.get('message'));
+  const returnTo = safeInternalPath(searchParams.get('returnTo'));
+  const currentPath = `${location.pathname}${location.search}`;
   const workspaceId = scope.kind === 'WORKSPACE' ? scope.workspaceId : null;
   const conversationContextKey = conversationId ? createConversationContextKey(scope, conversationId) : null;
   const activeConversationContextRef = useRef<string | null>(conversationContextKey);
@@ -60,6 +69,10 @@ export function AgentConversationPanel({
     ? createAttachmentContextKey(workspaceId, conversationId)
     : null;
   const activeAttachmentContextRef = useRef<string | null>(attachmentContextKey);
+  const targetMessageRef = useRef<HTMLElement>(null);
+  const focusedMessageKeyRef = useRef<string | null>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const followOutputRef = useRef(!targetMessageId);
   const [attachmentSelection, setAttachmentSelection] = useState<{ contextKey: string | null; ids: string[] }>({
     contextKey: attachmentContextKey,
     ids: [],
@@ -125,7 +138,11 @@ export function AgentConversationPanel({
     read(conversationId).then((next) => {
       if (!active) return;
       setDetail((current) => current?.conversation.id === next.conversation.id
-        ? { ...next, attachments: mergeAttachments(next.attachments, current.attachments) }
+        ? {
+            ...next,
+            messages: mergeConversationMessages(next.messages, current.messages),
+            attachments: mergeAttachments(next.attachments, current.attachments),
+          }
         : next);
       const latest = next.latestRun;
       if (latest && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(latest.status)) {
@@ -141,11 +158,62 @@ export function AgentConversationPanel({
 
   const activeRunId = detail?.latestRun?.id ?? null;
   const runActive = eventsPath !== null && !['COMPLETED', 'FAILED', 'CANCELLED'].includes(runState.status);
+  const messages = detail?.messages ?? [];
+  const targetMessageFound = Boolean(targetMessageId && messages.some((message) => message.id === targetMessageId));
+  const targetMessageKey = conversationId && targetMessageId ? `${conversationId}:${targetMessageId}` : null;
+
+  useEffect(() => {
+    if (
+      runState.status !== 'COMPLETED'
+      || !runState.runId
+      || !runState.answer
+      || !runState.committedMessageId
+      || !runState.committedAt
+    ) return;
+    setDetail((current) => {
+      if (
+        !current
+        || current.latestRun?.id !== runState.runId
+        || current.messages.some((message) => message.role === 'ASSISTANT' && message.runId === runState.runId)
+      ) return current;
+      return {
+        ...current,
+        messages: [...current.messages, {
+          id: runState.committedMessageId!,
+          role: 'ASSISTANT',
+          runId: runState.runId!,
+          answer: runState.answer!,
+          createdAt: runState.committedAt!,
+        }],
+      };
+    });
+  }, [runState.answer, runState.committedAt, runState.committedMessageId, runState.runId, runState.status]);
+
+  useLayoutEffect(() => {
+    followOutputRef.current = !targetMessageKey;
+  }, [targetMessageKey]);
+
+  useLayoutEffect(() => {
+    const viewport = messageListRef.current;
+    if (!viewport || !followOutputRef.current) return;
+    viewport.scrollTop = viewport.scrollHeight;
+  }, [messages.length, runState.lastSequence]);
+
+  useEffect(() => {
+    if (!targetMessageKey || !targetMessageFound || focusedMessageKeyRef.current === targetMessageKey) return;
+    const target = targetMessageRef.current;
+    if (!target) return;
+    focusedMessageKeyRef.current = targetMessageKey;
+    followOutputRef.current = false;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView?.({ block: 'center' });
+  }, [targetMessageFound, targetMessageKey]);
 
   const selectConversation = (id: string | null) => {
     const next = new URLSearchParams(searchParams);
     if (id) next.set('conversation', id);
     else next.set('conversation', 'new');
+    next.delete('message');
     const nextContextKey = workspaceId && id ? createAttachmentContextKey(workspaceId, id) : null;
     activeConversationContextRef.current = id ? createConversationContextKey(scope, id) : null;
     activeAttachmentContextRef.current = nextContextKey;
@@ -158,6 +226,7 @@ export function AgentConversationPanel({
     event.preventDefault();
     const prompt = text.trim();
     if (!prompt || sending || uploading || runActive) return;
+    followOutputRef.current = true;
     setSending(true);
     setError('');
     let sendContextKey = conversationContextKey;
@@ -268,19 +337,23 @@ export function AgentConversationPanel({
   const steer = async (event: FormEvent) => {
     event.preventDefault();
     const instruction = steerText.trim();
-    if (!activeRunId || !instruction) return;
+    if (!activeRunId || !instruction || steerPending) return;
+    setSteerPending(true);
     try {
       await api.steerRun(activeRunId, { clientSteerId: createClientId(), instruction });
       setSteerText('');
       setSteering(false);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : '调整方向失败');
+    } finally {
+      setSteerPending(false);
     }
   };
 
-  const messages = detail?.messages ?? [];
-  const committedRunIds = useMemo(() => new Set(messages.filter((message) => message.role === 'ASSISTANT').map((message) => message.runId)), [messages]);
-  const showStreamAnswer = runState.answer && !committedRunIds.has(activeRunId ?? '');
+  const showStreamAnswer = Boolean(runState.answer && runState.runId === activeRunId);
+  const visibleMessages = showStreamAnswer
+    ? messages.filter((message) => message.role !== 'ASSISTANT' || message.runId !== runState.runId)
+    : messages;
 
   return <section className="agent-conversation-shell">
     <aside className="agent-conversation-list" aria-label="会话列表">
@@ -300,22 +373,39 @@ export function AgentConversationPanel({
     <div className="agent-conversation-main">
       <header className="agent-conversation-heading">
         <div><span className="page-kicker">SANTEXWELL QA AGENT</span><h2>{detail?.conversation.title ?? '新的知识问答'}</h2></div>
-        <span>只读</span>
+        <div className="agent-conversation-heading-actions">{returnTo ? <Link to={returnTo}><ArrowLeft size={15} />返回引用来源</Link> : null}<span>只读</span></div>
       </header>
 
-      <div className="agent-message-list" aria-label="会话消息">
-        {messages.length === 0 && !runState.draft && !runState.answer ? <AgentWelcome global={scope.kind === 'GLOBAL'} /> : messages.map((message) => message.role === 'USER'
-          ? <article className="agent-message is-user" key={message.id}><span>你</span><p>{message.content}</p></article>
-          : <AgentAnswer key={message.id} answer={message.answer} />)}
+      <div
+        ref={messageListRef}
+        className="agent-message-list"
+        aria-label="会话消息"
+        onScroll={(event) => { followOutputRef.current = isNearScrollBottom(event.currentTarget); }}
+      >
+        {visibleMessages.length === 0 && !runState.draft && !runState.answer ? <AgentWelcome global={scope.kind === 'GLOBAL'} /> : visibleMessages.map((message) => message.role === 'USER'
+          ? <article
+              ref={message.id === targetMessageId ? targetMessageRef : undefined}
+              className={`agent-message is-user${message.id === targetMessageId ? ' is-target' : ''}`}
+              tabIndex={message.id === targetMessageId ? -1 : undefined}
+              key={message.id}
+            ><span>你</span><p>{message.content}</p></article>
+          : <AgentAnswer
+              key={message.runId}
+              answer={message.answer}
+              returnTo={currentPath}
+              targeted={message.id === targetMessageId}
+              targetRef={message.id === targetMessageId ? targetMessageRef : undefined}
+            />)}
+        {detail && targetMessageRequested && !targetMessageFound ? <p className="agent-reference-missing" role="alert">引用消息不存在或当前不可访问</p> : null}
         <AgentRunTimeline state={runState} />
-        {showStreamAnswer ? <AgentAnswer answer={runState.answer!} live /> : null}
+        {showStreamAnswer ? <AgentAnswer key={runState.runId ?? 'live-answer'} answer={runState.answer!} returnTo={currentPath} live /> : null}
       </div>
 
       {error ? <p className="agent-panel-error" role="alert">{error}</p> : null}
 
       {steering && runActive ? <form className="agent-steer-form" onSubmit={steer}>
         <label htmlFor="agent-steer">告诉调度器接下来要调整什么</label>
-        <div><input id="agent-steer" value={steerText} onChange={(event) => setSteerText(event.target.value)} placeholder="例如：只比较工作区流程，不再扩展案例" /><button type="submit" disabled={!steerText.trim()}>应用</button></div>
+        <div><input id="agent-steer" value={steerText} disabled={steerPending} onChange={(event) => setSteerText(event.target.value)} placeholder="例如：只比较工作区流程，不再扩展案例" /><button type="submit" disabled={!steerText.trim() || steerPending}>{steerPending ? '应用中…' : '应用'}</button></div>
       </form> : null}
 
       <form className="agent-composer" onSubmit={submit}>
@@ -386,15 +476,37 @@ function AgentWelcome({ global }: { global: boolean }) {
   return <div className="agent-welcome"><span><ChatCircleDots size={26} /></span><h3>{global ? '从知识图谱里找到可验证的答案' : '把工作区流程与知识库放在同一个问题里'}</h3><p>{global ? '小问题会直接定位到聚焦页面；开放问题才会拆分成有限的并行任务。' : '默认先看工作区流程和文档，再按需补充 Santexwell；你可以逐轮调整来源。'}</p></div>;
 }
 
-function AgentAnswer({ answer, live = false }: { answer: NonNullable<ReturnType<typeof useAgentRunStream>['answer']>; live?: boolean }) {
-  return <article className={`agent-message agent-answer-committed${live ? ' is-live' : ''}`} aria-live={live ? 'polite' : undefined}>
+function AgentAnswer({
+  answer,
+  returnTo,
+  live = false,
+  targeted = false,
+  targetRef,
+}: {
+  answer: NonNullable<ReturnType<typeof useAgentRunStream>['answer']>;
+  returnTo: string;
+  live?: boolean;
+  targeted?: boolean;
+  targetRef?: RefObject<HTMLElement | null> | undefined;
+}) {
+  return <article
+    ref={targetRef}
+    className={`agent-message agent-answer-committed${live ? ' is-live' : ''}${targeted ? ' is-target' : ''}`}
+    tabIndex={targeted ? -1 : undefined}
+    aria-live={live ? 'polite' : undefined}
+  >
     <span>Agent</span>
     <div className="agent-answer-body">
       <p className="agent-answer-conclusion">{answer.conclusion}</p>
       {answer.sections.map((section) => <section key={section.id}><h3>{section.title}</h3><SanitizedMarkdown>{section.markdown}</SanitizedMarkdown></section>)}
-      {answer.citations.length > 0 ? <div className="agent-citations"><strong>引用依据</strong>{answer.citations.map((citation) => citation.href ? <Link key={citation.referenceId} to={citation.href}><span>{citation.title}</span><small>{citation.excerpt}</small><ArrowRight size={15} /></Link> : <div className="is-invalid" key={citation.referenceId}><span>{citation.title}</span><small>{citation.invalidReason}</small></div>)}</div> : null}
-      {answer.flowFeedback.length > 0 ? <div className="agent-flow-feedback"><strong>流程反馈</strong>{answer.flowFeedback.map((feedback) => <p key={`${feedback.kind}:${feedback.referenceId}`}>{feedback.message}</p>)}</div> : null}
-      {answer.artifacts.length > 0 ? <div className="agent-artifact-chips">{answer.artifacts.map((artifact) => <span key={artifact.id}>{artifactLabel(artifact.kind)} · {artifact.title}</span>)}</div> : null}
+      {answer.citations.length > 0 ? <div className="agent-citations"><strong>引用依据</strong>{answer.citations.map((citation) => citation.href ? <Link key={citation.referenceId} to={appendSafeReturnTo(citation.href, returnTo)}><span>{citation.title}</span><small>{citation.excerpt}</small><ArrowRight size={15} /></Link> : <div className="is-invalid" key={citation.referenceId}><span>{citation.title}</span><small>{citation.invalidReason}</small></div>)}</div> : null}
+      {answer.flowFeedback.length > 0 ? <div className="agent-flow-feedback"><strong>流程反馈</strong>{answer.flowFeedback.map((feedback) => feedback.href
+        ? <Link key={`${feedback.kind}:${feedback.referenceId}`} to={appendSafeReturnTo(feedback.href, returnTo)}><span>{feedback.message}</span><ArrowRight size={15} /></Link>
+        : <div className="is-invalid" key={`${feedback.kind}:${feedback.referenceId}`}><span>{feedback.message}</span><small>{feedback.invalidReason}</small></div>)}</div> : null}
+      {answer.artifacts.length > 0 ? <div className="agent-artifact-list">{answer.artifacts.map((artifact) => <details key={artifact.id}>
+        <summary>{artifactLabel(artifact.kind)} · {artifact.title}</summary>
+        <ArtifactViewer artifact={artifact} />
+      </details>)}</div> : null}
     </div>
   </article>;
 }
@@ -417,4 +529,20 @@ function createConversationContextKey(scope: ConversationScope, conversationId: 
 
 function mergeAttachments<T extends { id: string }>(left: readonly T[], right: readonly T[]): T[] {
   return [...new Map([...left, ...right].map((attachment) => [attachment.id, attachment])).values()];
+}
+
+function mergeConversationMessages(
+  server: ConversationDetailV1['messages'],
+  optimistic: ConversationDetailV1['messages'],
+): ConversationDetailV1['messages'] {
+  const serverIds = new Set(server.map((message) => message.id));
+  return [...server, ...optimistic.filter((message) => !serverIds.has(message.id))];
+}
+
+function readLocatorParam(value: string | null): string | null {
+  return value && value.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : null;
+}
+
+export function isNearScrollBottom(element: Pick<HTMLElement, 'scrollHeight' | 'scrollTop' | 'clientHeight'>): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= 96;
 }

@@ -152,6 +152,30 @@ export async function startRuntimeBridgeService(config = loadRuntimeBridgeConfig
   return { app, runtime };
 }
 
+interface AsyncClosable {
+  close(): Promise<unknown>;
+}
+
+export async function closeRuntimeBridgeService(
+  app: AsyncClosable,
+  runtime: AsyncClosable,
+): Promise<void> {
+  let appClosing: Promise<unknown>;
+  try {
+    appClosing = app.close();
+  } catch {
+    appClosing = Promise.resolve();
+  }
+
+  let runtimeClosing: Promise<unknown>;
+  try {
+    runtimeClosing = runtime.close();
+  } catch {
+    runtimeClosing = Promise.resolve();
+  }
+  await Promise.allSettled([appClosing, runtimeClosing]);
+}
+
 const defaultExecFile: ExecFileFunction = async (file, args, options) => {
   return await new Promise((resolve, reject) => {
     nodeExecFile(file, [...args], {
@@ -186,8 +210,7 @@ async function main(): Promise<void> {
     const close = async () => {
       if (closing) return;
       closing = true;
-      await app.close().catch(() => undefined);
-      await runtime.close().catch(() => undefined);
+      await closeRuntimeBridgeService(app, runtime);
     };
     process.once('SIGTERM', () => { void close(); });
     process.once('SIGINT', () => { void close(); });

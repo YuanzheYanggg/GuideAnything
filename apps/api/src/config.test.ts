@@ -17,7 +17,6 @@ function env(overrides: Record<string, string | undefined> = {}): NodeJS.Process
 describe('parseConfig', () => {
   it('parses defaults without requiring a local vault to exist', () => {
     const config = parseConfig(env({
-      AGENT_BRIDGE_TOKEN: undefined,
       SANTEXWELL_VAULT_PATH: undefined,
     }), root);
 
@@ -28,7 +27,7 @@ describe('parseConfig', () => {
       runtimeMode: 'bridge',
       santexwellVaultPath: null,
       bridgeUrl: 'http://127.0.0.1:3010/',
-      bridgeToken: LOCAL_AGENT_BRIDGE_TOKEN,
+      bridgeToken: 'test-agent-bridge-token-that-is-at-least-32-characters',
       agentConcurrency: 3,
       routerTimeoutMs: 30_000,
       workerTimeoutMs: 90_000,
@@ -116,15 +115,18 @@ describe('parseConfig', () => {
     }), root)).toThrow(/AGENT_RUN_TIMEOUT_MS/);
   });
 
-  it('rejects a blank or short token in bridge mode', () => {
+  it('rejects a missing, blank, short, or public sentinel token in bridge mode', () => {
+    expect(() => parseConfig(env({ AGENT_BRIDGE_TOKEN: undefined }), root)).toThrow(/AGENT_BRIDGE_TOKEN/);
     expect(() => parseConfig(env({ AGENT_BRIDGE_TOKEN: '' }), root)).toThrow(/AGENT_BRIDGE_TOKEN/);
     expect(() => parseConfig(env({ AGENT_BRIDGE_TOKEN: 'short' }), root)).toThrow(/AGENT_BRIDGE_TOKEN/);
+    expect(() => parseConfig(env({ AGENT_BRIDGE_TOKEN: LOCAL_AGENT_BRIDGE_TOKEN }), root))
+      .toThrow(/AGENT_BRIDGE_TOKEN/);
   });
 
   it('allows explicit fake mode without a token only outside production', () => {
     const config = parseConfig(env({
       AGENT_RUNTIME_MODE: 'fake',
-      AGENT_BRIDGE_TOKEN: '',
+      AGENT_BRIDGE_TOKEN: LOCAL_AGENT_BRIDGE_TOKEN,
     }), root);
 
     expect(config.runtimeMode).toBe('fake');
@@ -137,18 +139,30 @@ describe('parseConfig', () => {
       AGENT_RUNTIME_MODE: 'fake',
       AGENT_BRIDGE_TOKEN: '',
     }), root)).toThrow(/fake/);
-    expect(() => parseConfig(env({
-      NODE_ENV: 'production',
-      AGENT_BRIDGE_TOKEN: undefined,
-    }), root)).toThrow(/AGENT_BRIDGE_TOKEN/);
-    expect(() => parseConfig(env({
-      NODE_ENV: 'production',
-      AGENT_BRIDGE_TOKEN: LOCAL_AGENT_BRIDGE_TOKEN,
-    }), root)).toThrow(/AGENT_BRIDGE_TOKEN/);
-
     expect(parseConfig(env({
       NODE_ENV: 'production',
       AGENT_BRIDGE_TOKEN: 'production-runtime-token-that-is-at-least-32-chars',
+      JWT_SECRET: 'production-jwt-secret-that-is-at-least-32-characters',
     }), root).runtimeMode).toBe('bridge');
+  });
+
+  it('requires an explicit non-public JWT secret of at least 32 characters in production', () => {
+    for (const jwtSecret of [
+      undefined,
+      'short',
+      'guideanything-local-development-secret-change-me',
+      '  guideanything-local-development-secret-change-me  ',
+      'replace-with-at-least-32-characters-for-local-development',
+    ]) {
+      expect(() => parseConfig(env({
+        NODE_ENV: 'production',
+        JWT_SECRET: jwtSecret,
+      }), root)).toThrow(/JWT_SECRET/);
+    }
+
+    expect(parseConfig(env({
+      NODE_ENV: 'production',
+      JWT_SECRET: 'production-jwt-secret-that-is-at-least-32-characters',
+    }), root).jwtSecret).toBe('production-jwt-secret-that-is-at-least-32-characters');
   });
 });

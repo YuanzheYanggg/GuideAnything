@@ -58,6 +58,7 @@ export async function runFinalAnswer(
   runtime: AgentRuntimeClient,
   request: BridgeRunRequestV1 & { outputKind: 'ANSWER' },
   signal?: AbortSignal,
+  onStructuredOutputDelta?: (delta: string) => void,
 ): Promise<AgentInternalAnswerV1> {
   return consumeTypedOutput(
     runtime,
@@ -65,6 +66,7 @@ export async function runFinalAnswer(
     'FINAL_ANSWER',
     (event) => AgentInternalAnswerV1Schema.parse(event.payload.answer),
     signal,
+    onStructuredOutputDelta,
   );
 }
 
@@ -77,12 +79,20 @@ async function consumeTypedOutput<
   expectedType: TType,
   project: (event: Extract<BridgeEventV1, { type: TType }>) => TResult,
   signal?: AbortSignal,
+  onStructuredOutputDelta?: (delta: string) => void,
 ): Promise<TResult> {
   let output: TResult | undefined;
   let completed = false;
   for await (const event of runtime.run(request, signal)) {
     if (completed) throw new AgentInvocationError('BRIDGE_TRAILING_EVENT', true);
     if (event.type === 'THREAD_BOUND' || event.type === 'COMMENTARY') continue;
+    if (event.type === 'STRUCTURED_OUTPUT_DELTA') {
+      if (expectedType !== 'FINAL_ANSWER' || output !== undefined) {
+        throw new AgentInvocationError('BRIDGE_OUTPUT_KIND_INVALID', true);
+      }
+      onStructuredOutputDelta?.(event.payload.delta);
+      continue;
+    }
     if (event.type === 'FAILED') {
       throw new AgentInvocationError(event.payload.code, event.payload.retryable);
     }

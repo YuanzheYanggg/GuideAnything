@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { readTrustedPromptHarness } from '../knowledge/vault-indexer';
+import { createDatabase } from '../../db/client';
+import { migrateDatabase } from '../../db/migrate';
+import { indexSantexwellVault, readTrustedPromptHarness } from '../knowledge/vault-indexer';
 import { getTrustedSantexwellHarness } from './trusted-harness';
 
 describe('trusted Santexwell harness adapter', () => {
@@ -24,6 +26,42 @@ describe('trusted Santexwell harness adapter', () => {
       writeFile(join(root, 'private-secret.md'), '不得进入 harness。'),
     ]);
     const indexed = await readTrustedPromptHarness(root, { intent: 'GENERAL_QA' });
+    expect(getTrustedSantexwellHarness(root)).toBeNull();
+
+    const canonicalPage = `---
+title: "Index"
+page_type: "index"
+status: "active"
+tags:
+  - "domain/textiles"
+aliases:
+  - "Index"
+source_count: 1
+evidence_status: "index-only"
+last_compiled: "2026-07-15"
+review_state: "review"
+---
+# Index
+
+Published index.
+`;
+    await mkdir(join(root, 'wiki_v2', '_meta', 'build'), { recursive: true });
+    await Promise.all([
+      writeFile(join(root, 'wiki_v2', 'index.md'), canonicalPage),
+      writeFile(join(root, 'wiki_v2', '_meta', 'Tag Taxonomy.md'), canonicalPage.replaceAll('Index', 'Taxonomy')),
+      writeFile(join(root, 'wiki_v2', '_meta', 'build', 'provenance_manifest.json'), JSON.stringify({
+        generated_on: '2026-07-15',
+        pages: {},
+      })),
+    ]);
+    const database = createDatabase(':memory:');
+    migrateDatabase(database);
+    try {
+      await expect(indexSantexwellVault(database, root, AbortSignal.timeout(2_000)))
+        .resolves.toMatchObject({ status: 'READY' });
+    } finally {
+      database.close();
+    }
 
     const result = getTrustedSantexwellHarness(root);
 

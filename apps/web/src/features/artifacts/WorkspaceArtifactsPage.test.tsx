@@ -18,6 +18,14 @@ const proposal: ArtifactV1 = {
   changes: [{ id: 'change-1', kind: 'ADD_NODE', summary: '在验货不通过后增加复核节点。' }],
   createdAt: '2026-07-15T00:00:00.000Z',
 };
+const referenceCollection: ArtifactV1 = {
+  id: 'artifact-references', runId: 'run-1', kind: 'REFERENCE_COLLECTION', title: '验货依据',
+  references: [{
+    referenceId: 'reference-1', title: '验货节点', summary: '打开对应流程节点。',
+    href: '/references/reference-1',
+  }],
+  createdAt: '2026-07-15T00:00:00.000Z',
+};
 
 describe('workspace artifacts', () => {
   it('renders sanitized reports and keeps flow proposals read-only', () => {
@@ -28,6 +36,16 @@ describe('workspace artifacts', () => {
     rerender(<MemoryRouter><ArtifactViewer artifact={proposal} /></MemoryRouter>);
     expect(screen.getByText('这是与正式指南分离的只读建议。当前页面没有“应用”或写回操作。')).toBeVisible();
     expect(screen.queryByRole('button', { name: /应用/u })).not.toBeInTheDocument();
+  });
+
+  it('preserves a safe return target when a reference collection opens evidence', () => {
+    render(<MemoryRouter initialEntries={['/workspaces/workspace-1/artifacts']}>
+      <ArtifactViewer artifact={referenceCollection} />
+    </MemoryRouter>);
+
+    expect(screen.getByRole('link', { name: /验货节点/u })).toHaveAttribute(
+      'href', '/references/reference-1?returnTo=%2Fworkspaces%2Fworkspace-1%2Fartifacts',
+    );
   });
 
   it('switches between private artifact and conversation views', async () => {

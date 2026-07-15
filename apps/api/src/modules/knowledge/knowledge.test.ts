@@ -18,7 +18,7 @@ import {
 import { extractWorkspaceDocument, sanitizeUploadName } from './extractor';
 import { reconcileGuideFlowSnapshots } from './flow-indexer';
 import { parseCanonicalMarkdown } from './markdown';
-import { searchKnowledge } from './repository';
+import { searchKnowledge, searchKnowledgeInternal } from './repository';
 import { buildSearchText, compileFtsQuery } from './search-text';
 import { KnowledgeService } from './service';
 
@@ -316,6 +316,36 @@ describe('knowledge routes, uploads, and flow synchronization', () => {
     expect(await readdir(join(root, 'uploads', 'knowledge')).catch(() => [])).toEqual([]);
   });
 
+  it('applies workspace scope before the bounded FTS candidate window', () => {
+    const noiseWorkspaceId = 'workspace-knowledge-noise';
+    seedTestWorkspace(context.database, context.userIds.otherAuthor, {
+      id: noiseWorkspaceId, slug: 'knowledge-noise', name: '噪声工作区',
+    });
+    seedWorkspaceSearchSource(
+      context,
+      'source-noise',
+      noiseWorkspaceId,
+      context.userIds.otherAuthor,
+      Array.from({ length: 201 }, (_, index) => `document-a-${String(index).padStart(3, '0')}`),
+    );
+    seedWorkspaceSearchSource(
+      context,
+      'source-target',
+      workspaceId,
+      context.userIds.author,
+      ['document-z-target'],
+    );
+
+    const hits = searchKnowledgeInternal(context.database, '共同术语', {
+      sourceKinds: ['WORKSPACE_DOCUMENT'],
+      workspaceId,
+      userId: context.userIds.author,
+      limit: 1,
+    });
+
+    expect(hits.map(({ hit }) => hit.documentId)).toEqual(['document-z-target']);
+  });
+
   it('indexes draft and immutable published flow snapshots without exposing canvas internals', async () => {
     const created = await context.app.inject({
       method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
@@ -410,6 +440,55 @@ async function uploadMarkdown(context: TestContext, token: string, workspaceId: 
     headers: { ...authorization(token), 'content-type': `multipart/form-data; boundary=${boundary}` },
     payload: body,
   });
+}
+
+function seedWorkspaceSearchSource(
+  context: TestContext,
+  sourceId: string,
+  workspaceId: string,
+  createdBy: string,
+  documentIds: string[],
+): void {
+  const now = '2026-07-15T00:00:00.000Z';
+  context.database.prepare(
+    `INSERT INTO knowledge_sources (
+      id, scope, kind, workspace_id, conversation_id, created_by,
+      status, revision, config_json, created_at, updated_at
+    ) VALUES (?, 'WORKSPACE', 'WORKSPACE_DOCUMENT', ?, NULL, ?,
+              'READY', 'search-r1', '{}', ?, ?)`,
+  ).run(sourceId, workspaceId, createdBy, now, now);
+  const insertDocument = context.database.prepare(
+    `INSERT INTO knowledge_documents (
+      id, source_id, flow_snapshot_id, relative_locator, title, checksum, revision,
+      parse_status, metadata_json, created_at, updated_at
+    ) VALUES (?, ?, NULL, ?, '共同术语资料', ?, 'search-r1', 'READY', ?, ?, ?)`,
+  );
+  const insertFragment = context.database.prepare(
+    `INSERT INTO knowledge_fragments (
+      id, document_id, ordinal, title, heading, content, search_text,
+      internal_locator_json, created_at, updated_at
+    ) VALUES (?, ?, 0, '共同术语资料', NULL, '共同术语正文', ?, ?, ?, ?)`,
+  );
+  for (const documentId of documentIds) {
+    const fragmentId = `fragment-${documentId}`;
+    insertDocument.run(
+      documentId,
+      sourceId,
+      `${documentId}.md`,
+      documentId,
+      JSON.stringify({ sourceKind: 'WORKSPACE_DOCUMENT' }),
+      now,
+      now,
+    );
+    insertFragment.run(
+      fragmentId,
+      documentId,
+      buildSearchText(['共同术语']),
+      JSON.stringify({ kind: 'WORKSPACE_DOCUMENT', documentId, fragmentId, revision: 'search-r1' }),
+      now,
+      now,
+    );
+  }
 }
 
 function fakeDocxArchive(documentBytes: Buffer, declaredDocumentSize = documentBytes.length): Buffer {

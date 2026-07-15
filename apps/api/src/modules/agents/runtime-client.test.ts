@@ -103,6 +103,40 @@ describe('HttpAgentRuntimeClient', () => {
     await expect(collect(oversized.run(request))).rejects.toMatchObject({ code: 'BRIDGE_RESPONSE_TOO_LARGE' });
   });
 
+  it('accepts answer previews only for an ANSWER request before the structured output', async () => {
+    const answerRequest: BridgeRunRequestV1 = {
+      ...request,
+      role: 'FOCUSED_WORKER',
+      outputKind: 'ANSWER',
+      prompt: '回答问题。',
+    };
+    const answer = {
+      mode: 'ANSWER', conclusion: '结论', sections: [], evidence: [], flowFeedback: [],
+      evidenceStatus: 'INSUFFICIENT', artifacts: [], suggestedQuestions: [],
+    };
+    const preview = {
+      requestId: 'request-1', runId: 'run-1', sequence: 1,
+      type: 'STRUCTURED_OUTPUT_DELTA', payload: { delta: '{"conclusion":"结' },
+    };
+    const events = [
+      preview,
+      { requestId: 'request-1', runId: 'run-1', sequence: 2, type: 'FINAL_ANSWER', payload: { answer } },
+      { requestId: 'request-1', runId: 'run-1', sequence: 3, type: 'COMPLETED', payload: {} },
+    ];
+
+    await expect(collect(clientForEvents(events).run(answerRequest))).resolves.toHaveLength(3);
+
+    const routeEvents = [
+      preview,
+      { requestId: 'request-1', runId: 'run-1', sequence: 2, type: 'ROUTE_DECISION', payload: {
+        decision: routeDecision(),
+      } },
+      { requestId: 'request-1', runId: 'run-1', sequence: 3, type: 'COMPLETED', payload: {} },
+    ];
+    await expect(collect(clientForEvents(routeEvents).run(request)))
+      .rejects.toMatchObject({ code: 'BRIDGE_OUTPUT_KIND_INVALID' });
+  });
+
   it('sends schema-validated cancel and steer commands without callers supplying credentials', async () => {
     const requestBodies: string[] = [];
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -169,4 +203,21 @@ async function collect(events: AsyncIterable<BridgeEventV1>): Promise<BridgeEven
   const result: BridgeEventV1[] = [];
   for await (const event of events) result.push(event);
   return result;
+}
+
+function routeDecision() {
+  return {
+    intent: '直接回答',
+    complexity: { scopeBreadth: 1, evidenceDepth: 1, crossSourceNeed: 1, decompositionNeed: 1, ambiguity: 1 },
+    contextAssessment: '无需检索。',
+    route: 'DIRECT',
+    sources: { workspaceFlows: false, workspaceDocuments: false, sessionAttachments: false, santexwell: false },
+    tasks: [],
+    budget: {
+      maxWorkers: 0, maxConcurrency: 1, maxWorkspaceCandidates: 0, maxFlowHops: 0,
+      maxVaultClusters: 0, maxVaultDigests: 0, allowRaw: false, useReducer: false,
+    },
+    executionMode: 'SEQUENTIAL', maxConcurrency: 1,
+    stopConditions: ['回答完成'], confidence: 1, userFacingPlan: '直接回答。',
+  };
 }

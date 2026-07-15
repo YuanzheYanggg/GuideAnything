@@ -113,6 +113,8 @@ describe('private artifact and opaque reference routes', () => {
       .run('workspace-artifacts', context.userIds.author);
     const forbidden = await resolve('reference-workspace', context.tokens.author);
     expect(forbidden.json()).toMatchObject({ status: 'INVALID', reasonCode: 'FORBIDDEN' });
+    expect(forbidden.json()).not.toMatchObject({ title: '证据标题' });
+    expect(JSON.stringify(forbidden.json())).not.toContain('证据摘录');
   });
 
   it('maps an unexpired session attachment back to the initiating conversation message', async () => {

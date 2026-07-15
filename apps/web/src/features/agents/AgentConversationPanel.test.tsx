@@ -7,7 +7,7 @@ import type {
   ConversationDetailV1,
   ConversationSummaryV1,
 } from '@guideanything/contracts';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -291,6 +291,146 @@ describe('AgentConversationPanel', () => {
       sources: expect.objectContaining({ sessionAttachments: false }),
     }));
   });
+
+  it('keeps a committed answer in the transcript when the next run starts', async () => {
+    const user = userEvent.setup();
+    const target = conversation('GLOBAL_SANTEXWELL');
+    const mock = api({
+      listGlobal: vi.fn().mockResolvedValue([target]),
+      getGlobal: vi.fn().mockResolvedValue(detail('GLOBAL_SANTEXWELL')),
+      sendGlobal: vi.fn().mockResolvedValue(acceptedFor(target, 'run-2', 'message-2', 2)),
+      streamRun: vi.fn((path) => path.includes('run-1') ? stream([
+        event(1, 'answer.committed', { answer: committedAnswer }, 'COMMITTED'),
+        event(2, 'run.completed', { messageId: 'assistant-1' }, 'COMMITTED'),
+      ]) : stream([])),
+    });
+    renderPanel(mock, { kind: 'GLOBAL' }, '/knowledge/santexwell?conversation=conversation-1');
+
+    expect(await screen.findByText(committedAnswer.conclusion)).toBeVisible();
+    await user.type(screen.getByRole('textbox', { name: '向 Agent 提问' }), '继续说明');
+    await user.click(screen.getByRole('button', { name: '发送问题' }));
+
+    await waitFor(() => expect(mock.sendGlobal).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(committedAnswer.conclusion)).toBeVisible();
+  });
+
+  it('keeps validated flow feedback navigable and exposes global artifacts inline', async () => {
+    const user = userEvent.setup();
+    const target = conversation('GLOBAL_SANTEXWELL');
+    const answer: AgentCommittedAnswerV1 = {
+      ...committedAnswer,
+      flowFeedback: [{
+        kind: 'GAP', message: '流程缺少复核节点。', referenceId: 'reference-flow', href: '/references/reference-flow',
+      }, {
+        kind: 'CONFLICT', message: '旧节点已经失效。', referenceId: 'reference-stale', href: null,
+        invalidReason: '对应流程版本已经更新。',
+      }],
+      artifacts: [{
+        id: 'artifact-global', runId: 'run-existing', kind: 'REPORT', title: '全局分析报告', summary: '跨页面结论。',
+        sections: [{ title: '发现', markdown: '可验证的 **报告内容**。' }], createdAt: '2026-07-15T00:00:00.000Z',
+      }],
+    };
+    const withAnswer: ConversationDetailV1 = {
+      conversation: target,
+      messages: [{ id: 'assistant-existing', role: 'ASSISTANT', runId: 'run-existing', answer, createdAt: '2026-07-15T00:00:00.000Z' }],
+      latestRun: null,
+      attachments: [],
+    };
+    const mock = api({
+      listGlobal: vi.fn().mockResolvedValue([target]),
+      getGlobal: vi.fn().mockResolvedValue(withAnswer),
+    });
+    renderPanel(mock, { kind: 'GLOBAL' }, '/knowledge/santexwell?conversation=conversation-1');
+
+    expect(await screen.findByRole('link', { name: /流程缺少复核节点/u })).toHaveAttribute(
+      'href', '/references/reference-flow?returnTo=%2Fknowledge%2Fsantexwell%3Fconversation%3Dconversation-1',
+    );
+    expect(screen.getByText('对应流程版本已经更新。')).toBeVisible();
+    await user.click(screen.getByText('报告 · 全局分析报告'));
+    expect(await screen.findByRole('heading', { name: '全局分析报告' })).toBeVisible();
+    expect(screen.getByText('报告内容')).toBeVisible();
+  });
+
+  it('focuses the conversation message selected by a validated reference', async () => {
+    const target = conversation('WORKSPACE');
+    const targetDetail: ConversationDetailV1 = {
+      conversation: target,
+      messages: [{
+        id: 'message-target', role: 'USER', clientMessageId: 'client-target', content: '需要定位的历史问题',
+        sources: { workspaceFlows: true, workspaceDocuments: true, sessionAttachments: false, santexwell: false },
+        createdAt: '2026-07-15T00:00:00.000Z',
+      }],
+      latestRun: null,
+      attachments: [],
+    };
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const mock = api({
+      listWorkspace: vi.fn().mockResolvedValue([target]),
+      getWorkspace: vi.fn().mockResolvedValue(targetDetail),
+    });
+    renderPanel(
+      mock,
+      { kind: 'WORKSPACE', workspaceId: 'workspace-1' },
+      '/workspaces/workspace-1/agents?conversation=conversation-1&message=message-target&returnTo=%2Fworkspaces%2Fworkspace-1%2Fagents%3Fconversation%3Dorigin',
+    );
+
+    const message = (await screen.findByText('需要定位的历史问题')).closest('article');
+    await waitFor(() => expect(message).toHaveFocus());
+    expect(message).toHaveClass('is-target');
+    expect(scrollIntoView).toHaveBeenCalled();
+    expect(screen.getByRole('link', { name: /返回引用来源/u })).toHaveAttribute(
+      'href', '/workspaces/workspace-1/agents?conversation=origin',
+    );
+  });
+
+  it('submits one steer while the control request is pending', async () => {
+    const user = userEvent.setup();
+    const pending = deferred<AgentRunSnapshotV1>();
+    const mock = api({ steerRun: vi.fn().mockReturnValue(pending.promise) });
+    renderPanel(mock, { kind: 'WORKSPACE', workspaceId: 'workspace-1' }, '/workspaces/workspace-1/agents?conversation=conversation-1');
+
+    await user.click(await screen.findByRole('button', { name: '调整方向' }));
+    await user.type(screen.getByLabelText('告诉调度器接下来要调整什么'), '只看当前流程');
+    const apply = screen.getByRole('button', { name: '应用' });
+    await user.dblClick(apply);
+
+    expect(mock.steerRun).toHaveBeenCalledTimes(1);
+    expect(apply).toBeDisabled();
+    pending.resolve({ ...run(), planVersion: 2 });
+    await waitFor(() => expect(screen.queryByRole('button', { name: '应用' })).not.toBeInTheDocument());
+  });
+
+  it('follows streamed output only while the message viewport remains near the bottom', async () => {
+    const firstDelta = deferred<void>();
+    const secondDelta = deferred<void>();
+    const mock = api({
+      streamRun: vi.fn(async function* () {
+        await firstDelta.promise;
+        yield event(1, 'answer.draft.delta', { delta: '第一段' });
+        await secondDelta.promise;
+        yield event(2, 'answer.draft.delta', { delta: '第二段' });
+      }),
+    });
+    renderPanel(mock, { kind: 'WORKSPACE', workspaceId: 'workspace-1' }, '/workspaces/workspace-1/agents?conversation=conversation-1');
+
+    const viewport = await screen.findByLabelText('会话消息');
+    Object.defineProperties(viewport, {
+      scrollHeight: { configurable: true, get: () => 1_000 },
+      clientHeight: { configurable: true, get: () => 300 },
+    });
+    viewport.scrollTop = 650;
+    fireEvent.scroll(viewport);
+    firstDelta.resolve();
+    expect(await screen.findByText('第一段')).toBeVisible();
+    await waitFor(() => expect(viewport.scrollTop).toBe(1_000));
+
+    viewport.scrollTop = 100;
+    fireEvent.scroll(viewport);
+    secondDelta.resolve();
+    expect(await screen.findByText('第一段第二段')).toBeVisible();
+    expect(viewport.scrollTop).toBe(100);
+  });
 });
 
 const committedAnswer: AgentCommittedAnswerV1 = {
@@ -402,14 +542,23 @@ function run(): AgentRunSnapshotV1 {
 }
 
 function accepted(target: ConversationSummaryV1): AgentMessageAcceptedV1 {
-  const nextRun = { ...run(), conversationId: target.id };
+  return acceptedFor(target, 'run-1', 'message-1', 1);
+}
+
+function acceptedFor(
+  target: ConversationSummaryV1,
+  runId: string,
+  messageId: string,
+  runSequence: number,
+): AgentMessageAcceptedV1 {
+  const nextRun = { ...run(), id: runId, conversationId: target.id, initiatingMessageId: messageId, runSequence };
   return {
     message: {
-      id: 'message-1', role: 'USER', clientMessageId: 'client-1', content: '问题', sources: nextRun.sources,
+      id: messageId, role: 'USER', clientMessageId: `client-${messageId}`, content: '问题', sources: nextRun.sources,
       createdAt: '2026-07-15T00:00:00.000Z',
     },
     run: nextRun,
-    eventsPath: '/agent-runs/run-1/events',
+    eventsPath: `/agent-runs/${runId}/events`,
   };
 }
 

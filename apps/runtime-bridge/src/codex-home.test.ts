@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readlink, realpath, stat, lstat, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, readlink, realpath, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -37,6 +37,47 @@ async function fixture() {
 }
 
 describe('dedicated Codex runtime home', () => {
+  it('refuses to claim the canonical personal ~/.codex through a parent path alias', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'guideanything-personal-home-'));
+    roots.push(root);
+    const personalHome = path.join(root, 'personal');
+    const personalCodexHome = path.join(personalHome, '.codex');
+    const alias = path.join(root, 'personal-alias');
+    await mkdir(personalCodexHome, { recursive: true });
+    await writeFile(path.join(personalCodexHome, 'auth.json'), 'personal-auth', { mode: 0o600 });
+    await symlink(personalHome, alias, 'dir');
+    const config = parseRuntimeBridgeEnv({
+      AGENT_BRIDGE_TOKEN: 'runtime-bridge-test-token-000000000000',
+      CODEX_RUNTIME_HOME: path.join(alias, '.codex'),
+      CODEX_RUNTIME_WORK_DIR: path.join(root, 'work'),
+    });
+
+    await expect(prepareCodexRuntime(config, { HOME: personalHome }))
+      .rejects.toThrow(/personal.*CODEX_HOME|CODEX_HOME.*personal/u);
+    await expect(lstat(path.join(personalCodexHome, '.guideanything-runtime-home')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses to claim an inherited CODEX_HOME even when it contains only auth', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'guideanything-inherited-home-'));
+    roots.push(root);
+    const inheritedHome = path.join(root, 'inherited-codex-home');
+    await mkdir(inheritedHome);
+    await writeFile(path.join(inheritedHome, 'auth.json'), 'personal-auth', { mode: 0o600 });
+    const config = parseRuntimeBridgeEnv({
+      AGENT_BRIDGE_TOKEN: 'runtime-bridge-test-token-000000000000',
+      CODEX_RUNTIME_HOME: inheritedHome,
+      CODEX_RUNTIME_WORK_DIR: path.join(root, 'work'),
+    });
+
+    await expect(prepareCodexRuntime(config, {
+      HOME: path.join(root, 'personal'),
+      CODEX_HOME: inheritedHome,
+    })).rejects.toThrow(/inherited.*CODEX_HOME|CODEX_HOME.*inherited/u);
+    await expect(lstat(path.join(inheritedHome, '.guideanything-runtime-home')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('atomically prepares a restrictive minimal home and links explicit auth without copying it', async () => {
     const { auth, config } = await fixture();
 

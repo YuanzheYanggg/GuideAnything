@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, rename, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createDatabase } from '../../db/client';
 import { migrateDatabase } from '../../db/migrate';
@@ -13,6 +13,8 @@ import {
   searchKnowledgeInternal,
 } from './repository';
 import {
+  createSantexwellVaultRefreshController,
+  getLastGoodPromptHarness,
   indexSantexwellVault,
   readSantexwellRawEvidence,
   readStableContainedFile,
@@ -97,6 +99,43 @@ describe('Santexwell vault indexing', () => {
     await expect(readTrustedPromptHarness(root, { intent: 'GENERAL_QA' })).rejects.toMatchObject({
       code: 'HARNESS_FILE_TOO_LARGE',
     });
+  });
+
+  it('aborts and waits for the active refresh before completing shutdown', async () => {
+    let scanSignal: AbortSignal | undefined;
+    let finishScan: ((summary: Awaited<ReturnType<typeof indexSantexwellVault>>) => void) | undefined;
+    const indexVault = vi.fn((_database, _root, signal: AbortSignal) => {
+      scanSignal = signal;
+      return new Promise<Awaited<ReturnType<typeof indexSantexwellVault>>>((resolve) => {
+        finishScan = resolve;
+      });
+    });
+    const refresh = createSantexwellVaultRefreshController({
+      database,
+      root,
+      timeoutMs: 2_000,
+      indexVault,
+    });
+    const active = refresh.refresh();
+    await vi.waitFor(() => expect(scanSignal).toBeDefined());
+
+    let closeFinished = false;
+    const closing = refresh.close().then(() => { closeFinished = true; });
+    expect(scanSignal?.aborted).toBe(true);
+    await Promise.resolve();
+    expect(closeFinished).toBe(false);
+    finishScan?.({
+      status: 'DEGRADED', revision: null, indexedDocuments: 0,
+      indexedFragments: 0, changedDocuments: 0, reasonCodes: ['SCAN_ABORTED'],
+    });
+
+    await expect(active).resolves.toMatchObject({ reasonCodes: ['SCAN_ABORTED'] });
+    await closing;
+    expect(closeFinished).toBe(true);
+    await expect(refresh.refresh()).resolves.toMatchObject({
+      status: 'SKIPPED', reasonCodes: ['REFRESH_CLOSED'],
+    });
+    expect(indexVault).toHaveBeenCalledOnce();
   });
 
   it('reads from a no-follow descriptor and rejects a path replaced after open', async () => {
@@ -272,8 +311,11 @@ describe('Santexwell vault indexing', () => {
     ).get();
     await put('wiki_v2/concepts/相邻页.md', page({ title: '相邻页面', body: '本轮不应发布的新内容。' }));
     await put('wiki_v2/concepts/新名.md', '---\ntitle: broken\ntitle: duplicate\n---\n# broken');
+    const lastGoodHarness = getLastGoodPromptHarness(root);
+    await put('CORE.md', '# Core\n本轮失败时不得晋升。');
     const failed = await indexSantexwellVault(database, root, AbortSignal.timeout(2_000));
     expect(failed.status).toBe('DEGRADED');
+    expect(getLastGoodPromptHarness(root)?.revision).toBe(lastGoodHarness?.revision);
     expect(database.prepare(`SELECT id, checksum FROM knowledge_documents WHERE title = '稳定页面'`).get()).toEqual(before);
     expect(database.prepare(`SELECT checksum FROM knowledge_documents WHERE title = '相邻页面'`).get()).toEqual(neighborBefore);
   });
@@ -285,6 +327,7 @@ describe('Santexwell vault indexing', () => {
 
     const summary = await indexSantexwellVault(database, root, AbortSignal.timeout(2_000));
     expect(summary.status).toBe('UNAVAILABLE');
+    expect(getLastGoodPromptHarness(root)).toBeNull();
     expect(searchKnowledge(database, '尚未发布', { sourceKinds: ['SANTEXWELL'] })).toEqual([]);
     expect(database.prepare(`SELECT 1 FROM knowledge_documents WHERE title = '尚未发布页面'`).get()).toBeUndefined();
   });

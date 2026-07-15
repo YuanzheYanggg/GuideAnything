@@ -220,6 +220,12 @@ function assertExpectedOutput(
   const structured = event.type === 'ROUTE_DECISION'
     || event.type === 'TASK_FINDING'
     || event.type === 'FINAL_ANSWER';
+  if (
+    event.type === 'STRUCTURED_OUTPUT_DELTA'
+    && (request.outputKind !== 'ANSWER' || alreadyReceived)
+  ) {
+    throw new RuntimeClientError('BRIDGE_OUTPUT_KIND_INVALID', true);
+  }
   if (structured && (event.type !== expectedType || alreadyReceived)) {
     throw new RuntimeClientError('BRIDGE_OUTPUT_KIND_INVALID', true);
   }

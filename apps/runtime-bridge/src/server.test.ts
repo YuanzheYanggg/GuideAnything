@@ -12,6 +12,7 @@ import { parseRuntimeBridgeEnv } from './config';
 import type { RpcChildTransport } from './json-rpc';
 import {
   buildMinimalProcessEnvironment,
+  closeRuntimeBridgeService,
   launchCodexRuntime,
   probeCodexInstallation,
   type ExecFileFunction,
@@ -95,6 +96,29 @@ function featureOutput(features: readonly string[] = REQUIRED_DISABLED_FEATURES)
 }
 
 describe('Codex process isolation', () => {
+  it('starts Fastify shutdown before closing the runtime and waits for both in parallel', async () => {
+    const events: string[] = [];
+    let finishAppClose: (() => void) | undefined;
+    const app = {
+      close: vi.fn(() => new Promise<void>((resolve) => {
+        events.push('app-closing');
+        finishAppClose = resolve;
+      })),
+    };
+    const runtime = {
+      close: vi.fn(async () => {
+        events.push('runtime-closing');
+        finishAppClose?.();
+      }),
+    };
+
+    await closeRuntimeBridgeService(app, runtime);
+
+    expect(events).toEqual(['app-closing', 'runtime-closing']);
+    expect(app.close).toHaveBeenCalledOnce();
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
   it('passes only a bounded environment and always replaces inherited CODEX_HOME', () => {
     const environment = buildMinimalProcessEnvironment('/runtime/home', {
       PATH: '/usr/bin',

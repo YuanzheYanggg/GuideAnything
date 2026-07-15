@@ -57,6 +57,7 @@ describe('parseRuntimeBridgeEnv', () => {
 
   it.each([
     [{ AGENT_BRIDGE_TOKEN: 'short' }, 'AGENT_BRIDGE_TOKEN'],
+    [{ AGENT_BRIDGE_TOKEN: 'guideanything-local-runtime-token-change-me' }, 'AGENT_BRIDGE_TOKEN'],
     [{ RUNTIME_BRIDGE_PORT: '0' }, 'RUNTIME_BRIDGE_PORT'],
     [{ RUNTIME_BRIDGE_PORT: '65536' }, 'RUNTIME_BRIDGE_PORT'],
     [{ RUNTIME_BRIDGE_HOST: '0.0.0.0' }, 'RUNTIME_BRIDGE_HOST'],

@@ -96,6 +96,38 @@ describe('DeterministicFakeAgentRuntimeClient', () => {
     expect(JSON.stringify(answerEvent.payload.answer)).not.toContain('fabricated-evidence');
     expect(events.at(-1)?.type).toBe('COMPLETED');
   });
+
+  it('supports a no-retrieval direct answer and streams its structured output before commit', async () => {
+    const events = await collect(new DeterministicFakeAgentRuntimeClient().run(request({
+      role: 'FOCUSED_WORKER',
+      outputKind: 'ANSWER',
+      retrievedContext: {
+        task: { id: 'direct-answer', objective: '直接回应简单会话' },
+        route: 'DIRECT',
+        evidence: [],
+      },
+      userRequest: {
+        text: '你好',
+        scope: 'WORKSPACE',
+        sources: {
+          workspaceFlows: false,
+          workspaceDocuments: false,
+          sessionAttachments: false,
+          santexwell: false,
+        },
+        attachmentIds: [],
+        planVersion: 1,
+      },
+    })));
+
+    const deltas = events.filter((event) => event.type === 'STRUCTURED_OUTPUT_DELTA');
+    const final = events.find((event) => event.type === 'FINAL_ANSWER');
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(JSON.parse(deltas.map((event) => event.payload.delta).join(''))).toEqual(
+      final?.type === 'FINAL_ANSWER' ? final.payload.answer : null,
+    );
+    expect(events.map((event) => event.type).at(-1)).toBe('COMPLETED');
+  });
 });
 
 function request(input: {

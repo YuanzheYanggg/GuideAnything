@@ -1,11 +1,14 @@
 import { ArtifactV1Schema, type ArtifactV1 } from '@guideanything/contracts';
 import { Background, BackgroundVariant, Controls, MarkerType, ReactFlow, type Edge, type Node } from '@xyflow/react';
 import { ArrowRight, GitDiff, Info, WarningCircle } from '@phosphor-icons/react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 
+import { appendSafeReturnTo } from '../../lib/navigation';
 import { SanitizedMarkdown } from '../markdown/SanitizedMarkdown';
 
 export function ArtifactViewer({ artifact }: { artifact: ArtifactV1 }) {
+  const location = useLocation();
+  const returnTo = `${location.pathname}${location.search}`;
   const parsed = ArtifactV1Schema.safeParse(artifact);
   if (!parsed.success) return <div className="artifact-invalid" role="alert"><WarningCircle size={20} />这个产物未通过结构校验，无法安全展示。</div>;
   const value = parsed.data;
@@ -41,7 +44,7 @@ export function ArtifactViewer({ artifact }: { artifact: ArtifactV1 }) {
   </article>;
   return <article className="artifact-reference-collection">
     <ArtifactHeading artifact={value} label="引用集合" />
-    <div>{value.references.map((reference) => reference.href ? <Link key={reference.referenceId} to={reference.href}>
+    <div>{value.references.map((reference) => reference.href ? <Link key={reference.referenceId} to={appendSafeReturnTo(reference.href, returnTo)}>
       <span><strong>{reference.title}</strong><small>{reference.summary}</small></span><ArrowRight size={16} />
     </Link> : <div className="is-invalid" key={reference.referenceId}><span><strong>{reference.title}</strong><small>{reference.invalidReason}</small></span></div>)}</div>
   </article>;
