@@ -261,10 +261,24 @@ describe('conversation persistence', () => {
     expect(() => store.append({
       runId,
       planVersion: 1,
+      phase: 'PROVISIONAL',
+      type: 'task.started',
+      payload: { taskId: 'flow', label: '检查流程' },
+    })).toThrow(/状态/u);
+    expect(() => store.append({
+      runId,
+      planVersion: 1,
+      phase: 'COMMITTED',
+      type: 'answer.validating',
+      payload: {},
+    })).toThrow(/状态/u);
+    expect(() => store.append({
+      runId,
+      planVersion: 1,
       phase: 'COMMITTED',
       type: 'run.completed',
       payload: { messageId: 'missing-assistant-message' },
-    })).toThrow(/VALIDATING|消息/u);
+    })).toThrow(/状态|消息/u);
     store.append({ runId, planVersion: 1, phase: 'PROVISIONAL', type: 'route.started', payload: {} });
     store.append({
       runId,

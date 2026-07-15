@@ -16,6 +16,16 @@ const TERMINAL_EVENT_TYPES = new Set<AgentRunEventV1['type']>([
   'run.completed', 'run.failed', 'run.cancelled',
 ]);
 const TERMINAL_RUN_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+const ROUTING_EVENT_TYPES = new Set<AgentRunEventV1['type']>([
+  'route.started', 'route.completed', 'plan.committed',
+]);
+const RUNNING_EVENT_TYPES = new Set<AgentRunEventV1['type']>([
+  'task.started', 'task.progress', 'task.finding', 'task.completed', 'reduce.started',
+  'answer.draft.delta', 'answer.validating',
+]);
+const VALIDATING_EVENT_TYPES = new Set<AgentRunEventV1['type']>([
+  'citation.committed', 'answer.committed', 'artifact.committed', 'run.completed',
+]);
 
 export class RunEventBroker {
   readonly #listeners = new Map<string, Set<RunEventListener>>();
@@ -277,14 +287,19 @@ function assertRunEventTransition(
   run: NonNullable<ReturnType<typeof getRunById>>,
   input: AppendRunEventInput,
 ): void {
-  if (input.type === 'route.started' && run.status !== 'QUEUED' && run.status !== 'ROUTING') {
-    throw new Error(`当前运行状态 ${run.status} 不能重新开始路由`);
+  if (ROUTING_EVENT_TYPES.has(input.type)) {
+    const allowed = input.type === 'route.started'
+      ? run.status === 'QUEUED' || run.status === 'ROUTING'
+      : run.status === 'ROUTING';
+    if (!allowed) throw new Error(`当前运行状态 ${run.status} 不能追加 ${input.type}`);
   }
-  if (input.type === 'plan.committed' && run.status !== 'ROUTING') {
-    throw new Error(`当前运行状态 ${run.status} 不能提交计划`);
+  if (RUNNING_EVENT_TYPES.has(input.type) && run.status !== 'RUNNING') {
+    throw new Error(`当前运行状态 ${run.status} 不能追加 ${input.type}`);
+  }
+  if (VALIDATING_EVENT_TYPES.has(input.type) && run.status !== 'VALIDATING') {
+    throw new Error(`当前运行状态 ${run.status} 不能追加 ${input.type}`);
   }
   if (input.type === 'run.completed') {
-    if (run.status !== 'VALIDATING') throw new Error('只有 VALIDATING 运行可以完成');
     const message = database.prepare(
       `SELECT id FROM conversation_messages
        WHERE id = ? AND conversation_id = ? AND role = 'ASSISTANT' AND committed = 1
