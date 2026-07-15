@@ -1,5 +1,12 @@
 import { z } from 'zod';
 
+import type {
+  BridgeCancelRequestV1,
+  BridgeEventV1,
+  BridgeRunRequestV1,
+  BridgeSteerRequestV1,
+} from './agent-runtime';
+
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export interface JsonObject { [key: string]: JsonValue }
 
@@ -110,6 +117,13 @@ export interface AgentRuntimeAdapter {
   createSession(input: AgentSessionInput): Promise<AgentSession>;
   send(sessionId: string, message: string): AsyncIterable<AgentEvent>;
   cancel(sessionId: string): Promise<void>;
+}
+
+export interface AgentRuntimeBridgeAdapter {
+  readonly kind: string;
+  run(request: BridgeRunRequestV1): AsyncIterable<BridgeEventV1>;
+  cancel(request: BridgeCancelRequestV1): Promise<void>;
+  steer(request: BridgeSteerRequestV1): Promise<void>;
 }
 
 export interface OntologyProvider {
