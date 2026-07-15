@@ -621,6 +621,13 @@ describe('database migrations', () => {
       ) VALUES ('duplicate-sequence', 'conversation-one', 'message-one', 1, 1,
         'DIRECT', 'QUEUED', ?, ?, ?)`,
     ).run(sourceOptions, now, now)).toThrow();
+    const runColumns = database.prepare('PRAGMA table_info(agent_runs)').all()
+      .map((row) => (row as { name: string }).name);
+    expect(runColumns).toContain('error_retryable');
+    expect(() => database!.prepare(
+      `UPDATE agent_runs SET status = 'FAILED', error_code = 'BROKEN_ONLY'
+       WHERE id = 'run-one'`,
+    ).run()).toThrow();
     expect(() => database!.prepare(
       `INSERT INTO agent_runs (
         id, conversation_id, initiating_message_id, run_sequence, plan_version, route,

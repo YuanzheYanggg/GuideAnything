@@ -326,11 +326,19 @@ CREATE TABLE agent_runs (
   ),
   error_code TEXT,
   error_message TEXT,
+  error_retryable INTEGER CHECK (error_retryable IS NULL OR error_retryable IN (0, 1)),
   cancelled_at TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   completed_at TEXT,
   updated_at TEXT NOT NULL,
+  CHECK (
+    (error_code IS NULL AND error_message IS NULL AND error_retryable IS NULL)
+    OR (status = 'FAILED'
+      AND error_code IS NOT NULL
+      AND error_message IS NOT NULL
+      AND error_retryable IS NOT NULL)
+  ),
   UNIQUE (conversation_id, run_sequence),
   UNIQUE (conversation_id, id),
   FOREIGN KEY (conversation_id, initiating_message_id)
