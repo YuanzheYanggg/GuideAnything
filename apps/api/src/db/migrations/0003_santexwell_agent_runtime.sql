@@ -279,11 +279,27 @@ CREATE TABLE conversation_messages (
     source_options_json IS NULL
     OR (json_valid(source_options_json) AND json_type(source_options_json) = 'object')
   ),
+  selected_context_json TEXT CHECK (
+    selected_context_json IS NULL
+    OR (json_valid(selected_context_json) AND json_type(selected_context_json) = 'object')
+  ),
+  attachment_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (
+    json_valid(attachment_ids_json)
+    AND json_type(attachment_ids_json) = 'array'
+    AND json_array_length(attachment_ids_json) <= 20
+  ),
   committed INTEGER NOT NULL CHECK (committed IN (0, 1)),
   created_at TEXT NOT NULL,
   CHECK (
     (role = 'USER' AND client_message_id IS NOT NULL AND source_options_json IS NOT NULL)
-    OR (role = 'ASSISTANT' AND client_message_id IS NULL AND source_options_json IS NULL)
+    OR (role = 'ASSISTANT'
+      AND client_message_id IS NULL
+      AND source_options_json IS NULL
+      AND selected_context_json IS NULL
+      AND json_array_length(attachment_ids_json) = 0
+      AND json_valid(content)
+      AND json_type(content, '$.runId') = 'text'
+      AND json_type(content, '$.answer') = 'object')
   ),
   UNIQUE (conversation_id, client_message_id),
   UNIQUE (conversation_id, id)
@@ -291,6 +307,10 @@ CREATE TABLE conversation_messages (
 
 CREATE INDEX conversation_messages_conversation_idx
   ON conversation_messages(conversation_id, created_at, id);
+
+CREATE UNIQUE INDEX conversation_messages_assistant_run_unique
+  ON conversation_messages(json_extract(content, '$.runId'))
+  WHERE role = 'ASSISTANT';
 
 CREATE TABLE agent_runs (
   id TEXT PRIMARY KEY,
@@ -313,11 +333,22 @@ CREATE TABLE agent_runs (
   ),
   error_code TEXT,
   error_message TEXT,
+  error_retryable INTEGER CHECK (error_retryable IS NULL OR error_retryable IN (0, 1)),
   cancelled_at TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   completed_at TEXT,
   updated_at TEXT NOT NULL,
+  CHECK (
+    (status != 'FAILED'
+      AND error_code IS NULL
+      AND error_message IS NULL
+      AND error_retryable IS NULL)
+    OR (status = 'FAILED'
+      AND error_code IS NOT NULL
+      AND error_message IS NOT NULL
+      AND error_retryable IS NOT NULL)
+  ),
   UNIQUE (conversation_id, run_sequence),
   UNIQUE (conversation_id, id),
   FOREIGN KEY (conversation_id, initiating_message_id)

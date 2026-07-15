@@ -523,6 +523,18 @@ describe('agent runtime contracts', () => {
       phase: 'COMMITTED',
       payload: { code: 'BRIDGE_FAILED', retryable: true },
     }).success).toBe(false);
+    expect(AgentRunEventV1Schema.safeParse({
+      ...routeCompleted,
+      type: 'run.failed',
+      phase: 'COMMITTED',
+      payload: { code: 'runtime-failed', message: '运行失败。', retryable: true },
+    }).success).toBe(false);
+    expect(AgentRunEventV1Schema.safeParse({
+      ...routeCompleted,
+      type: 'run.failed',
+      phase: 'COMMITTED',
+      payload: { code: 'RUNTIME_FAILED', message: '运行失败。', retryable: true },
+    }).success).toBe(true);
   });
 
   it('discriminates exactly four browser-safe artifact payloads', () => {
@@ -873,6 +885,20 @@ describe('agent runtime contracts', () => {
     expect(request.type).toBe('RUN');
     expect(event.type).toBe('COMMENTARY');
     expect(BridgeRequestV1Schema.safeParse({ ...request, type: 'CANCEL', prompt: 'leak' }).success).toBe(false);
+    expect(BridgeRequestV1Schema.safeParse({
+      ...request, role: 'ROUTER', outputKind: 'ANSWER',
+    }).success).toBe(false);
+    expect(BridgeRequestV1Schema.safeParse({
+      ...request, role: 'REDUCER', outputKind: 'TASK_FINDING', reasoningEffort: 'HIGH',
+    }).success).toBe(false);
+    expect(BridgeEventV1Schema.safeParse({
+      requestId: 'bridge-request-1', runId: 'run-1', sequence: 2,
+      type: 'ROUTE_DECISION', payload: { decision: validRouteDecision('DIRECT') },
+    }).success).toBe(true);
+    expect(BridgeEventV1Schema.safeParse({
+      requestId: 'bridge-request-1', runId: 'run-1', sequence: 3,
+      type: 'TASK_FINDING', payload: { finding: santexwellFinding() },
+    }).success).toBe(true);
   });
 
   it('binds bridge output kinds to model roles and validates each structured event payload', () => {

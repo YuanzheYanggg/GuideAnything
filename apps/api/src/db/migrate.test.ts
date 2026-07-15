@@ -164,10 +164,11 @@ describe('database migrations', () => {
       'answer_citations',
       'artifacts',
       'conversation_attachments',
+      'agent_run_steers',
     ]));
     expect(database.prepare(
       'SELECT version FROM schema_migrations ORDER BY version',
-    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
 
     const indexesAndTriggers = database.prepare(
       "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_%'",
@@ -198,6 +199,7 @@ describe('database migrations', () => {
       'flow_knowledge_snapshots', 'conversations', 'conversation_messages',
       'agent_runs', 'agent_run_events', 'answer_citations', 'artifacts',
       'conversation_attachments',
+      'agent_run_steers',
     ]) {
       expect(strictByTable.get(table), `${table} should be STRICT`).toBe(1);
     }
@@ -595,6 +597,25 @@ describe('database migrations', () => {
         id, conversation_id, role, client_message_id, content, source_options_json, committed, created_at
       ) VALUES ('bad-options', 'conversation-one', 'USER', 'client-2', '坏 JSON', '{', 1, ?)`,
     ).run(now)).toThrow();
+    const messageColumns = database.prepare('PRAGMA table_info(conversation_messages)').all()
+      .map((row) => (row as { name: string }).name);
+    expect(messageColumns).toEqual(expect.arrayContaining([
+      'selected_context_json', 'attachment_ids_json',
+    ]));
+    expect(() => database!.prepare(
+      `INSERT INTO conversation_messages (
+        id, conversation_id, role, client_message_id, content, source_options_json,
+        selected_context_json, attachment_ids_json, committed, created_at
+      ) VALUES ('bad-selected-context', 'conversation-one', 'USER', 'client-3',
+        '坏上下文', ?, '[', '[]', 1, ?)`,
+    ).run(sourceOptions, now)).toThrow();
+    expect(() => database!.prepare(
+      `INSERT INTO conversation_messages (
+        id, conversation_id, role, client_message_id, content, source_options_json,
+        selected_context_json, attachment_ids_json, committed, created_at
+      ) VALUES ('bad-attachment-list', 'conversation-one', 'USER', 'client-4',
+        '坏附件', ?, NULL, '{}', 1, ?)`,
+    ).run(sourceOptions, now)).toThrow();
     expect(() => database!.prepare(
       `INSERT INTO agent_runs (
         id, conversation_id, initiating_message_id, run_sequence, plan_version, route,
@@ -602,6 +623,16 @@ describe('database migrations', () => {
       ) VALUES ('duplicate-sequence', 'conversation-one', 'message-one', 1, 1,
         'DIRECT', 'QUEUED', ?, ?, ?)`,
     ).run(sourceOptions, now, now)).toThrow();
+    const runColumns = database.prepare('PRAGMA table_info(agent_runs)').all()
+      .map((row) => (row as { name: string }).name);
+    expect(runColumns).toContain('error_retryable');
+    expect(() => database!.prepare(
+      `UPDATE agent_runs SET status = 'FAILED', error_code = 'BROKEN_ONLY'
+       WHERE id = 'run-one'`,
+    ).run()).toThrow();
+    expect(() => database!.prepare(
+      `UPDATE agent_runs SET status = 'FAILED' WHERE id = 'run-one'`,
+    ).run()).toThrow();
     expect(() => database!.prepare(
       `INSERT INTO agent_runs (
         id, conversation_id, initiating_message_id, run_sequence, plan_version, route,

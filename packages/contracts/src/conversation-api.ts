@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   AgentCommittedAnswerV1Schema,
   EvidenceSourceV1Schema,
+  PublicErrorCodeV1Schema,
   PublicRoutePlanV1Schema,
   SourceOptionsV1Schema,
 } from './agent-runtime';
@@ -137,7 +138,7 @@ export const AgentRunSnapshotV1Schema = z.object({
   completedAt: TimestampV1Schema.nullable(),
   updatedAt: TimestampV1Schema,
   error: z.object({
-    code: z.string().regex(/^[A-Z0-9_]+$/).max(80),
+    code: PublicErrorCodeV1Schema,
     message: z.string().min(1).max(2_000),
     retryable: z.boolean(),
   }).strict().nullable(),

@@ -4,6 +4,10 @@ import { createDatabase } from './db/client';
 import { migrateDatabase } from './db/migrate';
 import { seedDatabase } from './db/seed';
 import { upgradeWorkspaceV1 } from './db/workspace-upgrade';
+import {
+  createAgentRuntimeAssembly,
+  createUnavailableKnowledgeAdapters,
+} from './modules/agents/assembly';
 import { reconcileGuideFlowSnapshots } from './modules/knowledge/flow-indexer';
 import { indexSantexwellVault } from './modules/knowledge/vault-indexer';
 
@@ -28,6 +32,11 @@ if (config.santexwellVaultPath) {
     // The vault indexer reports bounded reason codes when possible; keep serving the last good index.
   }
 }
+const agentRuntime = createAgentRuntimeAssembly({
+  database,
+  config,
+  knowledgeAdapters: createUnavailableKnowledgeAdapters(),
+});
 
 const app = await buildApp({
   database,
@@ -35,6 +44,7 @@ const app = await buildApp({
   webOrigin: config.webOrigin,
   logger: true,
   uploadDir: config.uploadDir,
+  agentRuntime,
 });
 
 const close = async () => {
