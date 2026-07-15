@@ -186,6 +186,22 @@ describe('private artifact and opaque reference routes', () => {
       },
     });
 
+    const resource = [
+      ...snapshot.nodes.flatMap((item) => item.attachments),
+      ...snapshot.unattachedResources,
+    ][0]!;
+    seedCitation('reference-flow-resource', 'run-flow', 'WORKSPACE_FLOW', {
+      kind: 'WORKSPACE_FLOW', ...resource.locator,
+    }, snapshot.snapshotId);
+    const resourceReference = await resolve('reference-flow-resource', context.tokens.author);
+    expect(resourceReference.json()).toMatchObject({
+      status: 'VALID', source: 'WORKSPACE_FLOW',
+      target: {
+        kind: 'CURRENT_DRAFT_FLOW_NODE',
+        href: `/guides/guide-flow/edit?nodeId=${resource.nodeId}`,
+      },
+    });
+
     context.database.prepare('UPDATE guides SET revision = 1 WHERE id = ?').run('guide-flow');
     const stale = await resolve('reference-flow', context.tokens.author);
     expect(stale.json()).toMatchObject({ status: 'INVALID', reasonCode: 'STALE' });

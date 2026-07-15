@@ -207,7 +207,7 @@ export class ArtifactReferenceService {
       return this.invalid(citation, 'SOURCE_UNAVAILABLE', '对应的流程快照当前不可用。');
     }
     const snapshot = FlowKnowledgeSnapshotV1Schema.safeParse(JSON.parse(row.snapshot_json));
-    if (!snapshot.success || !snapshot.data.nodes.some((node) => node.id === locator.nodeId)) {
+    if (!snapshot.success || !snapshotContainsFlowLocator(snapshot.data, locator)) {
       return this.invalid(citation, 'STALE', '原流程节点已经不存在。');
     }
     if (row.origin_type === 'DRAFT') {
@@ -360,4 +360,20 @@ function storedRevision(locator: InternalEvidenceLocatorV1): string {
 
 function isReadableSourceStatus(value: string): boolean {
   return value === 'READY' || value === 'STALE';
+}
+
+function snapshotContainsFlowLocator(
+  snapshot: ReturnType<typeof FlowKnowledgeSnapshotV1Schema.parse>,
+  locator: Extract<InternalEvidenceLocatorV1, { kind: 'WORKSPACE_FLOW' }>,
+): boolean {
+  const candidates = [
+    ...snapshot.nodes.map((node) => node.locator),
+    ...snapshot.nodes.flatMap((node) => node.attachments.map((attachment) => attachment.locator)),
+    ...snapshot.unattachedResources.map((attachment) => attachment.locator),
+  ];
+  return candidates.some((candidate) => (
+    candidate.guideId === locator.guideId
+    && candidate.snapshotId === locator.snapshotId
+    && candidate.nodeId === locator.nodeId
+  ));
 }

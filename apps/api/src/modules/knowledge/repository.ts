@@ -319,16 +319,7 @@ export function searchKnowledge(
   scope: KnowledgeSearchScope,
 ): KnowledgeSearchHitV1[] {
   const limit = Math.min(Math.max(scope.limit ?? 20, 1), 50);
-  if (normalizeKnowledgeText(query).length === 0 || scope.sourceKinds.length === 0) return [];
-  const rows = isSingleCjkQuery(query)
-    ? singleCharacterCandidates(database, query, scope, limit)
-    : ftsCandidates(database, query, scope, Math.min(Math.max(limit * 20, 200), 1_000));
-  const normalizedQuery = normalizeKnowledgeText(query);
-  const hits = rows
-    .filter((row) => documentMatchesScope(database, row, scope))
-    .map((row) => toSearchCandidate(row, normalizedQuery))
-    .filter((candidate): candidate is SearchCandidate => candidate !== null)
-    .sort(compareCandidates);
+  const hits = rankedKnowledgeCandidates(database, query, scope, limit);
   const seen = new Set<string>();
   const result: KnowledgeSearchHitV1[] = [];
   for (const candidate of hits) {
@@ -350,20 +341,45 @@ export function searchKnowledgeInternal(
   query: string,
   scope: KnowledgeSearchScope,
 ): InternalKnowledgeSearchHit[] {
-  return searchKnowledge(database, query, scope).flatMap((hit) => {
-    const row = database.prepare(
-      `SELECT internal_locator_json FROM knowledge_fragments
-       WHERE id = ? AND document_id = ?`,
-    ).get(hit.fragmentId, hit.documentId) as { internal_locator_json: string } | undefined;
-    if (!row) return [];
-    try {
-      const locator = JSON.parse(row.internal_locator_json) as unknown;
-      if (!locator || typeof locator !== 'object' || Array.isArray(locator)) return [];
-      return [{ hit, locator: locator as Record<string, unknown> }];
-    } catch {
-      return [];
-    }
-  });
+  const limit = Math.min(Math.max(scope.limit ?? 20, 1), 50);
+  // Agent retrieval needs multiple exact flow nodes or attachment fragments
+  // from one document. Public search intentionally collapses to one hit per
+  // document, but doing that here would discard the node that answers the user.
+  return rankedKnowledgeCandidates(database, query, scope, limit)
+    .slice(0, limit)
+    .map((candidate) => candidate.hit)
+    .flatMap((hit) => {
+      const row = database.prepare(
+        `SELECT internal_locator_json FROM knowledge_fragments
+         WHERE id = ? AND document_id = ?`,
+      ).get(hit.fragmentId, hit.documentId) as { internal_locator_json: string } | undefined;
+      if (!row) return [];
+      try {
+        const locator = JSON.parse(row.internal_locator_json) as unknown;
+        if (!locator || typeof locator !== 'object' || Array.isArray(locator)) return [];
+        return [{ hit, locator: locator as Record<string, unknown> }];
+      } catch {
+        return [];
+      }
+    });
+}
+
+function rankedKnowledgeCandidates(
+  database: DatabaseSync,
+  query: string,
+  scope: KnowledgeSearchScope,
+  limit: number,
+): SearchCandidate[] {
+  if (normalizeKnowledgeText(query).length === 0 || scope.sourceKinds.length === 0) return [];
+  const rows = isSingleCjkQuery(query)
+    ? singleCharacterCandidates(database, query, scope, limit)
+    : ftsCandidates(database, query, scope, Math.min(Math.max(limit * 20, 200), 1_000));
+  const normalizedQuery = normalizeKnowledgeText(query);
+  return rows
+    .filter((row) => documentMatchesScope(database, row, scope))
+    .map((row) => toSearchCandidate(row, normalizedQuery))
+    .filter((candidate): candidate is SearchCandidate => candidate !== null)
+    .sort(compareCandidates);
 }
 
 export function getInternalKnowledgeDocument(

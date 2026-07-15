@@ -278,7 +278,9 @@ function searchScope(request: AgentRetrievalRequest, limit: number): KnowledgeSe
 }
 
 function retrievalQuery(request: AgentRetrievalRequest): string {
-  return [request.task.objective, request.context.steeringInstruction, request.context.text]
+  // Preserve the user's discriminating terms before the bounded search-token
+  // compiler sees generic task wording such as "检索工作区流程".
+  return [request.context.text, request.context.steeringInstruction, request.task.objective]
     .filter((value): value is string => Boolean(value?.trim()))
     .join('\n')
     .slice(0, 20_000);
