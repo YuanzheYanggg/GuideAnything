@@ -1,6 +1,9 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import type { MultipartFile } from '@fastify/multipart';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Readable } from 'node:stream';
+import { deflateRawSync, deflateSync } from 'node:zlib';
 import { mkdtemp } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -17,6 +20,7 @@ import { reconcileGuideFlowSnapshots } from './flow-indexer';
 import { parseCanonicalMarkdown } from './markdown';
 import { searchKnowledge } from './repository';
 import { buildSearchText, compileFtsQuery } from './search-text';
+import { KnowledgeService } from './service';
 
 const validFrontmatter = (overrides = '') => `---
 title: "花式纱线"
@@ -104,8 +108,120 @@ describe('canonical Markdown and search safety', () => {
     await expect(extractWorkspaceDocument({
       filename: 'oversized.docx',
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      bytes: fakeDocxCentralDirectory(40 * 1024 * 1024),
+      bytes: fakeDocxArchive(Buffer.from('document'), 40 * 1024 * 1024),
     })).rejects.toMatchObject({ code: 'DOCUMENT_ARCHIVE_LIMIT' });
+  });
+
+  it('bounds actual DOCX expansion independently of declared ZIP sizes', async () => {
+    await expect(extractWorkspaceDocument({
+      filename: 'lying-expansion.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      bytes: fakeDocxArchive(Buffer.alloc(33 * 1024 * 1024, 0x41), 1),
+    })).rejects.toMatchObject({ code: 'DOCUMENT_ARCHIVE_LIMIT' });
+  });
+
+  it('rejects overlapping DOCX ranges before inflating a shared payload', async () => {
+    await expect(extractWorkspaceDocument({
+      filename: 'overlapping-ranges.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      bytes: fakeOverlappingDocxArchive(Buffer.alloc(33 * 1024 * 1024, 0x41)),
+    })).rejects.toMatchObject({ code: 'DOCUMENT_ARCHIVE_INVALID' });
+  });
+
+  it('still extracts a bounded ordinary DOCX', async () => {
+    const documentXml = Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+      '<w:body><w:p><w:r><w:t>Hello secure DOCX</w:t></w:r></w:p></w:body></w:document>',
+    );
+    const extracted = await extractWorkspaceDocument({
+      filename: 'ordinary.docx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      bytes: fakeDocxArchive(documentXml),
+    });
+    expect(extracted.text).toContain('Hello secure DOCX');
+  });
+
+  it('bounds actual PDF Flate expansion before invoking the document parser', async () => {
+    await expect(extractWorkspaceDocument({
+      filename: 'flate-bomb.pdf',
+      mimeType: 'application/pdf',
+      bytes: fakePdfFlateStream(Buffer.alloc(17 * 1024 * 1024, 0x41)),
+    })).rejects.toMatchObject({ code: 'DOCUMENT_PDF_EXPANSION_LIMIT' });
+  });
+
+  it('decodes escaped PDF dictionary keys before enforcing stream limits', async () => {
+    await expect(extractWorkspaceDocument({
+      filename: 'escaped-filter-bomb.pdf',
+      mimeType: 'application/pdf',
+      bytes: fakePdfFlateStream(Buffer.alloc(17 * 1024 * 1024, 0x41), '/Fil#74er'),
+    })).rejects.toMatchObject({ code: 'DOCUMENT_PDF_EXPANSION_LIMIT' });
+  });
+
+  it('ignores PDF comments containing endobj while locating a real stream', async () => {
+    await expect(extractWorkspaceDocument({
+      filename: 'commented-stream-bomb.pdf',
+      mimeType: 'application/pdf',
+      bytes: fakePdfFlateStream(Buffer.alloc(17 * 1024 * 1024, 0x41), '/Filter', '% endobj\n'),
+    })).rejects.toMatchObject({ code: 'DOCUMENT_PDF_EXPANSION_LIMIT' });
+  });
+
+  it('rejects PDF predictor expansion that is not covered by the Flate byte cap', async () => {
+    await expect(extractWorkspaceDocument({
+      filename: 'predictor-bomb.pdf',
+      mimeType: 'application/pdf',
+      bytes: fakePdfPredictorStream(),
+    })).rejects.toMatchObject({ code: 'DOCUMENT_PDF_FILTER_UNSUPPORTED' });
+  });
+
+  it('rejects an oversized declared PDF page tree before parser recovery', async () => {
+    await expect(extractWorkspaceDocument({
+      filename: 'page-tree-bomb.pdf',
+      mimeType: 'application/pdf',
+      bytes: Buffer.from(
+        '%PDF-1.7\n1 0 obj\n<< /Type /Pages /Count 1001 /Kids [] >>\nendobj\n%%EOF\n',
+      ),
+    })).rejects.toMatchObject({ code: 'DOCUMENT_PDF_PAGE_LIMIT' });
+  });
+
+  it('reads PDF page counts only from the top-level page-tree dictionary', async () => {
+    await expect(extractWorkspaceDocument({
+      filename: 'nested-page-count-bomb.pdf',
+      mimeType: 'application/pdf',
+      bytes: Buffer.from(
+        '%PDF-1.7\n1 0 obj\n' +
+        '<< /Ty#70e /Pa#67es /Metadata << /Count 1 >> /Co#75nt 1001 /Kids [] >>\nendobj\n%%EOF\n',
+      ),
+    })).rejects.toMatchObject({ code: 'DOCUMENT_PDF_PAGE_LIMIT' });
+  });
+
+  it('rejects oversized PDF xref ranges before parser iteration', async () => {
+    await expect(extractWorkspaceDocument({
+      filename: 'xref-bomb.pdf',
+      mimeType: 'application/pdf',
+      bytes: Buffer.from(
+        '%PDF-1.7\n1 0 obj\n<< /Type /Pages /Count 1 /Kids [] >>\nendobj\n' +
+        'xref\n0 999999999\ntrailer\n<< /Size 2 >>\n%%EOF\n',
+      ),
+    })).rejects.toMatchObject({ code: 'DOCUMENT_PDF_STRUCTURE_LIMIT' });
+  });
+
+  it('still extracts a bounded ordinary PDF', async () => {
+    const extracted = await extractWorkspaceDocument({
+      filename: 'ordinary.pdf',
+      mimeType: 'application/pdf',
+      bytes: fakeTextPdf(),
+    });
+    expect(extracted.text).toContain('Hello secure PDF');
+  });
+
+  it('still extracts a common single-Flate filter-array PDF', async () => {
+    const extracted = await extractWorkspaceDocument({
+      filename: 'ordinary-flate.pdf',
+      mimeType: 'application/pdf',
+      bytes: fakeTextPdf(true),
+    });
+    expect(extracted.text).toContain('Hello secure PDF');
   });
 });
 
@@ -172,6 +288,32 @@ describe('knowledge routes, uploads, and flow synchronization', () => {
       workspaceId,
       userId: context.userIds.otherAuthor,
     })).toEqual([]);
+  });
+
+  it('rechecks persistent upload permission after streaming and extraction', async () => {
+    const service = new KnowledgeService(context.database, join(root, 'uploads'));
+    const stream = Readable.from((async function* () {
+      yield Buffer.from('# 中途撤权资料\n');
+      context.database.prepare(
+        'DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?',
+      ).run(workspaceId, context.userIds.editor);
+      yield Buffer.from('不得创建持久 source。');
+    })());
+    const file = {
+      filename: 'revoked.md',
+      mimetype: 'text/markdown',
+      file: stream,
+    } as unknown as MultipartFile;
+
+    await expect(service.uploadWorkspaceSource(
+      { id: context.userIds.editor, role: 'EDITOR' },
+      workspaceId,
+      file,
+    )).rejects.toMatchObject({ statusCode: 404, code: 'WORKSPACE_NOT_FOUND' });
+    expect(context.database.prepare(
+      `SELECT COUNT(*) AS count FROM knowledge_sources WHERE kind = 'WORKSPACE_DOCUMENT'`,
+    ).get()).toEqual({ count: 0 });
+    expect(await readdir(join(root, 'uploads', 'knowledge')).catch(() => [])).toEqual([]);
   });
 
   it('indexes draft and immutable published flow snapshots without exposing canvas internals', async () => {
@@ -270,19 +412,158 @@ async function uploadMarkdown(context: TestContext, token: string, workspaceId: 
   });
 }
 
-function fakeDocxCentralDirectory(uncompressedSize: number): Buffer {
-  const entry = (name: string) => {
-    const nameBytes = Buffer.from(name);
-    const record = Buffer.alloc(46 + nameBytes.length);
-    record.writeUInt32LE(0x02014b50, 0);
-    record.writeUInt16LE(8, 10);
-    record.writeUInt32LE(1, 20);
-    record.writeUInt32LE(uncompressedSize, 24);
-    record.writeUInt16LE(nameBytes.length, 28);
-    nameBytes.copy(record, 46);
-    return record;
-  };
-  const localHeader = Buffer.alloc(4);
-  localHeader.writeUInt32LE(0x04034b50, 0);
-  return Buffer.concat([localHeader, entry('[Content_Types].xml'), entry('word/document.xml')]);
+function fakeDocxArchive(documentBytes: Buffer, declaredDocumentSize = documentBytes.length): Buffer {
+  const entries = [
+    { name: '[Content_Types].xml', bytes: Buffer.from('<Types/>'), declaredSize: 8 },
+    { name: 'word/document.xml', bytes: documentBytes, declaredSize: declaredDocumentSize },
+  ];
+  const localRecords: Buffer[] = [];
+  const centralRecords: Buffer[] = [];
+  let localOffset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name);
+    const compressed = deflateRawSync(entry.bytes);
+    const local = Buffer.alloc(30 + name.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(compressed.length, 18);
+    local.writeUInt32LE(entry.declaredSize, 22);
+    local.writeUInt16LE(name.length, 26);
+    name.copy(local, 30);
+    localRecords.push(local, compressed);
+
+    const central = Buffer.alloc(46 + name.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(compressed.length, 20);
+    central.writeUInt32LE(entry.declaredSize, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(localOffset, 42);
+    name.copy(central, 46);
+    centralRecords.push(central);
+    localOffset += local.length + compressed.length;
+  }
+  const centralDirectory = Buffer.concat(centralRecords);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(localOffset, 16);
+  return Buffer.concat([...localRecords, centralDirectory, end]);
+}
+
+function fakeOverlappingDocxArchive(expanded: Buffer): Buffer {
+  const compressed = deflateRawSync(expanded);
+  const definitions = [
+    { name: '[Content_Types].xml', offset: 0 },
+    { name: 'word/document.xml', offset: 128 },
+  ];
+  const sharedDataOffset = 512;
+  const localArea = Buffer.alloc(sharedDataOffset);
+  const centralRecords: Buffer[] = [];
+  for (const definition of definitions) {
+    const name = Buffer.from(definition.name);
+    const local = definition.offset;
+    localArea.writeUInt32LE(0x04034b50, local);
+    localArea.writeUInt16LE(20, local + 4);
+    localArea.writeUInt16LE(8, local + 8);
+    localArea.writeUInt32LE(compressed.length, local + 18);
+    localArea.writeUInt32LE(1, local + 22);
+    localArea.writeUInt16LE(name.length, local + 26);
+    localArea.writeUInt16LE(sharedDataOffset - (local + 30 + name.length), local + 28);
+    name.copy(localArea, local + 30);
+
+    const central = Buffer.alloc(46 + name.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(compressed.length, 20);
+    central.writeUInt32LE(1, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(local, 42);
+    name.copy(central, 46);
+    centralRecords.push(central);
+  }
+  const centralDirectory = Buffer.concat(centralRecords);
+  const centralOffset = sharedDataOffset + compressed.length;
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(definitions.length, 8);
+  end.writeUInt16LE(definitions.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(centralOffset, 16);
+  return Buffer.concat([localArea, compressed, centralDirectory, end]);
+}
+
+function fakePdfFlateStream(expanded: Buffer, filterKey = '/Filter', beforeStream = ''): Buffer {
+  const compressed = deflateSync(expanded);
+  return Buffer.concat([
+    Buffer.from('%PDF-1.7\n1 0 obj\n<< /Type /Pages /Count 1 /Kids [] >>\nendobj\n' +
+      `2 0 obj\n<< /Length ${compressed.length} ${filterKey} /FlateDecode >>\n${beforeStream}stream\n`),
+    compressed,
+    Buffer.from('\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n'),
+  ]);
+}
+
+function fakePdfPredictorStream(): Buffer {
+  const compressed = deflateSync(Buffer.from([0, 0]));
+  return Buffer.concat([
+    Buffer.from('%PDF-1.7\n1 0 obj\n<< /Type /Pages /Count 1 /Kids [] >>\nendobj\n' +
+      `2 0 obj\n<< /Length ${compressed.length} /Filter /FlateDecode ` +
+      '/DecodeParms << /Predictor 12 /Columns 17000000 >> >>\nstream\n'),
+    compressed,
+    Buffer.from('\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n'),
+  ]);
+}
+
+function fakeTextPdf(flate = false): Buffer {
+  const content = Buffer.from('BT /F1 12 Tf 72 72 Td (Hello secure PDF) Tj ET');
+  const streamContent = flate ? deflateSync(content) : content;
+  const bodies: Buffer[] = [
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),
+    Buffer.from('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'),
+    Buffer.from(
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ' +
+      '/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    ),
+    Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'),
+    Buffer.concat([
+      Buffer.from(`<< /Length ${streamContent.length}${flate ? ' /Filter [/FlateDecode]' : ''} >>\nstream\n`),
+      streamContent,
+      Buffer.from('\nendstream'),
+    ]),
+  ];
+  const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n')];
+  const offsets: number[] = [0];
+  let offset = chunks[0]!.length;
+  for (let index = 0; index < bodies.length; index += 1) {
+    offsets.push(offset);
+    const object = Buffer.concat([
+      Buffer.from(`${index + 1} 0 obj\n`),
+      bodies[index]!,
+      Buffer.from('\nendobj\n'),
+    ]);
+    chunks.push(object);
+    offset += object.length;
+  }
+  const xrefOffset = offset;
+  const xref = [
+    'xref',
+    `0 ${bodies.length + 1}`,
+    '0000000000 65535 f ',
+    ...offsets.slice(1).map((value) => `${String(value).padStart(10, '0')} 00000 n `),
+    'trailer',
+    `<< /Size ${bodies.length + 1} /Root 1 0 R >>`,
+    'startxref',
+    String(xrefOffset),
+    '%%EOF',
+    '',
+  ].join('\n');
+  chunks.push(Buffer.from(xref));
+  return Buffer.concat(chunks);
 }

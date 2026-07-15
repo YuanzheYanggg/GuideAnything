@@ -1,21 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, open, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { isSafeRawPath, KnowledgeInputError, parseCanonicalMarkdown, type ParsedCanonicalMarkdown } from './markdown';
 import {
-  applyCanonicalDocument,
   ensureSantexwellSource,
   listSourceDocuments,
   markVaultScanFailure,
-  publishCompletedVaultScan,
+  publishCanonicalVaultGeneration,
   SANTEXWELL_SOURCE_ID,
   type InternalDocumentRow,
   type InternalResolvedLink,
   getInternalKnowledgeDocument,
 } from './repository';
 import { normalizeKnowledgeText } from './search-text';
+import { sanitizeVaultControlledText } from './vault-text';
 
 const CANONICAL_DIRECTORIES = ['moc', 'indexes', 'concepts', 'sources', 'procedures', 'cases', 'analysis'] as const;
 const ALWAYS_HARNESS = ['AGENTS.md', 'CORE.md', 'SOUL.md', 'playbooks/qna.md'] as const;
@@ -89,10 +90,10 @@ export async function readTrustedPromptHarness(
     const bytes = await readStableContainedFile(rootReal, name, MAX_HARNESS_FILE_BYTES, 'HARNESS');
     readBytes += bytes.length;
     if (readBytes > MAX_HARNESS_READ_BYTES) throw new VaultReadError('HARNESS_ALLOWLIST_TOO_LARGE', '可信 Harness 总读取量超过限制');
-    const content = decodeUtf8(bytes, 'HARNESS_INVALID_UTF8');
-    lines += countLines(content);
+    const decoded = decodeUtf8(bytes, 'HARNESS_INVALID_UTF8');
+    lines += countLines(decoded);
     if (lines > MAX_HARNESS_LINES) throw new VaultReadError('HARNESS_TOO_MANY_LINES', '可信 Harness 行数超过限制');
-    files.push({ name, checksum: sha256(bytes), content });
+    files.push({ name, checksum: sha256(bytes), content: sanitizeVaultControlledText(decoded) });
   }
   const content = files.map((file) => `<!-- ${file.name} -->\n${file.content}`).join('\n\n');
   if (Buffer.byteLength(content) > MAX_HARNESS_INJECTION_BYTES) {
@@ -181,62 +182,56 @@ async function performIndex(database: DatabaseSync, root: string, signal: AbortS
   assignDocumentIds(parsedCandidates, existing);
   resolveCandidateLinks(parsedCandidates);
   const rawEvidence = manifestRawEvidence(manifest);
-  let changedDocuments = 0;
   let indexedFragments = 0;
-  const seenDocumentIds = new Set<string>();
+  const documents = [];
   for (const candidate of parsedCandidates) {
     if (!candidate.documentId) continue;
-    seenDocumentIds.add(candidate.documentId);
     indexedFragments += candidate.parsed.fragments.length;
-    try {
-      const result = applyCanonicalDocument(database, {
-        id: candidate.documentId,
-        relativeLocator: candidate.relativeLocator,
-        checksum: candidate.parsed.checksum,
-        frontmatter: candidate.parsed.frontmatter,
-        fragments: candidate.parsed.fragments,
-        links: candidate.resolvedLinks ?? [],
-        rawEvidenceAvailable: rawEvidence.has(candidate.relativeLocator)
-          || candidate.parsed.frontmatter.sourcePaths.length > 0,
-        sourcePaths: uniqueSourcePaths([
-          ...candidate.parsed.frontmatter.sourcePaths,
-          ...(manifest.pages[candidate.relativeLocator]?.sourcePaths ?? []),
-        ]),
-      });
-      if (result.changed) changedDocuments += 1;
-    } catch {
-      reasonCodes.push('DOCUMENT_APPLY_FAILED');
-    }
+    documents.push({
+      id: candidate.documentId,
+      relativeLocator: candidate.relativeLocator,
+      checksum: candidate.parsed.checksum,
+      frontmatter: candidate.parsed.frontmatter,
+      fragments: candidate.parsed.fragments,
+      links: candidate.resolvedLinks ?? [],
+      rawEvidenceAvailable: rawEvidence.has(candidate.relativeLocator)
+        || candidate.parsed.frontmatter.sourcePaths.length > 0,
+      sourcePaths: uniqueSourcePaths([
+        ...candidate.parsed.frontmatter.sourcePaths,
+        ...(manifest.pages[candidate.relativeLocator]?.sourcePaths ?? []),
+      ]),
+    });
   }
 
-  const complete = reasonCodes.length === 0 && parsedCandidates.length === relativeFiles.length && !signal.aborted;
   const revision = sha256(Buffer.from([
     ...parsedCandidates.map((candidate) => `${candidate.relativeLocator}\u0000${candidate.parsed.checksum}`),
     `harness\u0000${harness.revision}`,
     `manifest\u0000${manifestChecksum}`,
   ].sort().join('\n')));
-  if (!complete) {
-    const normalizedReasons = uniqueReasonCodes(reasonCodes.length > 0 ? reasonCodes : ['SCAN_INCOMPLETE']);
+  if (documents.length !== relativeFiles.length || signal.aborted) {
+    const normalizedReasons = uniqueReasonCodes(signal.aborted ? ['SCAN_ABORTED'] : ['SCAN_INCOMPLETE']);
     const status = markVaultScanFailure(database, normalizedReasons, { revision: harness.revision, fileCount: harness.files.length });
-    return {
-      status,
-      revision: currentRevision(database),
-      indexedDocuments: parsedCandidates.length,
-      indexedFragments,
-      changedDocuments,
-      reasonCodes: normalizedReasons,
-    };
+    return failureSummary(database, status, normalizedReasons);
   }
 
-  publishCompletedVaultScan(database, {
-    revision,
-    seenDocumentIds,
-    harnessRevision: harness.revision,
-    harnessFileCount: harness.files.length,
-    indexedDocuments: parsedCandidates.length,
-    indexedFragments,
-    reasonCodes: [],
-  });
+  let changedDocuments: number;
+  try {
+    abortIfNeeded(signal);
+    changedDocuments = publishCanonicalVaultGeneration(database, {
+      documents,
+      revision,
+      harnessRevision: harness.revision,
+      harnessFileCount: harness.files.length,
+      indexedFragments,
+    }).changedDocuments;
+  } catch (error) {
+    const reason = safeReason(error, 'DOCUMENT_APPLY_FAILED');
+    const status = markVaultScanFailure(database, [reason], {
+      revision: harness.revision,
+      fileCount: harness.files.length,
+    });
+    return failureSummary(database, status, [reason]);
+  }
   return {
     status: 'READY',
     revision,
@@ -445,30 +440,105 @@ function resolveLinkMatches(
   return normalizedMap.get(normalizeKnowledgeText(target)) ?? [];
 }
 
-async function readStableContainedFile(
+export async function readStableContainedFile(
   rootReal: string,
   relativeLocator: string,
   maximumBytes: number,
   prefix: string,
+  hooks: { afterOpen?: () => Promise<void> } = {},
 ): Promise<Buffer> {
   if (!isSafeRelativeLocator(relativeLocator)) throw new VaultReadError(`${prefix}_PATH_INVALID`, '文件路径不在允许范围');
   const absolute = join(rootReal, relativeLocator);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    let before;
+    await requireNoSymlinkComponents(rootReal, relativeLocator, prefix);
+    let handle: FileHandle;
     try {
-      before = await lstat(absolute);
+      handle = await open(
+        absolute,
+        fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+      );
+    } catch (error) {
+      if (hasErrorCode(error, 'ELOOP')) {
+        throw new VaultReadError(`${prefix}_TYPE_INVALID`, '所需文件不能是符号链接');
+      }
+      throw new VaultReadError(`${prefix}_MISSING`, '所需文件不存在');
+    }
+    try {
+      const before = await handle.stat();
+      if (!before.isFile()) throw new VaultReadError(`${prefix}_TYPE_INVALID`, '所需文件不是普通文件');
+      if (before.size > maximumBytes) throw new VaultReadError(`${prefix}_FILE_TOO_LARGE`, '文件超过读取限制');
+      await hooks.afterOpen?.();
+
+      const resolvedBefore = await realpath(absolute);
+      requireContained(rootReal, resolvedBefore);
+      const linkedBefore = await stat(resolvedBefore);
+      if (!sameFileIdentity(before, linkedBefore)) continue;
+
+      const bytes = await readBoundedFileHandle(handle, maximumBytes, prefix);
+      const after = await handle.stat();
+      const resolvedAfter = await realpath(absolute);
+      requireContained(rootReal, resolvedAfter);
+      const linkedAfter = await stat(resolvedAfter);
+      const finalPath = await lstat(absolute);
+      if (!finalPath.isSymbolicLink()
+        && finalPath.isFile()
+        && sameFileSnapshot(before, after)
+        && sameFileIdentity(after, linkedAfter)
+        && resolvedBefore === resolvedAfter
+        && bytes.length === before.size) return bytes;
+    } catch (error) {
+      if (error instanceof VaultReadError) throw error;
+      if (hasErrorCode(error, 'ENOENT') || hasErrorCode(error, 'ELOOP')) continue;
+      throw new VaultReadError(`${prefix}_READ_FAILED`, '文件安全读取失败');
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+  throw new VaultReadError(`${prefix}_CHANGED_DURING_READ`, '文件读取期间发生变化');
+}
+
+async function readBoundedFileHandle(handle: FileHandle, maximumBytes: number, prefix: string): Promise<Buffer> {
+  const buffer = Buffer.alloc(maximumBytes + 1);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  if (offset > maximumBytes) throw new VaultReadError(`${prefix}_FILE_TOO_LARGE`, '文件超过读取限制');
+  return buffer.subarray(0, offset);
+}
+
+async function requireNoSymlinkComponents(rootReal: string, relativeLocator: string, prefix: string): Promise<void> {
+  const parts = relativeLocator.split('/');
+  let current = rootReal;
+  for (let index = 0; index < parts.length; index += 1) {
+    current = join(current, parts[index]!);
+    let entry;
+    try {
+      entry = await lstat(current);
     } catch {
       throw new VaultReadError(`${prefix}_MISSING`, '所需文件不存在');
     }
-    if (!before.isFile() || before.isSymbolicLink()) throw new VaultReadError(`${prefix}_TYPE_INVALID`, '所需文件不是普通文件');
-    if (before.size > maximumBytes) throw new VaultReadError(`${prefix}_FILE_TOO_LARGE`, '文件超过读取限制');
-    const resolved = await realpath(absolute);
-    requireContained(rootReal, resolved);
-    const bytes = await readFile(resolved);
-    const after = await stat(resolved);
-    if (before.size === after.size && before.mtimeMs === after.mtimeMs && bytes.length === before.size) return bytes;
+    if (entry.isSymbolicLink()) throw new VaultReadError(`${prefix}_TYPE_INVALID`, '路径不能包含符号链接');
+    if (index < parts.length - 1 && !entry.isDirectory()) {
+      throw new VaultReadError(`${prefix}_TYPE_INVALID`, '文件父路径不是目录');
+    }
   }
-  throw new VaultReadError(`${prefix}_CHANGED_DURING_READ`, '文件读取期间发生变化');
+}
+
+function sameFileIdentity(left: { dev: number; ino: number }, right: { dev: number; ino: number }): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sameFileSnapshot(
+  left: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number },
+  right: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number },
+): boolean {
+  return sameFileIdentity(left, right)
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
 }
 
 async function safeRootRealpath(root: string): Promise<string> {
@@ -514,7 +584,7 @@ function uniqueSourcePaths(values: readonly string[]): string[] {
 
 function sanitizeRawEvidence(value: string): string {
   const normalized = value.startsWith('\ufeff') ? value.slice(1) : value;
-  return normalized
+  const withoutMarkup = normalized
     .replaceAll('\r\n', '\n')
     .replaceAll('\r', '\n')
     .replace(/!\[\[[^\]\n]{1,2000}\]\]/gu, '')
@@ -527,10 +597,8 @@ function sanitizeRawEvidence(value: string): string {
     .replace(/\[([^\]\n]{1,500})\]\([^\n)]{1,2000}\)/gu, '$1')
     .split('\n')
     .filter((line) => !/^\s*(?:[-*]\s*)?(?:Raw note|Raw path|Source paths?)\s*:/iu.test(line))
-    .map((line) => line
-      .replace(/(?:^|[\s(])(?:\.\/)?(?:raw|wiki_v2)\/[\p{Letter}\p{Number}._~!$&'()*+,;=:@%/ -]+/giu, ' ')
-      .replace(/(?:^|[\s(])\/Users\/[\p{Letter}\p{Number}._~!$&'()*+,;=:@%/ -]+/giu, ' '))
-    .join('\n').trim();
+    .join('\n');
+  return sanitizeVaultControlledText(withoutMarkup);
 }
 
 function groupCandidates(candidates: Candidate[], selector: (candidate: Candidate) => string): Map<string, Candidate[]> {
@@ -605,7 +673,11 @@ function sha256(value: Buffer): string {
 }
 
 function isMissing(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT';
+  return hasErrorCode(error, 'ENOENT');
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === code;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

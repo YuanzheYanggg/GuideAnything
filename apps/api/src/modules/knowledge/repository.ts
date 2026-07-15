@@ -18,6 +18,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { CanonicalFrontmatter, ParsedMarkdownFragment, ParsedWikiLink } from './markdown';
 import { getWorkspacePermission } from '../workspaces/repository';
 import { buildSearchText, compileFtsQuery, isSingleCjkQuery, normalizeKnowledgeText } from './search-text';
+import { sanitizeVaultControlledList, sanitizeVaultControlledText } from './vault-text';
 
 export const SANTEXWELL_SOURCE_ID = 'source-santexwell-vault';
 const PUBLIC_EXCERPT_LENGTH = 600;
@@ -120,11 +121,50 @@ export function listSourceDocuments(database: DatabaseSync, sourceId: string): I
   return result;
 }
 
-export function applyCanonicalDocument(database: DatabaseSync, input: CanonicalDocumentInput): {
-  changed: boolean;
-  fragmentCount: number;
-} {
+export function publishCanonicalVaultGeneration(
+  database: DatabaseSync,
+  input: {
+    documents: CanonicalDocumentInput[];
+    revision: string;
+    harnessRevision: string;
+    harnessFileCount: number;
+    indexedFragments: number;
+  },
+): { changedDocuments: number } {
   const now = new Date().toISOString();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    let changedDocuments = 0;
+    for (const document of input.documents) {
+      if (writeCanonicalDocument(database, document, now)) changedDocuments += 1;
+    }
+
+    const seenDocumentIds = new Set(input.documents.map((document) => document.id));
+    const existing = listSourceDocuments(database, SANTEXWELL_SOURCE_ID);
+    const remove = database.prepare('DELETE FROM knowledge_documents WHERE id = ? AND source_id = ?');
+    for (const document of existing) {
+      if (!seenDocumentIds.has(document.id)) remove.run(document.id, SANTEXWELL_SOURCE_ID);
+    }
+    database.prepare(
+      `UPDATE knowledge_sources
+       SET status = 'READY', revision = ?, config_json = ?, updated_at = ? WHERE id = ?`,
+    ).run(input.revision, JSON.stringify({
+      harnessRevision: input.harnessRevision,
+      harnessFileCount: input.harnessFileCount,
+      indexedDocuments: input.documents.length,
+      indexedFragments: input.indexedFragments,
+      reasonCodes: [],
+      indexedAt: now,
+    }), now, SANTEXWELL_SOURCE_ID);
+    database.exec('COMMIT');
+    return { changedDocuments };
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function writeCanonicalDocument(database: DatabaseSync, input: CanonicalDocumentInput, now: string): boolean {
   const metadata: InternalDocumentMetadata = {
     sourceKind: 'SANTEXWELL',
     aliases: input.frontmatter.aliases,
@@ -140,83 +180,36 @@ export function applyCanonicalDocument(database: DatabaseSync, input: CanonicalD
     unresolvedLinkCount: input.links.filter((link) => !link.resolvedDocumentId).length,
   };
   const existing = database.prepare(
-    `SELECT id, relative_locator, checksum, metadata_json
-     FROM knowledge_documents WHERE id = ?`,
-  ).get(input.id) as { id: string; relative_locator: string; checksum: string; metadata_json: string } | undefined;
-  const metadataJson = JSON.stringify(metadata);
+    `SELECT id, checksum FROM knowledge_documents WHERE id = ?`,
+  ).get(input.id) as { id: string; checksum: string } | undefined;
   const unchangedContent = existing?.checksum === input.checksum;
-
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    if (!existing) {
-      database.prepare(
-        `INSERT INTO knowledge_documents (
-          id, source_id, flow_snapshot_id, relative_locator, title, checksum, revision,
-          parse_status, metadata_json, created_at, updated_at
-        ) VALUES (?, ?, NULL, ?, ?, ?, ?, 'READY', ?, ?, ?)`,
-      ).run(
-        input.id, SANTEXWELL_SOURCE_ID, input.relativeLocator, input.frontmatter.title,
-        input.checksum, input.checksum, metadataJson, now, now,
-      );
-    } else {
-      database.prepare(
-        `UPDATE knowledge_documents
-         SET relative_locator = ?, title = ?, checksum = ?, revision = ?,
-             parse_status = 'READY', metadata_json = ?, updated_at = ?
-         WHERE id = ?`,
-      ).run(
-        input.relativeLocator, input.frontmatter.title, input.checksum, input.checksum,
-        metadataJson, now, input.id,
-      );
-    }
-    if (!unchangedContent) {
-      database.prepare('DELETE FROM knowledge_fragments WHERE document_id = ?').run(input.id);
-      insertCanonicalFragments(database, input, now);
-    }
-    database.exec('COMMIT');
-  } catch (error) {
-    database.exec('ROLLBACK');
-    throw error;
-  }
-  return { changed: !unchangedContent, fragmentCount: input.fragments.length };
-}
-
-export function publishCompletedVaultScan(
-  database: DatabaseSync,
-  input: {
-    revision: string;
-    seenDocumentIds: ReadonlySet<string>;
-    harnessRevision: string;
-    harnessFileCount: number;
-    indexedDocuments: number;
-    indexedFragments: number;
-    reasonCodes: string[];
-  },
-): void {
-  const now = new Date().toISOString();
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    const existing = listSourceDocuments(database, SANTEXWELL_SOURCE_ID);
-    const remove = database.prepare('DELETE FROM knowledge_documents WHERE id = ? AND source_id = ?');
-    existing.forEach((document) => {
-      if (!input.seenDocumentIds.has(document.id)) remove.run(document.id, SANTEXWELL_SOURCE_ID);
-    });
+  const metadataJson = JSON.stringify(metadata);
+  if (!existing) {
     database.prepare(
-      `UPDATE knowledge_sources
-       SET status = 'READY', revision = ?, config_json = ?, updated_at = ? WHERE id = ?`,
-    ).run(input.revision, JSON.stringify({
-      harnessRevision: input.harnessRevision,
-      harnessFileCount: input.harnessFileCount,
-      indexedDocuments: input.indexedDocuments,
-      indexedFragments: input.indexedFragments,
-      reasonCodes: input.reasonCodes,
-      indexedAt: now,
-    }), now, SANTEXWELL_SOURCE_ID);
-    database.exec('COMMIT');
-  } catch (error) {
-    database.exec('ROLLBACK');
-    throw error;
+      `INSERT INTO knowledge_documents (
+        id, source_id, flow_snapshot_id, relative_locator, title, checksum, revision,
+        parse_status, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, NULL, ?, ?, ?, ?, 'READY', ?, ?, ?)`,
+    ).run(
+      input.id, SANTEXWELL_SOURCE_ID, input.relativeLocator, input.frontmatter.title,
+      input.checksum, input.checksum, metadataJson, now, now,
+    );
+  } else {
+    database.prepare(
+      `UPDATE knowledge_documents
+       SET relative_locator = ?, title = ?, checksum = ?, revision = ?,
+           parse_status = 'READY', metadata_json = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(
+      input.relativeLocator, input.frontmatter.title, input.checksum, input.checksum,
+      metadataJson, now, input.id,
+    );
   }
+  if (!unchangedContent) {
+    database.prepare('DELETE FROM knowledge_fragments WHERE document_id = ?').run(input.id);
+    insertCanonicalFragments(database, input, now);
+  }
+  return !unchangedContent;
 }
 
 export function markVaultScanFailure(
@@ -293,10 +286,12 @@ export function getSantexwellOverview(database: DatabaseSync): {
   for (const row of rows) {
     const metadata = parseMetadata(row.metadata_json);
     if (metadata.pageType === 'moc') {
+      const title = sanitizeVaultControlledText(row.title);
+      if (!title) continue;
       mocs.push({
         documentId: row.id,
-        title: row.title,
-        summary: sanitizeExcerpt(row.content ?? '').slice(0, 1_000),
+        title,
+        summary: sanitizeExcerpt(sanitizeVaultControlledText(row.content ?? '')).slice(0, 1_000),
         href: `/knowledge/santexwell/documents/${encodeURIComponent(row.id)}`,
       });
     }
@@ -402,20 +397,40 @@ export function getKnowledgeDocument(
     `SELECT id, heading, content FROM knowledge_fragments
      WHERE document_id = ? ORDER BY ordinal LIMIT 2000`,
   ).all(documentId) as unknown as Array<{ id: string; heading: string | null; content: string }>;
+  const sanitizeVault = metadata.sourceKind === 'SANTEXWELL';
+  const title = sanitizeVault ? sanitizeVaultControlledText(row.title) : row.title;
+  if (!title) return null;
   const links = (metadata.links ?? [])
     .filter((link) => link.resolvedDocumentId && link.resolvedTitle)
     .slice(0, 2_000)
-    .map((link) => ({
-      documentId: link.resolvedDocumentId!,
-      title: link.resolvedTitle!,
-      ...(link.heading ? { heading: link.heading } : {}),
-    }));
+    .flatMap((link) => {
+      const linkTitle = sanitizeVault ? sanitizeVaultControlledText(link.resolvedTitle!) : link.resolvedTitle!;
+      const linkHeading = sanitizeVault && link.heading ? sanitizeVaultControlledText(link.heading) : link.heading;
+      if (!linkTitle) return [];
+      return [{
+        documentId: link.resolvedDocumentId!,
+        title: linkTitle,
+        ...(linkHeading ? { heading: linkHeading } : {}),
+      }];
+    });
+  const sections = fragments.flatMap((fragment) => {
+    const content = sanitizeVault ? sanitizeVaultControlledText(fragment.content) : fragment.content;
+    const heading = sanitizeVault && fragment.heading
+      ? sanitizeVaultControlledText(fragment.heading)
+      : fragment.heading;
+    if (!content) return [];
+    return [{
+      fragmentId: fragment.id,
+      ...(heading ? { heading } : {}),
+      content: content.slice(0, 10_000),
+    }];
+  });
   return KnowledgeDocumentV1Schema.parse({
     sourceKind: metadata.sourceKind,
     documentId: row.id,
-    title: row.title,
-    aliases: metadata.aliases ?? [],
-    tags: metadata.tags ?? [],
+    title,
+    aliases: sanitizeVault ? sanitizeVaultControlledList(metadata.aliases ?? []) : metadata.aliases ?? [],
+    tags: sanitizeVault ? sanitizeVaultControlledList(metadata.tags ?? []) : metadata.tags ?? [],
     ...(metadata.pageType ? { pageType: metadata.pageType } : {}),
     ...(metadata.status ? { status: metadata.status } : {}),
     ...(metadata.reviewState ? { reviewState: metadata.reviewState } : {}),
@@ -424,11 +439,7 @@ export function getKnowledgeDocument(
     revision: row.revision,
     indexedAt: row.updated_at,
     rawEvidenceAvailable: metadata.rawEvidenceAvailable === true,
-    sections: fragments.map((fragment) => ({
-      fragmentId: fragment.id,
-      ...(fragment.heading ? { heading: fragment.heading } : {}),
-      content: fragment.content.slice(0, 10_000),
-    })),
+    sections,
     resolvedLinks: links,
     unresolvedLinkCount: metadata.unresolvedLinkCount ?? 0,
   });
@@ -716,22 +727,35 @@ interface SearchCandidate {
 
 function toSearchCandidate(row: SearchRow, normalizedQuery: string): SearchCandidate | null {
   const metadata = parseMetadata(row.metadata_json);
-  const title = normalizeKnowledgeText(row.title);
-  const aliases = (metadata.aliases ?? []).map(normalizeKnowledgeText);
+  const publicTitle = metadata.sourceKind === 'SANTEXWELL'
+    ? sanitizeVaultControlledText(row.title)
+    : row.title;
+  const publicAliases = metadata.sourceKind === 'SANTEXWELL'
+    ? sanitizeVaultControlledList(metadata.aliases ?? [])
+    : metadata.aliases ?? [];
+  const publicHeading = metadata.sourceKind === 'SANTEXWELL' && row.heading
+    ? sanitizeVaultControlledText(row.heading)
+    : row.heading;
+  const publicContent = metadata.sourceKind === 'SANTEXWELL'
+    ? sanitizeVaultControlledText(row.content)
+    : row.content;
+  if (!publicTitle) return null;
+  const title = normalizeKnowledgeText(publicTitle);
+  const aliases = publicAliases.map(normalizeKnowledgeText);
   const exactTitle = title === normalizedQuery;
   const exactAlias = aliases.includes(normalizedQuery);
   const prefix = title.startsWith(normalizedQuery) || aliases.some((alias) => alias.startsWith(normalizedQuery));
   const evidenceRole = knowledgeEvidenceRole(metadata);
   const bucketRank = metadata.sourceProfile ? sourceBucketRank(metadata.sourceProfile.bucket) : 0;
-  const excerpt = sanitizeExcerpt(row.content);
+  const excerpt = sanitizeExcerpt(publicContent);
   if (!excerpt) return null;
   return {
     hit: KnowledgeSearchHitV1Schema.parse({
       sourceKind: metadata.sourceKind,
       documentId: row.id,
       fragmentId: row.fragment_id,
-      title: row.title,
-      ...(row.heading ? { heading: row.heading } : {}),
+      title: publicTitle,
+      ...(publicHeading ? { heading: publicHeading } : {}),
       excerpt,
       ...(metadata.pageType ? { pageType: metadata.pageType } : {}),
       ...(metadata.status ? { status: metadata.status } : {}),

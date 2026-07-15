@@ -8,12 +8,14 @@ import { migrateDatabase } from '../../db/migrate';
 import { authorization, createTestContext } from '../../test/test-app';
 import {
   getKnowledgeDocument,
+  getSantexwellOverview,
   searchKnowledge,
   searchKnowledgeInternal,
 } from './repository';
 import {
   indexSantexwellVault,
   readSantexwellRawEvidence,
+  readStableContainedFile,
   readTrustedPromptHarness,
 } from './vault-indexer';
 
@@ -32,16 +34,17 @@ function page(input: {
   review?: string;
   evidence?: string;
   aliases?: string[];
+  tags?: string[];
   sourceProfile?: boolean;
   body?: string;
 }) {
-  const list = (values: string[]) => values.map((value) => `  - "${value}"`).join('\n');
+  const list = (values: string[]) => values.map((value) => `  - ${JSON.stringify(value)}`).join('\n');
   return `---
 title: "${input.title}"
 page_type: "${input.type ?? 'concept'}"
 status: "${input.status ?? 'active'}"
 tags:
-  - "domain/textiles"
+${list(input.tags ?? ['domain/textiles'])}
 aliases:
 ${list(input.aliases ?? [input.title])}
 source_count: 1
@@ -94,6 +97,94 @@ describe('Santexwell vault indexing', () => {
     await expect(readTrustedPromptHarness(root, { intent: 'GENERAL_QA' })).rejects.toMatchObject({
       code: 'HARNESS_FILE_TOO_LARGE',
     });
+  });
+
+  it('reads from a no-follow descriptor and rejects a path replaced after open', async () => {
+    await put('stable.md', 'safe bytes');
+    const outside = `${root}-outside.md`;
+    await writeFile(outside, 'outside secret');
+
+    await expect(readStableContainedFile(root, 'stable.md', 1_024, 'PAGE', {
+      afterOpen: async () => {
+        await rename(join(root, 'stable.md'), join(root, 'stable-original.md'));
+        await symlink(outside, join(root, 'stable.md'));
+      },
+    })).rejects.toMatchObject({ code: 'VAULT_PATH_ESCAPE' });
+  });
+
+  it('removes arbitrary absolute paths from every vault-controlled model and public field', async () => {
+    await put('CORE.md', '# Core\n规则位于/custom-root/private-policy.md\n说明file:///Volumes/Private/policy.md。');
+    const harness = await readTrustedPromptHarness(root, { intent: 'GENERAL_QA' });
+    expect(harness.content).not.toMatch(privatePathPattern);
+
+    await put('wiki_v2/concepts/路径安全.md', page({
+      title: '路径安全/custom-title/secret-title.md',
+      aliases: ['公开别名C:\\company\\secret-alias.txt', '说明file:///Volumes/Private/alias.md'],
+      tags: ['domain/textiles', '/custom-tags/internal/private-tag'],
+      body: '公开正文/custom-body/private.txt\n\n说明file:///tmp/evidence.md\n\n\\\\server\\share\\secret.docx',
+    }));
+    await put('raw/textiles/path-source.md', [
+      '# Raw evidence',
+      '证据/custom-raw/private.txt',
+      '说明D:\\private\\evidence.txt',
+      '位置file:///Volumes/Private/raw.md',
+      '可公开证据。',
+    ].join('\n'));
+    await put('wiki_v2/_meta/build/provenance_manifest.json', JSON.stringify({
+      generated_on: '2026-07-15',
+      pages: {
+        'wiki_v2/concepts/路径安全.md': { source_paths: ['raw/textiles/path-source.md'] },
+      },
+    }));
+
+    expect((await indexSantexwellVault(database, root, AbortSignal.timeout(2_000))).status).toBe('READY');
+    const hit = searchKnowledge(database, '路径安全', { sourceKinds: ['SANTEXWELL'] })[0]!;
+    const document = getKnowledgeDocument(database, hit.documentId, { sourceKinds: ['SANTEXWELL'] })!;
+    const internalContent = database.prepare(
+      `SELECT group_concat(content, '\n') AS content FROM knowledge_fragments WHERE document_id = ?`,
+    ).get(hit.documentId) as { content: string };
+    const raw = await readSantexwellRawEvidence(database, root, hit.documentId);
+
+    expect(JSON.stringify(hit)).not.toMatch(privatePathPattern);
+    expect(JSON.stringify(document)).not.toMatch(privatePathPattern);
+    expect(internalContent.content).not.toMatch(privatePathPattern);
+    expect(raw.text).not.toMatch(privatePathPattern);
+    expect(document.title).toBe('路径安全');
+    expect(document.aliases).toEqual(['公开别名', '说明']);
+    expect(document.tags).toEqual(['domain/textiles']);
+    expect(raw.text).toContain('可公开证据');
+  });
+
+  it('sanitizes a legacy last-good generation again at the public projection boundary', async () => {
+    await put('wiki_v2/moc/旧数据.md', page({ title: '公开旧页', type: 'moc', evidence: 'index-only', body: '公开旧内容' }));
+    await put('wiki_v2/_meta/build/provenance_manifest.json', JSON.stringify({ generated_on: '2026-07-15', pages: {} }));
+    await indexSantexwellVault(database, root, AbortSignal.timeout(2_000));
+    const row = database.prepare(`SELECT id, metadata_json FROM knowledge_documents WHERE title = '公开旧页'`).get() as {
+      id: string;
+      metadata_json: string;
+    };
+    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+    metadata.aliases = ['旧别名 Z:\\private\\alias.txt'];
+    metadata.tags = ['/mnt/private/tag'];
+    database.prepare(
+      `UPDATE knowledge_documents SET title = ?, metadata_json = ? WHERE id = ?`,
+    ).run('legacy 公开旧页 /root/private-title.md', JSON.stringify(metadata), row.id);
+    database.prepare(
+      `UPDATE knowledge_fragments SET title = ?, heading = ?, content = ?, search_text = ? WHERE document_id = ?`,
+    ).run(
+      'legacy 公开旧页 /root/private-title.md',
+      '公开标题 Y:\\private\\heading.txt',
+      '公开旧内容 file:///Volumes/Private/content.md',
+      'legacy 公开旧页 公开旧内容',
+      row.id,
+    );
+
+    const hit = searchKnowledge(database, 'legacy', { sourceKinds: ['SANTEXWELL'] })[0]!;
+    const document = getKnowledgeDocument(database, row.id, { sourceKinds: ['SANTEXWELL'] })!;
+    const overview = getSantexwellOverview(database);
+    expect(JSON.stringify(hit)).not.toMatch(privatePathPattern);
+    expect(JSON.stringify(document)).not.toMatch(privatePathPattern);
+    expect(JSON.stringify(overview)).not.toMatch(privatePathPattern);
   });
 
   it('indexes the exact allowlist, excludes conflicts and symlinks, and keeps DTOs path-free', async () => {
@@ -198,6 +289,37 @@ describe('Santexwell vault indexing', () => {
     expect(database.prepare(`SELECT 1 FROM knowledge_documents WHERE title = '尚未发布页面'`).get()).toBeUndefined();
   });
 
+  it('publishes a vault generation atomically when a later document write fails', async () => {
+    await put('wiki_v2/concepts/A.md', page({ title: '原子 A', body: 'A old generation' }));
+    await put('wiki_v2/concepts/B.md', page({ title: '原子 B', body: 'B old generation' }));
+    await put('wiki_v2/_meta/build/provenance_manifest.json', JSON.stringify({ generated_on: '2026-07-15', pages: {} }));
+    const first = await indexSantexwellVault(database, root, AbortSignal.timeout(2_000));
+    expect(first.status).toBe('READY');
+    const before = database.prepare(
+      `SELECT d.title, d.checksum, f.content
+       FROM knowledge_documents d JOIN knowledge_fragments f ON f.document_id = d.id AND f.ordinal = 0
+       WHERE d.title IN ('原子 A', '原子 B') ORDER BY d.title`,
+    ).all();
+
+    await put('wiki_v2/concepts/A.md', page({ title: '原子 A', body: 'A new generation' }));
+    await put('wiki_v2/concepts/B.md', page({ title: '原子 B', body: 'B new generation' }));
+    database.exec(`CREATE TRIGGER reject_atomic_b_update
+      BEFORE UPDATE OF checksum ON knowledge_documents
+      WHEN OLD.title = '原子 B' AND NEW.checksum != OLD.checksum
+      BEGIN SELECT RAISE(ABORT, 'reject B generation'); END`);
+    const failed = await indexSantexwellVault(database, root, AbortSignal.timeout(2_000));
+    database.exec('DROP TRIGGER reject_atomic_b_update');
+
+    expect(failed.status).toBe('DEGRADED');
+    expect(database.prepare(
+      `SELECT d.title, d.checksum, f.content
+       FROM knowledge_documents d JOIN knowledge_fragments f ON f.document_id = d.id AND f.ordinal = 0
+       WHERE d.title IN ('原子 A', '原子 B') ORDER BY d.title`,
+    ).all()).toEqual(before);
+    expect(searchKnowledge(database, 'new generation', { sourceKinds: ['SANTEXWELL'] })
+      .every((hit) => !hit.excerpt.includes('new generation'))).toBe(true);
+  });
+
   it('rejects an invalid provenance manifest without deleting the last-good index', async () => {
     await put('wiki_v2/concepts/保留.md', page({ title: '保留页面' }));
     await put('wiki_v2/_meta/build/provenance_manifest.json', JSON.stringify({ generated_on: '2026-07-15', pages: {} }));
@@ -276,3 +398,5 @@ describe('Santexwell vault indexing', () => {
     await writeFile(target, content);
   }
 });
+
+const privatePathPattern = /file:\/\/|\/(?:custom-[^/]+|etc|opt|private|srv|tmp|var|Volumes)\/|[A-Za-z]:[\\/]|\\\\server\\/iu;

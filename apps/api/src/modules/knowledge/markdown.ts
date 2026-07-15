@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { sanitizeVaultControlledList, sanitizeVaultControlledText } from './vault-text';
+
 const MAX_MARKDOWN_BYTES = 2 * 1024 * 1024;
 const MAX_FRONTMATTER_BYTES = 64 * 1024;
 const MAX_KEYS = 128;
@@ -231,7 +233,8 @@ function validateFrontmatter(values: Map<string, string | number | string[]>): C
   REQUIRED_FIELDS.forEach((key) => {
     if (!values.has(key)) throw new KnowledgeInputError('FRONTMATTER_REQUIRED_FIELD', `缺少 frontmatter 字段: ${key}`);
   });
-  const title = scalar(values, 'title');
+  const title = sanitizeVaultControlledText(scalar(values, 'title'));
+  if (!title) throw new KnowledgeInputError('PUBLIC_TITLE_EMPTY', 'title 去除内部路径后为空');
   const pageType = scalar(values, 'page_type');
   const status = scalar(values, 'status');
   const evidenceStatus = scalar(values, 'evidence_status');
@@ -271,15 +274,19 @@ function validateFrontmatter(values: Map<string, string | number | string[]>): C
   for (const [key, value] of values) {
     if (!REQUIRED_FIELDS.includes(key as typeof REQUIRED_FIELDS[number])
       && !['source_paths', 'source_cluster', 'source_bucket', 'coverage_scope', 'cross_cluster_policy', 'attention_score'].includes(key)) {
-      routing[key] = value;
+      routing[key] = Array.isArray(value)
+        ? sanitizeVaultControlledList(value)
+        : typeof value === 'string'
+          ? sanitizeVaultControlledText(value)
+          : value;
     }
   }
   return {
     title,
     pageType: pageType as CanonicalFrontmatter['pageType'],
     status: status as CanonicalFrontmatter['status'],
-    tags: list(values, 'tags'),
-    aliases: list(values, 'aliases'),
+    tags: sanitizeVaultControlledList(list(values, 'tags')),
+    aliases: sanitizeVaultControlledList(list(values, 'aliases')),
     sourceCount,
     evidenceStatus: evidenceStatus as CanonicalFrontmatter['evidenceStatus'],
     lastCompiled: scalar(values, 'last_compiled'),
@@ -330,11 +337,11 @@ function sanitizeMarkdownBody(body: string): string {
     });
     safe = safe.replace(/(!?)\[([^\]\n]{0,1000})\]\((?:<([^>\n]{1,4000})>|([^\n)]{1,4000}))\)/gu,
       (_whole, imageMarker: string, label: string, _angledTarget: string | undefined, _target: string | undefined) => {
-        if (imageMarker) return isVaultPath(label) ? '' : label;
-        return isVaultPath(label) ? '' : label;
+        if (imageMarker) return sanitizeVaultControlledText(label);
+        return sanitizeVaultControlledText(label);
       });
     safe = safe.replace(/<[^>\n]{1,4000}>/gu, '');
-    safe = stripVaultPaths(safe);
+    safe = sanitizeVaultControlledText(safe);
     if (safe.trim()) output.push(safe.replace(/\s+/gu, ' ').trim());
     else if (output.at(-1) !== '') output.push('');
   }
@@ -430,19 +437,6 @@ function stableFragmentKey(path: string, occurrence: number, ordinal: number): s
 function isRawTarget(target: string): boolean {
   const normalized = target.replaceAll('\\', '/').replace(/^\.\//u, '');
   return normalized === 'raw' || normalized.startsWith('raw/') || normalized.includes('/raw/');
-}
-
-function stripVaultPaths(value: string): string {
-  return value
-    .replace(/(^|[^\p{Letter}\p{Number}_])(?:\.\.?\/)*(?:raw|wiki_v2)\/[^\s<>"'|)\]}]+/giu, '$1')
-    .replace(/(^|[^\p{Letter}\p{Number}_])(?:\.\.\/)+(?:moc|indexes|concepts|sources|procedures|cases|analysis)\/[^\s<>"'|)\]}]+/giu, '$1')
-    .replace(/(^|[^\p{Letter}\p{Number}_])\/Users\/[^\s<>"'|)\]}]+/giu, '$1');
-}
-
-function isVaultPath(value: string): boolean {
-  const normalized = value.trim().replaceAll('\\', '/');
-  return /(?:^|\/)raw(?:\/|$)|(?:^|\/)wiki_v2(?:\/|$)|^\/Users\//iu.test(normalized)
-    || /^(?:\.\.\/)+(?:moc|indexes|concepts|sources|procedures|cases|analysis)\//iu.test(normalized);
 }
 
 export function isSafeRawPath(value: string): boolean {

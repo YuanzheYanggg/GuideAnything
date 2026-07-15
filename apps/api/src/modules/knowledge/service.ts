@@ -66,10 +66,7 @@ export class KnowledgeService {
     workspaceId: string,
     file: MultipartFile,
   ) {
-    const permission = this.requireWorkspaceRead(user.id, workspaceId);
-    if (!['AUTHOR', 'EDITOR'].includes(user.role) || !['OWNER', 'EDIT'].includes(permission)) {
-      throw httpError(403, 'FORBIDDEN', '只有工作区作者或编辑者可以上传持久资料');
-    }
+    this.requirePersistentUpload(user, workspaceId);
     const bytes = await readUpload(file, MAX_UPLOAD_BYTES);
     let displayName: string;
     try {
@@ -102,9 +99,11 @@ export class KnowledgeService {
     }
 
     await mkdir(targetDirectory, { recursive: true });
-    await writeFile(temporaryPath, bytes, { flag: 'wx' });
     try {
+      await writeFile(temporaryPath, bytes, { flag: 'wx' });
+      this.requirePersistentUpload(user, workspaceId);
       await rename(temporaryPath, finalPath);
+      this.requirePersistentUpload(user, workspaceId);
       return insertWorkspaceDocument({
         database: this.database,
         workspaceId,
@@ -129,6 +128,13 @@ export class KnowledgeService {
     const permission = getWorkspacePermission(this.database, workspaceId, userId);
     if (!permission) throw httpError(404, 'WORKSPACE_NOT_FOUND', '工作区不存在');
     return permission;
+  }
+
+  private requirePersistentUpload(user: { id: string; role: string }, workspaceId: string): void {
+    const permission = this.requireWorkspaceRead(user.id, workspaceId);
+    if (!['AUTHOR', 'EDITOR'].includes(user.role) || !['OWNER', 'EDIT'].includes(permission)) {
+      throw httpError(403, 'FORBIDDEN', '只有工作区作者或编辑者可以上传持久资料');
+    }
   }
 }
 
