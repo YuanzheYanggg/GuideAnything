@@ -158,6 +158,10 @@ Prompt 分四层组合：
 
 Bridge 启动时从 Codex App Server 查询可用模型与 reasoning effort，配置不匹配时健康状态为 degraded，不静默使用明显更弱的替代模型。
 
+Bridge 必须使用专用的最小 `CODEX_HOME`，由运维显式提供认证文件，不得直接继承服务器操作员的个人 `config.toml`、`AGENTS.md`、skills、plugins 或 MCP。启动参数关闭 plugins、remote plugins、apps、browser/computer/image、hooks、goals、shell/unified exec、workspace dependencies、multi-agent、tool suggestion 和 skill install，并在最小配置中设置 `web_search = "disabled"`。Santexwell 问答规则由 API Prompt Harness 从受信任的 vault 规则文件显式注入，而不是依靠个人 skill 自动加载。
+
+Bridge 健康检查记录但不暴露：Codex 版本、模型角色解析、thread `instructionSources` 数量、意外 MCP 启动数和基线 token usage。若出现个人 instruction source、MCP/tool 启动或基线上下文明显膨胀，状态降级并拒绝接受生产 run。
+
 ## 7. 会话、运行和流式协议
 
 GuideAnything conversation 是权威记录，Codex thread id 只是可丢失的运行时关联。Runtime 重启后优先 resume；无法恢复时用经过清理的会话摘要启动新 thread。
@@ -251,6 +255,10 @@ Schema 失败自动修复一次，第二次失败结束 run。无效辅助引用
 - `conversation_attachments`：私有上传归属和 TTL/lifecycle。
 
 所有 JSON 写入前经过 Zod schema。索引表是可重建派生数据；会话、消息、正式事件、引用和产物是持久记录。
+
+私有 conversation、artifact 和 session attachment 不注册到当前对所有工作区成员可见的 `workspace_items`。删除 conversation 只级联它拥有的私有消息、run、事件、引用、产物、附件元数据和 SESSION 索引；GLOBAL Santexwell 与 WORKSPACE source 不随会话删除。FTS 通过明确 trigger 与 fragment 生命周期同步，且不索引内部 locator、绝对路径或存储 key。
+
+Flow snapshot 和 opaque `referenceId` 是稳定身份：相同 checksum 可复用已有 snapshot，origin 相同但内容不同视为完整性错误，不用 `INSERT OR REPLACE` 覆盖历史 locator。引用表只保存内部 locator 与 opaque id，产品 href 始终由后端从 opaque id 生成并重新鉴权。
 
 ## 10. 前端信息架构
 

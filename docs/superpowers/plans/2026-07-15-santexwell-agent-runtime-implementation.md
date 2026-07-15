@@ -20,6 +20,7 @@
 - DIRECT and FOCUSED routes never start an unnecessary reducer or broad vault scan; Scheduler enforces every route budget in code.
 - Streamed plan/progress/draft output is provisional. Only schema-, permission-, and citation-validated output becomes committed.
 - Runtime uses approval `never`, read-only sandbox, explicit roots, no network, and no write/execute tools.
+- Runtime Bridge uses a dedicated minimal `CODEX_HOME`; it must not inherit operator AGENTS, skills, plugins, MCP servers, tools, or web search.
 - Every new production behavior follows red-green-refactor; tests must be observed failing for the expected reason before implementation.
 - Preserve all current guide, version, media, workspace, personal-view, canvas, and subguide behavior.
 - Do not modify or depend on the unrelated uncommitted files in the main checkout.
@@ -190,11 +191,13 @@ git commit -m "feat: add agent protocols and flow knowledge snapshots"
 
 **Interfaces:**
 - Produces authoritative tables for sources/documents/fragments/snapshots/conversations/messages/runs/events/citations/artifacts/attachments.
-- `AppConfig` gains `santexwellVaultPath`, `bridgeUrl`, `bridgeToken`, timeouts, concurrency, and semantic model-role settings.
+- `AppConfig` gains an explicit `bridge | fake` runtime mode, `santexwellVaultPath`, `bridgeUrl`, `bridgeToken`, timeouts, concurrency, and semantic model-role settings.
+- Private conversations and artifacts are owner-scoped records and are not registered in the currently workspace-visible `workspace_items` table.
+- Flow snapshots and opaque references are immutable identities; repository code never replaces an existing snapshot/reference in place.
 
 - [ ] **Step 1: Write failing migration and config tests**
 
-Assert versions `[1, 2, 3]`, all tables/indexes, global/workspace conversation CHECK constraints, unique run sequence, and cascading deletion only for private conversation-owned data. Assert blank bridge token is rejected outside explicit fake-runtime test setup.
+Assert versions `[1, 2, 3]`, all tables/indexes, global/workspace conversation CHECK constraints, source scope constraints, unique per-conversation client message ids, unique run sequence, immutable DRAFT/PUBLISHED snapshot origins, JSON validity, event type/phase constraints, and cascading deletion only for private conversation-owned data. Prove that deleting one conversation removes its messages/runs/events/citations/artifacts/attachments/SESSION source and FTS rows while preserving other users' conversations plus GLOBAL and WORKSPACE sources. Assert blank bridge token is rejected outside explicit fake-runtime test setup and production rejects fake mode.
 
 ```ts
 expect(tableNames(database)).toEqual(expect.arrayContaining([
@@ -219,7 +222,7 @@ Expected: FAIL because migration 3 and new config fields do not exist.
 
 - [ ] **Step 3: Implement migration 3**
 
-Use `STRICT`, short foreign-key chains, ISO text timestamps, explicit CHECK constraints, and FTS5. Store sensitive locators only in internal JSON columns. `conversations.workspace_id` is nullable exactly when scope is `GLOBAL_SANTEXWELL`.
+Use `STRICT`, short foreign-key chains, ISO text timestamps, explicit CHECK constraints, and FTS5. Store sensitive locators only in internal JSON columns. `conversations.workspace_id` is nullable exactly when scope is `GLOBAL_SANTEXWELL`. Avoid a message/run foreign-key cycle: runs belong to a conversation and may reference their initiating user message in one direction only. User/workspace deletion is `NO ACTION`; only conversation-owned private data cascades.
 
 ```sql
 CREATE TABLE conversations (
@@ -242,17 +245,27 @@ CREATE TABLE agent_run_events (
   sequence INTEGER NOT NULL CHECK (sequence > 0),
   plan_version INTEGER NOT NULL CHECK (plan_version > 0),
   phase TEXT NOT NULL CHECK (phase IN ('PROVISIONAL','COMMITTED')),
-  type TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN (
+    'route.started','route.completed','plan.committed',
+    'task.started','task.progress','task.finding','task.completed','reduce.started',
+    'answer.draft.delta','answer.validating','citation.committed','answer.committed',
+    'artifact.committed','run.cancelled','run.failed','run.completed'
+  )),
+  payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
   stale INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0,1)),
   created_at TEXT NOT NULL,
+  CHECK (phase != 'COMMITTED' OR stale = 0),
   UNIQUE (run_id, sequence)
 ) STRICT;
 ```
 
+Create `knowledge_fragment_search` as the only non-STRICT virtual table. Index only opaque fragment id, title, heading, content, and a derived `search_text` used for CJK bigrams. Keep internal locators/storage paths out of FTS, and install explicit insert/update/delete triggers so document/source/conversation cascades cannot leave stale shadow rows. Test insert, update, and cascade-delete MATCH behavior plus `PRAGMA foreign_key_check`.
+
+`knowledge_sources` has mutually exclusive `GLOBAL | WORKSPACE | SESSION` ownership columns. `flow_knowledge_snapshots` has mutually exclusive DRAFT revision versus PUBLISHED version identity and unique origins. `answer_citations.reference_id` is globally unique and opaque; href is never stored. `conversation_attachments` stores only an internal storage key plus bounded size/status/expiry metadata; deleting rows does not claim to delete the physical file.
+
 - [ ] **Step 4: Implement strict config loading**
 
-Resolve filesystem paths at server boundary, accept only `http://127.0.0.1` or `http://localhost` bridge URLs, cap concurrency to 3, and never expose `bridgeToken` through health DTOs.
+Split pure environment parsing from `.env` loading. Resolve filesystem paths at the server boundary without requiring the vault to exist. Accept only root-path `http://127.0.0.1` or `http://localhost` bridge URLs with no credentials/query/fragment, cap concurrency to 3, validate bounded integer phase/run timeouts, and never expose `bridgeToken` through health DTOs. `AGENT_RUNTIME_MODE` defaults to `bridge`; explicit `fake` may omit the token only outside production. Production rejects fake mode, missing/short tokens, and the documented local-development sentinel. Model role values are nullable semantic configuration and never silently replaced with hardcoded model ids.
 
 - [ ] **Step 5: Verify GREEN and commit**
 
@@ -347,6 +360,8 @@ git commit -m "feat: index vault documents and guide flows"
 - Create: `apps/runtime-bridge/src/server.ts`
 - Create: `apps/runtime-bridge/src/json-rpc.test.ts`
 - Create: `apps/runtime-bridge/src/app.test.ts`
+- Create: `apps/runtime-bridge/src/codex-home.ts`
+- Create: `apps/runtime-bridge/src/codex-home.test.ts`
 - Modify: `.env.example`
 
 **Interfaces:**
@@ -356,7 +371,7 @@ git commit -m "feat: index vault documents and guide flows"
 
 - [ ] **Step 1: Write failing JSON-RPC framing and bridge auth tests**
 
-Use a fake child process stream. Assert monotonically allocated request IDs, out-of-order response resolution, notification dispatch, malformed line isolation, process-exit rejection, required bridge token, and final-answer phase handling.
+Use a fake child process stream. Assert monotonically allocated request IDs, out-of-order response resolution, notification dispatch, malformed line isolation, process-exit rejection, required bridge token, final-answer phase handling, dedicated runtime-home creation, top-level `web_search = "disabled"`, all required `--disable` flags, `personality: "none"`, empty instruction sources, and rejection of MCP/tool notifications.
 
 ```ts
 it('treats phase-less and commentary deltas as provisional', async () => {
@@ -374,11 +389,11 @@ pnpm --filter @guideanything/runtime-bridge test
 
 - [ ] **Step 3: Implement JSON-RPC client and Codex lifecycle**
 
-Spawn `codex app-server --stdio`; send `initialize`, then `initialized`; call `model/list`; use `thread/start` or `thread/resume`; start turns with text input and output schema. Thread and turn requests must set `approvalPolicy: 'never'`, `sandbox: 'read-only'`, explicit runtime roots, empty dynamic tools, no environments, and configured effort.
+Spawn `codex app-server --stdio` with a dedicated minimal `CODEX_HOME`; the operator supplies authentication without copying personal configuration. Disable plugins, remote plugins, apps, browser/computer/image, hooks, goals, shell/unified exec, workspace dependencies, multi-agent, tool suggestion and skill installation. Send `initialize`, then `initialized`; call `model/list`; use `thread/start` or `thread/resume`; start turns with text input and output schema. Thread and turn requests must set `approvalPolicy: 'never'`, `sandbox: 'read-only'`, explicit runtime roots, empty dynamic tools, no environments, `personality: 'none'`, and configured effort.
 
 - [ ] **Step 4: Implement localhost bridge API and role resolution**
 
-Accept only constant-time token matches. Resolve role model IDs against `model/list` and confirm requested effort is supported. Stream only agent message deltas/final/terminal errors; never forward command/file/tool/reasoning item contents.
+Accept only constant-time token matches. Resolve role model IDs against `model/list` and confirm requested effort is supported. Stream only agent message deltas/final/terminal errors; never forward command/file/tool/reasoning item contents. Health becomes degraded if a thread reports non-empty `instructionSources`, any MCP/tool startup is observed, or a configurable baseline context budget is exceeded.
 
 - [ ] **Step 5: Verify GREEN and commit**
 
