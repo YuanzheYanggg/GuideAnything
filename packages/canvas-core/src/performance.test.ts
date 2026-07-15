@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { expandSubguide, setSubguideExpanded } from './subguide';
 import { layoutFlowHierarchy } from './hierarchy';
+import { routeCanvasEdges } from './routing';
 
 describe('large guide transformations', () => {
   it('expands and collapses a 1000-node pinned snapshot within 500ms', () => {
@@ -58,5 +59,25 @@ describe('large guide transformations', () => {
     const started = performance.now();
     expect(layoutFlowHierarchy(thousandNodeDocument).document.nodes).toHaveLength(1_000);
     expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it('routes a 1000-node arranged guide within the local budget', () => {
+    const nodes: CanvasDocument['nodes'] = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `route-${index}`, type: 'process' as const, position: { x: index * 312, y: 0 }, size: { width: 240, height: 104 }, zIndex: index,
+      data: { label: `步骤 ${index}`, shape: 'process' as const },
+    }));
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes,
+      edges: nodes.slice(1).map((node, index) => ({ id: `route-edge-${index}`, source: nodes[index]!.id, target: node.id })),
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'route-0', exitNodeIds: ['route-999'],
+    };
+
+    const started = performance.now();
+    const result = routeCanvasEdges(document);
+
+    expect(result.routesByEdgeId.size).toBe(999);
+    expect(result.report.collisionEdgeIds).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });

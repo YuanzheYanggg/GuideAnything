@@ -1,11 +1,12 @@
 import type { CanvasNode } from '@guideanything/contracts';
 import type { NodeProps } from '@xyflow/react';
-import { memo, useRef } from 'react';
+import { memo, useRef, type ReactNode } from 'react';
 
 import { NodeChrome } from './NodeChrome';
+import { InlineNodeTextEditor } from './InlineNodeTextEditor';
 import { useMediaSource } from './useMediaSource';
 
-export function VideoNodeView({ data, onKeypoint }: { data: CanvasNode<'video'>['data']; onKeypoint?: (id: string) => void }) {
+export function VideoNodeView({ data, onKeypoint, captionContent }: { data: CanvasNode<'video'>['data']; onKeypoint?: (id: string) => void; captionContent?: ReactNode }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const source = useMediaSource(data.url);
   const seek = (id: string, seconds: number) => {
@@ -14,13 +15,15 @@ export function VideoNodeView({ data, onKeypoint }: { data: CanvasNode<'video'>[
   };
   return <div className="video-content">
     <video ref={videoRef} src={source} controls preload="metadata" aria-label={data.caption || '教学视频'} />
-    {data.caption ? <p>{data.caption}</p> : null}
+    {captionContent ?? (data.caption ? <p>{data.caption}</p> : null)}
     <div className="keypoint-list">{data.keypoints.map((point) => <button key={point.id} type="button" onClick={() => seek(point.id, point.timeSeconds)} aria-label={`跳转到 ${formatTime(point.timeSeconds)}`}><span>{formatTime(point.timeSeconds)}</span>{point.title}</button>)}</div>
   </div>;
 }
 
-export const VideoNode = memo(function VideoNode({ data, selected, width, height }: NodeProps) {
-  return <NodeChrome selected={selected} tone="video" width={width} height={height}><span className="node-kicker">VIDEO</span><VideoNodeView data={data as CanvasNode<'video'>['data']} /></NodeChrome>;
+export const VideoNode = memo(function VideoNode({ id, data, selected, width, height }: NodeProps) {
+  const value = data as CanvasNode<'video'>['data'];
+  const label = value.caption || '教学视频';
+  return <NodeChrome selected={selected} tone="video" width={width} height={height}><span className="node-kicker">VIDEO</span><VideoNodeView data={value} captionContent={<InlineNodeTextEditor nodeId={id} field="videoCaption" value={value.caption ?? ''} label={`${label} · 视频说明`} multiline placeholder="双击添加视频说明" showPlaceholder={Boolean(selected)}>{value.caption ? <p>{value.caption}</p> : null}</InlineNodeTextEditor>} /></NodeChrome>;
 });
 
 function formatTime(seconds: number): string {

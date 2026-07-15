@@ -247,6 +247,44 @@ describe('CanvasDocumentSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts legacy images and normalized point and rectangle annotations', () => {
+    expect(CanvasDocumentSchema.safeParse(imageDocument()).success).toBe(true);
+
+    const result = CanvasDocumentSchema.safeParse(imageDocument([
+      {
+        id: 'annotation-point', order: 0, title: '客户字段', body: '在这里填写售达方', shape: 'POINT',
+        region: { x: 0.25, y: 0.4 }, camera: { centerX: 0.25, centerY: 0.4, zoom: 3 }, targetNodeId: 'note',
+      },
+      {
+        id: 'annotation-rect', order: 1, title: '订单区域', shape: 'RECT',
+        region: { x: 0.5, y: 0.2, width: 0.3, height: 0.25 },
+      },
+    ]));
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects invalid image annotation geometry and camera zoom', () => {
+    const invalidAnnotations = [
+      { id: 'outside', order: 0, title: '越界', shape: 'POINT', region: { x: 1.1, y: 0.4 } },
+      { id: 'zero-rect', order: 0, title: '空区域', shape: 'RECT', region: { x: 0.2, y: 0.2, width: 0, height: 0.2 } },
+      { id: 'overflow-rect', order: 0, title: '超出图片', shape: 'RECT', region: { x: 0.8, y: 0.2, width: 0.3, height: 0.2 } },
+      { id: 'zoom', order: 0, title: '非法镜头', shape: 'POINT', region: { x: 0.2, y: 0.2 }, camera: { centerX: 0.2, centerY: 0.2, zoom: 9 } },
+    ];
+
+    invalidAnnotations.forEach((annotation) => {
+      expect(CanvasDocumentSchema.safeParse(imageDocument([annotation])).success).toBe(false);
+    });
+  });
+
+  it('rejects duplicate annotation ids, duplicate orders, and self targets', () => {
+    const base = { id: 'same', order: 0, title: '标注', shape: 'POINT', region: { x: 0.2, y: 0.2 } };
+
+    expect(CanvasDocumentSchema.safeParse(imageDocument([base, { ...base, order: 1 }])).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(imageDocument([base, { ...base, id: 'other' }])).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(imageDocument([{ ...base, targetNodeId: 'image' }])).success).toBe(false);
+  });
+
   it('rejects unsafe video URLs and dangling lesson nodes', () => {
     const result = CanvasDocumentSchema.safeParse({
       schemaVersion: 1,
@@ -301,5 +339,23 @@ function sourceTrace(referenceNodeId: string, sourceElementId: string) {
     sourceGuideId: 'source-guide',
     sourceVersionId: 'source-version',
     sourceElementId,
+  };
+}
+
+function imageDocument(annotations?: unknown[]) {
+  return {
+    schemaVersion: 1,
+    nodes: [
+      {
+        id: 'image', type: 'image', position: { x: 0, y: 0 }, zIndex: 0,
+        data: { url: 'https://example.com/screen.png', alt: 'ERP 页面', ...(annotations ? { annotations } : {}) },
+      },
+      { id: 'note', type: 'markdown', position: { x: 360, y: 0 }, zIndex: 1, data: { markdown: '字段说明' } },
+    ],
+    edges: [],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    steps: [],
+    entryNodeId: 'image',
+    exitNodeIds: ['image'],
   };
 }

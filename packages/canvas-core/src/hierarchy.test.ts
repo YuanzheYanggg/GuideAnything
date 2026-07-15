@@ -10,12 +10,12 @@ const end = (id: string, stageId?: string) => ({ ...base, id, type: 'end' as con
 const markdown = (id: string, contentParentId?: string) => ({ ...base, id, type: 'markdown' as const, ...(contentParentId ? { contentParentId } : {}), data: { markdown: id } });
 const image = (id: string, contentParentId?: string) => ({ ...base, id, type: 'image' as const, ...(contentParentId ? { contentParentId } : {}), data: { url: 'https://example.com/a.png', alt: id } });
 const video = (id: string, contentParentId?: string) => ({ ...base, id, type: 'video' as const, ...(contentParentId ? { contentParentId } : {}), data: { url: 'https://example.com/a.mp4', keypoints: [] } });
-const decision = (id: string) => ({ ...base, id, type: 'decision' as const, data: { label: '是否继续？', shape: 'decision' as const, branchLabels: ['是', '否'] } });
+const decision = (id: string, stageId?: string) => ({ ...base, id, type: 'decision' as const, ...(stageId ? { stageId } : {}), data: { label: '是否继续？', shape: 'decision' as const, branchLabels: ['是', '否'] } });
 const edge = (id: string, source: string, target: string) => ({ id, source, target });
 const makeDocument = (overrides: Partial<CanvasDocument>): CanvasDocument => ({ schemaVersion: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [], ...overrides });
 
 describe('flow hierarchy layout', () => {
-  it('places primary flow in deterministic stage and responsibility-lane grid', () => {
+  it('places primary flow by business order while retaining responsibility metadata', () => {
     const derived: CanvasNode = {
       ...process('derived'),
       position: { x: 9_000, y: 8_000 },
@@ -40,8 +40,8 @@ describe('flow hierarchy layout', () => {
     const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
 
     expect(byId.get('collect')!.position.y).toBeLessThan(byId.get('enter')!.position.y);
-    expect(byId.get('collect')!.position.x).toBeLessThan(byId.get('enter')!.position.x);
-    expect(byId.get('save')!.position.x).toBe(byId.get('enter')!.position.x);
+    expect(byId.get('collect')!.position.x).toBe(byId.get('enter')!.position.x);
+    expect(byId.get('save')!.position.x).toBeGreaterThan(byId.get('enter')!.position.x);
     expect(byId.get('attached-note')!.position.x).toBe(byId.get('enter')!.position.x);
     expect(byId.get('attached-note')!.position.y).toBeGreaterThan(byId.get('enter')!.position.y);
     expect(result.report.laneCount).toBe(2);
@@ -70,7 +70,7 @@ describe('flow hierarchy layout', () => {
     expect(erp!.width).toBeGreaterThan(0);
   });
 
-  it('reserves an explicit unassigned grid cell for loose authored resources', () => {
+  it('reserves an explicit unassigned stage area for loose authored resources', () => {
     const result = layoutFlowHierarchy(makeDocument({
       stages: [{ id: 'prepare', title: '准备', order: 0 }],
       lanes: [
@@ -87,7 +87,6 @@ describe('flow hierarchy layout', () => {
     }));
     const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
     const unassignedStage = result.stageBounds.find((stage) => stage.title === '未分阶段')!;
-    const unassignedLane = getSwimlaneBounds(result.document).find((lane) => lane.title === '未分配责任')!;
     const loose = [
       [byId.get('loose-markdown')!, { width: 300, height: 180 }],
       [byId.get('loose-image')!, { width: 320, height: 260 }],
@@ -101,10 +100,6 @@ describe('flow hierarchy layout', () => {
       expect(node.position.y).toBeGreaterThanOrEqual(unassignedStage.y);
       expect(node.position.x + size.width).toBeLessThanOrEqual(unassignedStage.x + unassignedStage.width);
       expect(node.position.y + size.height).toBeLessThanOrEqual(unassignedStage.y + unassignedStage.height);
-      expect(node.position.x).toBeGreaterThanOrEqual(unassignedLane.x);
-      expect(node.position.y).toBeGreaterThanOrEqual(unassignedLane.y);
-      expect(node.position.x + size.width).toBeLessThanOrEqual(unassignedLane.x + unassignedLane.width);
-      expect(node.position.y + size.height).toBeLessThanOrEqual(unassignedLane.y + unassignedLane.height);
     });
   });
 
@@ -117,13 +112,39 @@ describe('flow hierarchy layout', () => {
     }));
     const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
 
-    expect(byId.get('start')!.position.x).toBeLessThan(byId.get('enter')!.position.x);
+    expect(byId.get('start')!.position.x).toBe(byId.get('enter')!.position.x);
     expect(byId.get('enter')!.position.x).toBeLessThan(byId.get('end')!.position.x);
-    expect(byId.get('note')!.position.x).toBeGreaterThan(byId.get('enter')!.position.x);
-    expect(byId.get('note')!.position.x + 300).toBeLessThan(byId.get('end')!.position.x);
+    expect(byId.get('note')!.position.x).toBe(byId.get('enter')!.position.x);
+    expect(byId.get('note')!.position.y).toBeGreaterThan(byId.get('enter')!.position.y);
     expect(byId.get('screen')!.position.y).toBeGreaterThan(byId.get('note')!.position.y);
     expect(result.report.unassignedContentIds).toEqual(['loose']);
     expect(result.stageBounds.map((bound) => bound.title)).toEqual(['准备', '录入', '未分阶段']);
+  });
+
+  it('keeps connected resource nodes in the authored flow instead of dropping them below the business spine', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      nodes: [start('start'), markdown('context'), image('screen'), video('demo'), decision('check'), process('save'), end('done')],
+      edges: [
+        edge('e1', 'start', 'context'),
+        edge('e2', 'context', 'screen'),
+        edge('e3', 'screen', 'demo'),
+        edge('e4', 'demo', 'check'),
+        { ...edge('e5', 'check', 'save'), sourceHandle: 'yes' },
+        edge('e6', 'save', 'done'),
+      ],
+      entryNodeId: 'start',
+      exitNodeIds: ['done'],
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('start')!.position.x).toBeLessThan(byId.get('context')!.position.x);
+    expect(byId.get('context')!.position.x).toBeLessThan(byId.get('screen')!.position.x);
+    expect(byId.get('screen')!.position.x).toBeLessThan(byId.get('demo')!.position.x);
+    expect(byId.get('demo')!.position.x).toBeLessThan(byId.get('check')!.position.x);
+    expect(byId.get('check')!.position.x).toBeLessThan(byId.get('save')!.position.x);
+    expect(byId.get('save')!.position.x).toBeLessThan(byId.get('done')!.position.x);
+    expect(result.document.nodes.map((node) => node.id).sort()).toEqual(['check', 'context', 'demo', 'done', 'save', 'screen', 'start']);
+    expect(result.report.unassignedContentIds).toEqual([]);
   });
 
   it('preserves deterministic ordering for cycles and isolated primary nodes', () => {
@@ -277,5 +298,53 @@ describe('flow hierarchy layout', () => {
     const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
 
     expect(byId.get('yes-branch')!.position.y).toBeLessThan(byId.get('no-branch')!.position.y);
+  });
+
+  it('resets each configured stage to the left baseline while stages advance downward', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      stages: [{ id: 'prepare', title: '准备', order: 0 }, { id: 'execute', title: '执行', order: 1 }],
+      nodes: [start('start', 'prepare'), process('prepare-end', 'prepare'), process('execute-start', 'execute'), end('done', 'execute')],
+      edges: [edge('e1', 'start', 'prepare-end'), edge('e2', 'prepare-end', 'execute-start'), edge('e3', 'execute-start', 'done')],
+      entryNodeId: 'start',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('prepare-end')!.position.x).toBeGreaterThan(byId.get('start')!.position.x);
+    expect(byId.get('execute-start')!.position.x).toBe(byId.get('start')!.position.x);
+    expect(byId.get('execute-start')!.position.y).toBeGreaterThan(byId.get('prepare-end')!.position.y);
+    expect(byId.get('done')!.position.x).toBeGreaterThan(byId.get('execute-start')!.position.x);
+  });
+
+  it('keeps the yes branch on the main row and places the no branch below it', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      stages: [{ id: 'check', title: '检查', order: 0 }],
+      nodes: [start('start', 'check'), decision('check-stock', 'check'), process('yes', 'check'), process('no', 'check'), process('merge', 'check')],
+      edges: [
+        edge('start-check', 'start', 'check-stock'),
+        { ...edge('yes-edge', 'check-stock', 'yes'), sourceHandle: 'yes' },
+        { ...edge('no-edge', 'check-stock', 'no'), sourceHandle: 'no' },
+        edge('yes-merge', 'yes', 'merge'), edge('no-merge', 'no', 'merge'),
+      ],
+      entryNodeId: 'start',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('yes')!.position.y).toBe(byId.get('check-stock')!.position.y);
+    expect(byId.get('no')!.position.y).toBeGreaterThan(byId.get('yes')!.position.y);
+    expect(byId.get('merge')!.position.x).toBeGreaterThan(byId.get('yes')!.position.x);
+    expect(byId.get('merge')!.position.x).toBeGreaterThan(byId.get('no')!.position.x);
+  });
+
+  it('reports backward edges without moving the entry behind the cycle', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      nodes: [start('start'), process('review'), process('approve')],
+      edges: [edge('start-review', 'start', 'review'), edge('review-approve', 'review', 'approve'), edge('approve-review', 'approve', 'review')],
+      entryNodeId: 'start',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('start')!.position.x).toBeLessThan(byId.get('review')!.position.x);
+    expect(byId.get('review')!.position.x).toBeLessThan(byId.get('approve')!.position.x);
+    expect(result.report.backEdgeIds).toEqual(['approve-review']);
   });
 });

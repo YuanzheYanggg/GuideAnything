@@ -1,9 +1,9 @@
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import { LessonPage, resolveStepLane, resolveStepStage, resourcesForStep } from './LessonPage';
+import { LessonPage, resolveStepLane, resolveStepStage, resourcesForStep, toLessonFlowEdges } from './LessonPage';
 import { createPersonalApiMock } from '../../test/workspace-api-mocks';
 
 const version: GuideVersionSnapshot = {
@@ -47,6 +47,13 @@ const hierarchyVersion: GuideVersionSnapshot = {
 };
 
 describe('LessonPage', () => {
+  it('derives orthogonal route data for the published flow map', () => {
+    const edges = toLessonFlowEdges(version.document);
+
+    expect(edges).toContainEqual(expect.objectContaining({
+      id: 'e1', sourceHandle: 'out', targetHandle: 'in', type: 'orthogonal', data: expect.objectContaining({ route: expect.objectContaining({ edgeId: 'e1' }) }),
+    }));
+  });
   it('records the root version as recent after a successful load', async () => {
     const personalApi = createPersonalApiMock();
     render(<LessonPage versionId="version-lesson" api={{ getVersion: vi.fn().mockResolvedValue(version) }} personalApi={personalApi} onBack={vi.fn()} />);
@@ -82,6 +89,36 @@ describe('LessonPage', () => {
     const api = { getVersion: vi.fn().mockResolvedValue({ ...version, document: { ...version.document, steps: [] } }) };
     render(<LessonPage versionId="empty" api={api} onBack={vi.fn()} />);
     expect(await screen.findByText('这个发布版本还没有编排教学步骤')).toBeVisible();
+  });
+
+  it('plays image annotations, opens linked resources, and returns to the same annotation', async () => {
+    const user = userEvent.setup();
+    const annotatedVersion: GuideVersionSnapshot = {
+      ...hierarchyVersion,
+      document: {
+        ...hierarchyVersion.document,
+        nodes: [
+          hierarchyVersion.document.nodes[0]!,
+          {
+            id: 'screen', type: 'image', contentParentId: 'intro', position: { x: 320, y: 0 }, zIndex: 1,
+            data: { url: 'https://example.com/erp.png', alt: 'ERP 页面', annotations: [{ id: 'field', order: 0, title: '客户字段', shape: 'POINT', region: { x: 0.2, y: 0.3 }, targetNodeId: 'note' }] },
+          },
+          { id: 'note', type: 'markdown', contentParentId: 'intro', position: { x: 320, y: 280 }, zIndex: 2, data: { markdown: '# 字段解释\n填写售达方。' } },
+        ],
+        edges: [],
+        steps: [{ id: 'step-intro', order: 0, title: '确认业务范围', nodeId: 'intro' }],
+      },
+    };
+    render(<LessonPage versionId={annotatedVersion.id} api={{ getVersion: vi.fn().mockResolvedValue(annotatedVersion) }} onBack={vi.fn()} />);
+    await screen.findByRole('heading', { name: annotatedVersion.title });
+
+    await user.click(screen.getByRole('button', { name: '放大查看 ERP 页面' }));
+    await user.click(screen.getByRole('button', { name: '开始图片讲解' }));
+    expect(screen.getByRole('heading', { name: '客户字段' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '查看关联资料' }));
+    expect(within(screen.getByRole('dialog', { name: '资料预览' })).getByRole('heading', { name: '字段解释' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '返回上一项资料' }));
+    expect(screen.getByRole('heading', { name: '客户字段' })).toBeVisible();
   });
 
   it('opens a pinned subguide from the lesson canvas and returns to the parent guide', async () => {
