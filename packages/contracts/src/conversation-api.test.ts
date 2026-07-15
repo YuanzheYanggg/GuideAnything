@@ -354,6 +354,30 @@ describe('conversation API contracts', () => {
     });
     expect(resolved.status === 'VALID' && resolved.target.href).toBe('/versions/version-1/learn?nodeId=approve');
 
+    expect(ReferenceResolutionV1Schema.parse({
+      status: 'VALID',
+      referenceId: 'reference-santexwell',
+      source: 'SANTEXWELL',
+      title: '知识页',
+      excerpt: '知识页摘要。',
+      target: {
+        kind: 'SANTEXWELL_FRAGMENT',
+        href: '/knowledge/santexwell/documents/document-1?fragment=fragment-1',
+      },
+    }).status).toBe('VALID');
+
+    expect(ReferenceResolutionV1Schema.parse({
+      status: 'VALID',
+      referenceId: 'reference-attachment',
+      source: 'SESSION_ATTACHMENT',
+      title: '会话附件',
+      excerpt: '附件摘要。',
+      target: {
+        kind: 'CONVERSATION_MESSAGE',
+        href: '/workspaces/workspace-1/agents?conversation=conversation-1&message=message-1',
+      },
+    }).status).toBe('VALID');
+
     for (const href of [
       'https://example.com',
       '//example.com/path',

@@ -336,9 +336,8 @@ function isAllowedReferenceTarget(kind: z.infer<typeof ReferenceTargetKindV1Sche
       && hasExactlyOne('nodeId');
   }
   if (kind === 'SANTEXWELL_FRAGMENT') {
-    return url.pathname === '/knowledge/santexwell'
-      && hasOnly(['document', 'fragment'])
-      && hasExactlyOne('document')
+    return /^\/knowledge\/santexwell\/documents\/[^/]+$/u.test(url.pathname)
+      && hasOnly(['fragment'])
       && url.searchParams.getAll('fragment').length <= 1;
   }
   if (kind === 'WORKSPACE_DOCUMENT') {
@@ -380,6 +379,7 @@ function sourceMatchesTarget(
   }
   if (source === 'WORKSPACE_DOCUMENT') return target === 'WORKSPACE_DOCUMENT';
   if (source === 'SANTEXWELL') return target === 'SANTEXWELL_FRAGMENT';
+  if (source === 'SESSION_ATTACHMENT') return target === 'CONVERSATION_MESSAGE';
   if (source === 'PRIOR_CONVERSATION') return target === 'CONVERSATION_MESSAGE';
   return false;
 }
