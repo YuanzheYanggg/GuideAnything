@@ -22,6 +22,7 @@ export function MediaLightbox({ preview, onClose, onBack, onOpenTarget, isTarget
   onActivateNode?: (node: CanvasNode) => void;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogLabel = preview.kind === 'image' ? '图片预览' : preview.kind === 'video' ? '视频预览' : '资料预览';
 
   useEffect(() => {
     const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -38,8 +39,8 @@ export function MediaLightbox({ preview, onClose, onBack, onOpenTarget, isTarget
   }, [onClose]);
 
   return <div className="media-lightbox-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <div className="media-lightbox" role="dialog" aria-modal="true" aria-label="资料预览">
-      <div className="media-lightbox-actions">{onBack ? <button type="button" onClick={onBack} aria-label="返回上一项资料">←</button> : null}<button ref={closeButtonRef} type="button" onClick={onClose} aria-label="关闭资料预览">×</button></div>
+    <div className="media-lightbox" role="dialog" aria-modal="true" aria-label={dialogLabel}>
+      <div className="media-lightbox-actions">{onBack ? <button type="button" onClick={onBack} aria-label="返回上一项资料">←</button> : null}<button ref={closeButtonRef} type="button" onClick={onClose} aria-label="关闭媒体预览">×</button></div>
       <PreviewContent preview={preview} onOpenTarget={onOpenTarget} isTargetValid={isTargetValid} {...(onActivateNode ? { onActivateNode } : {})} />
     </div>
   </div>;

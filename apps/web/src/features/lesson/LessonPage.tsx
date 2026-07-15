@@ -74,9 +74,9 @@ const LessonMapNode = memo(function LessonMapNode({ data, type }: NodeProps) {
         activate();
       }
     } : undefined}
-  ><Handle className="lesson-map-handle" type="target" position={Position.Left} id="in" /><span>{typeLabel(type)}</span><strong>{nodeSummary(type, value)}</strong>{type === 'decision'
-      ? <><Handle className="lesson-map-handle" type="source" position={Position.Right} id="yes" /><Handle className="lesson-map-handle" type="source" position={Position.Bottom} id="no" /></>
-      : <Handle className="lesson-map-handle" type="source" position={Position.Right} id="out" />}</div>;
+  ><Handle className="lesson-map-handle" type="target" position={Position.Left} id="in" aria-label="输入端口" /><span>{typeLabel(type)}</span><strong>{nodeSummary(type, value)}</strong>{type === 'decision'
+      ? <><Handle className="lesson-map-handle" type="source" position={Position.Right} id="out" aria-label="输出端口" /><Handle className="lesson-map-handle" type="source" position={Position.Top} id="yes" aria-label="是分支端口" /><Handle className="lesson-map-handle" type="source" position={Position.Bottom} id="no" aria-label="否分支端口" /></>
+      : <Handle className="lesson-map-handle" type="source" position={Position.Right} id="out" aria-label="输出端口" />}</div>;
 });
 
 const nodeTypes: NodeTypes = {
@@ -291,7 +291,7 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
 
 function CurrentNodeContent({ node, onOpenPreview }: { node: CanvasNode; onOpenPreview: (node: CanvasNode) => void }) {
   if (node.type === 'markdown') return <MarkdownNodeView data={node.data} />;
-  if (node.type === 'video') return <VideoNodeView data={node.data} />;
+  if (node.type === 'video') return <VideoNodeView data={node.data} onOpenPreview={() => onOpenPreview(node)} />;
   if (node.type === 'image') return <LessonImage node={node} onOpenPreview={() => onOpenPreview(node)} />;
   if (node.type === 'subguide') return <div className="lesson-reference"><span>固定引用 · v{node.data.version}</span><strong>{node.data.title}</strong><p>{node.data.expanded ? '该子指南已在发布快照中展开。' : '这是一个固定版本子指南；作者可在编辑画布中展开查看完整流程。'}</p></div>;
   return <div className="lesson-flow-detail"><span>{typeLabel(node.type)}</span><strong>{node.data.label}</strong>{node.data.description ? <p>{node.data.description}</p> : null}</div>;
