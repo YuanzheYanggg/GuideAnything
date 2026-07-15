@@ -870,6 +870,7 @@ describe('agent runtime contracts', () => {
       planVersion: 1,
       role: 'FOCUSED_WORKER',
       reasoningEffort: 'MEDIUM',
+      outputKind: 'TASK_FINDING',
       prompt: '只读检查当前流程。',
       allowedRoots: ['/workspace'],
     });
@@ -884,6 +885,20 @@ describe('agent runtime contracts', () => {
     expect(request.type).toBe('RUN');
     expect(event.type).toBe('COMMENTARY');
     expect(BridgeRequestV1Schema.safeParse({ ...request, type: 'CANCEL', prompt: 'leak' }).success).toBe(false);
+    expect(BridgeRequestV1Schema.safeParse({
+      ...request, role: 'ROUTER', outputKind: 'ANSWER',
+    }).success).toBe(false);
+    expect(BridgeRequestV1Schema.safeParse({
+      ...request, role: 'REDUCER', outputKind: 'TASK_FINDING', reasoningEffort: 'HIGH',
+    }).success).toBe(false);
+    expect(BridgeEventV1Schema.safeParse({
+      requestId: 'bridge-request-1', runId: 'run-1', sequence: 2,
+      type: 'ROUTE_DECISION', payload: { decision: validRouteDecision('DIRECT') },
+    }).success).toBe(true);
+    expect(BridgeEventV1Schema.safeParse({
+      requestId: 'bridge-request-1', runId: 'run-1', sequence: 3,
+      type: 'TASK_FINDING', payload: { finding: santexwellFinding() },
+    }).success).toBe(true);
   });
 });
 

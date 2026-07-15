@@ -14,6 +14,7 @@ const request: BridgeRunRequestV1 = {
   planVersion: 1,
   role: 'ROUTER',
   reasoningEffort: 'MEDIUM',
+  outputKind: 'ROUTE_DECISION',
   prompt: '请路由这个问题。',
   allowedRoots: [],
 };
@@ -50,11 +51,28 @@ describe('HttpAgentRuntimeClient', () => {
 
   it('rejects cross-run, non-monotonic, trailing, and incomplete streams', async () => {
     const valid = bridgeEvents();
+    const completedWithoutOutput = [
+      valid[0]!,
+      { requestId: 'request-1', runId: 'run-1', sequence: 2, type: 'COMPLETED', payload: {} },
+    ];
+    const wrongOutput = [
+      valid[0]!,
+      {
+        requestId: 'request-1', runId: 'run-1', sequence: 2, type: 'TASK_FINDING',
+        payload: { finding: {
+          taskId: 'vault', status: 'NO_EVIDENCE', findings: [], validatedEvidence: [],
+          conflicts: [], gaps: ['没有证据。'],
+        } },
+      },
+      { requestId: 'request-1', runId: 'run-1', sequence: 3, type: 'COMPLETED', payload: {} },
+    ];
     const cases = [
       [{ ...valid[0]!, runId: 'other-run' }],
       [valid[0]!, { ...valid[1]!, sequence: 3 }],
       [valid[0]!],
       [...valid, { ...valid[0]!, sequence: 4 }],
+      completedWithoutOutput,
+      wrongOutput,
     ];
     for (const events of cases) {
       const client = clientForEvents(events);

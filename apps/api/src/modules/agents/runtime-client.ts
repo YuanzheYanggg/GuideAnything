@@ -83,6 +83,7 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
     let receivedBytes = 0;
     let expectedSequence = 1;
     let sawTerminal = false;
+    let sawStructuredOutput = false;
     let streamComplete = false;
     try {
       while (true) {
@@ -102,6 +103,7 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
           buffered = buffered.slice(newline + 1);
           if (line.trim()) {
             const event = parseOwnedEvent(line, request, expectedSequence, sawTerminal);
+            sawStructuredOutput = assertExpectedOutput(event, request, sawStructuredOutput);
             expectedSequence += 1;
             sawTerminal = isTerminal(event);
             yield event;
@@ -113,6 +115,7 @@ export class HttpAgentRuntimeClient implements AgentRuntimeClient {
       const finalLine = buffered.replace(/\r$/u, '');
       if (finalLine.trim()) {
         const event = parseOwnedEvent(finalLine, request, expectedSequence, sawTerminal);
+        sawStructuredOutput = assertExpectedOutput(event, request, sawStructuredOutput);
         sawTerminal = isTerminal(event);
         yield event;
       }
@@ -202,6 +205,31 @@ function parseOwnedEvent(
 
 function isTerminal(event: BridgeEventV1): boolean {
   return event.type === 'COMPLETED' || event.type === 'FAILED';
+}
+
+function assertExpectedOutput(
+  event: BridgeEventV1,
+  request: BridgeRunRequestV1,
+  alreadyReceived: boolean,
+): boolean {
+  const expectedType = request.outputKind === 'ROUTE_DECISION'
+    ? 'ROUTE_DECISION'
+    : request.outputKind === 'TASK_FINDING'
+      ? 'TASK_FINDING'
+      : 'FINAL_ANSWER';
+  const structured = event.type === 'ROUTE_DECISION'
+    || event.type === 'TASK_FINDING'
+    || event.type === 'FINAL_ANSWER';
+  if (structured && (event.type !== expectedType || alreadyReceived)) {
+    throw new RuntimeClientError('BRIDGE_OUTPUT_KIND_INVALID', true);
+  }
+  if (event.type === 'COMPLETED' && !alreadyReceived) {
+    throw new RuntimeClientError('BRIDGE_OUTPUT_MISSING', true);
+  }
+  if (event.type === 'FAILED' && alreadyReceived) {
+    throw new RuntimeClientError('BRIDGE_TERMINAL_INVALID', true);
+  }
+  return alreadyReceived || structured;
 }
 
 async function responseError(response: Response): Promise<RuntimeClientError> {
