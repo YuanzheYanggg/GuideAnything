@@ -150,6 +150,7 @@ describe('agent orchestration policy', () => {
     for (const leakedPath of [
       '/srv/guideanything/private.md',
       '/etc/passwd',
+      '/secret',
       'file:///Users/operator/private.md',
       'D:/vault/private.md',
       '参考（/Users/operator/private.md）',
@@ -161,6 +162,15 @@ describe('agent orchestration policy', () => {
         userRequest: { text: '问题' },
       }), leakedPath).toThrow(/绝对文件路径/u);
     }
+  });
+
+  it('allows sanitized vault-relative locators in retrieved evidence', () => {
+    expect(() => buildPromptHarness({
+      role: 'DEEP_WORKER',
+      trustedHarness: ['只读回答。'],
+      retrievedContext: [{ relativePath: 'wiki_v2/concepts/fancy-yarn.md' }],
+      userRequest: { text: '问题' },
+    })).not.toThrow();
   });
 });
 

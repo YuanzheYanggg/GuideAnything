@@ -38,7 +38,7 @@ export function buildPromptHarness(input: PromptHarnessInput): string {
 }
 
 function assertNoAbsolutePath(value: string): void {
-  if (/(?:file:\/\/\/[^\s"'）)\]}]+|[A-Za-z]:[\\/][^\s"'）)\]}]+|(?:\/[^/\s"'）)\]}]+){2,})/iu.test(value)) {
+  if (/(?:file:\/\/\/[^\s"'）)\]}]+|[A-Za-z]:[\\/][^\s"'）)\]}]+|(?:^|[\s"'（(\[{=:])\/(?!\/)[^/\s"'）)\]}]+(?:\/[^\s"'）)\]}]+)*)/imu.test(value)) {
     throw new Error('Prompt Harness 不得包含绝对文件路径');
   }
 }
