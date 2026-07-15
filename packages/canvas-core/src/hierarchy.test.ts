@@ -137,14 +137,75 @@ describe('flow hierarchy layout', () => {
     }));
     const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
 
-    expect(byId.get('start')!.position.x).toBeLessThan(byId.get('context')!.position.x);
-    expect(byId.get('context')!.position.x).toBeLessThan(byId.get('screen')!.position.x);
-    expect(byId.get('screen')!.position.x).toBeLessThan(byId.get('demo')!.position.x);
-    expect(byId.get('demo')!.position.x).toBeLessThan(byId.get('check')!.position.x);
-    expect(byId.get('check')!.position.x).toBeLessThan(byId.get('save')!.position.x);
-    expect(byId.get('save')!.position.x).toBeLessThan(byId.get('done')!.position.x);
+    expectBeforeInFlow(byId.get('start')!, byId.get('context')!);
+    expectBeforeInFlow(byId.get('context')!, byId.get('screen')!);
+    expectBeforeInFlow(byId.get('screen')!, byId.get('demo')!);
+    expectBeforeInFlow(byId.get('demo')!, byId.get('check')!);
+    expectBeforeInFlow(byId.get('check')!, byId.get('save')!);
+    expectBeforeInFlow(byId.get('save')!, byId.get('done')!);
     expect(result.document.nodes.map((node) => node.id).sort()).toEqual(['check', 'context', 'demo', 'done', 'save', 'screen', 'start']);
     expect(result.report.unassignedContentIds).toEqual([]);
+  });
+
+  it('wraps a resized media-heavy flow instead of stretching one unbounded row', () => {
+    const resizedImage = { ...image('screen'), size: { width: 982, height: 517 } };
+    const resizedVideo = { ...video('demo'), size: { width: 657, height: 285 } };
+    const result = layoutFlowHierarchy(makeDocument({
+      nodes: [
+        start('start'),
+        markdown('context'),
+        resizedImage,
+        resizedVideo,
+        decision('check'),
+        process('save'),
+        end('done'),
+      ],
+      edges: [
+        edge('e1', 'start', 'context'),
+        edge('e2', 'context', 'screen'),
+        edge('e3', 'screen', 'demo'),
+        edge('e4', 'demo', 'check'),
+        { ...edge('e5', 'check', 'save'), sourceHandle: 'yes' },
+        edge('e6', 'save', 'done'),
+      ],
+      entryNodeId: 'start',
+      exitNodeIds: ['done'],
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+    const visible = result.document.nodes.filter((node) => !node.hidden && !node.source);
+    const maximumRight = Math.max(...visible.map((node) => node.position.x + (node.size?.width ?? defaultWidth(node))));
+
+    expect(maximumRight).toBeLessThanOrEqual(1_800);
+    expect(byId.get('screen')!.size).toEqual({ width: 982, height: 517 });
+    expect(byId.get('demo')!.size).toEqual({ width: 657, height: 285 });
+    expect(visible.some((node) => node.position.y > 0)).toBe(true);
+    expectNoNodeOverlap(visible);
+  });
+
+  it('keeps a decision feedback loop stable across repeated automatic layouts', () => {
+    const document = makeDocument({
+      nodes: [start('start'), markdown('context'), decision('check'), process('save'), process('fix'), end('done')],
+      edges: [
+        edge('start-context', 'start', 'context'),
+        edge('context-check', 'context', 'check'),
+        { ...edge('check-save', 'check', 'save'), sourceHandle: 'yes' },
+        edge('save-done', 'save', 'done'),
+        { ...edge('check-fix', 'check', 'fix'), sourceHandle: 'no' },
+        edge('fix-check', 'fix', 'check'),
+      ],
+      entryNodeId: 'start',
+      exitNodeIds: ['done'],
+    });
+
+    const first = layoutFlowHierarchy(document);
+    const second = layoutFlowHierarchy(first.document);
+    const firstById = new Map(first.document.nodes.map((node) => [node.id, node]));
+
+    expect(second.document.nodes.map((node) => node.position)).toEqual(first.document.nodes.map((node) => node.position));
+    expect(firstById.get('check')!.position.x).toBeLessThan(firstById.get('save')!.position.x);
+    expect(firstById.get('save')!.position.x).toBeLessThan(firstById.get('done')!.position.x);
+    expect(firstById.get('fix')!.position.y).toBeGreaterThan(firstById.get('save')!.position.y);
+    expect(first.report.backEdgeIds).toEqual(['fix-check']);
   });
 
   it('preserves deterministic ordering for cycles and isolated primary nodes', () => {
@@ -192,6 +253,48 @@ describe('flow hierarchy layout', () => {
     expect(byId.get('derived')!.position).toEqual({ x: 912, y: 418 });
     expect(byId.get('derived-note')!.position).toEqual({ x: 1_240, y: 418 });
     expect(result.report.primaryNodeIds).toEqual(['authored', 'start']);
+  });
+
+  it('keeps expanded subguide artifacts together and reserves space before loose resources', () => {
+    const reference: CanvasNode<'subguide'> = {
+      ...base,
+      id: 'reference',
+      type: 'subguide',
+      data: {
+        guideId: 'source-guide',
+        guideVersionId: 'source-version',
+        title: '物料主数据检查',
+        version: 1,
+        expanded: true,
+      },
+    };
+    const derivedStart: CanvasNode = {
+      ...process('derived-start'),
+      position: { x: 9_000, y: 8_000 },
+      source: { referenceNodeId: 'reference', sourceGuideId: 'source-guide', sourceVersionId: 'source-version', sourceElementId: 'source-start' },
+    };
+    const derivedEnd: CanvasNode = {
+      ...process('derived-end'),
+      position: { x: 9_360, y: 8_220 },
+      source: { referenceNodeId: 'reference', sourceGuideId: 'source-guide', sourceVersionId: 'source-version', sourceElementId: 'source-end' },
+    };
+    const looseVideo = { ...video('loose-video'), size: { width: 613, height: 425 } };
+    const result = layoutFlowHierarchy(makeDocument({
+      nodes: [start('start'), reference, derivedStart, derivedEnd, looseVideo],
+      edges: [edge('start-reference', 'start', 'reference')],
+      entryNodeId: 'start',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+    const movedStart = byId.get('derived-start')!;
+    const movedEnd = byId.get('derived-end')!;
+
+    expect({
+      x: movedEnd.position.x - movedStart.position.x,
+      y: movedEnd.position.y - movedStart.position.y,
+    }).toEqual({ x: 360, y: 220 });
+    expect(movedStart.position.y).toBeGreaterThan(byId.get('reference')!.position.y + 120);
+    expect(byId.get('loose-video')!.position.y).toBeGreaterThan(movedEnd.position.y + 104);
+    expectNoNodeOverlap(result.document.nodes.filter((node) => !node.hidden));
   });
 
   it('ignores visible source-derived artifacts when calculating host stage bounds', () => {
@@ -348,3 +451,36 @@ describe('flow hierarchy layout', () => {
     expect(result.report.backEdgeIds).toEqual(['approve-review']);
   });
 });
+
+function defaultWidth(node: CanvasNode): number {
+  if (node.type === 'markdown') return 300;
+  if (node.type === 'image' || node.type === 'video') return 320;
+  return 240;
+}
+
+function defaultHeight(node: CanvasNode): number {
+  if (node.type === 'markdown') return 180;
+  if (node.type === 'image' || node.type === 'video') return 260;
+  if (node.type === 'subguide') return 120;
+  return 104;
+}
+
+function expectNoNodeOverlap(nodes: CanvasNode[]) {
+  nodes.forEach((node, index) => {
+    const width = node.size?.width ?? defaultWidth(node);
+    const height = node.size?.height ?? defaultHeight(node);
+    nodes.slice(index + 1).forEach((other) => {
+      const otherWidth = other.size?.width ?? defaultWidth(other);
+      const otherHeight = other.size?.height ?? defaultHeight(other);
+      const separated = node.position.x + width <= other.position.x
+        || other.position.x + otherWidth <= node.position.x
+        || node.position.y + height <= other.position.y
+        || other.position.y + otherHeight <= node.position.y;
+      expect(separated, `${node.id} overlaps ${other.id}`).toBe(true);
+    });
+  });
+}
+
+function expectBeforeInFlow(left: CanvasNode, right: CanvasNode) {
+  expect(left.position.y < right.position.y || (left.position.y === right.position.y && left.position.x < right.position.x)).toBe(true);
+}

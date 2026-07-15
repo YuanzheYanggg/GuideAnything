@@ -19,7 +19,7 @@ export interface NodeRect {
 }
 
 export type RouteSide = 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM';
-export type RouteKind = 'FORWARD' | 'BRANCH' | 'CROSS_STAGE' | 'BACK';
+export type RouteKind = 'FORWARD' | 'BRANCH' | 'WRAP' | 'CROSS_STAGE' | 'BACK';
 
 export interface OrthogonalRoute {
   edgeId: string;
@@ -54,18 +54,24 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
   const avoidedEdgeIds: string[] = [];
   const collisionEdgeIds: string[] = [];
   const backEdgeIds: string[] = [];
+  const offsetCountByChannel = new Map<string, number>();
 
-  routable.forEach((edge, index) => {
+  routable.forEach((edge) => {
     const source = rectById.get(edge.source)!;
     const target = rectById.get(edge.target)!;
-    const offset = index * CHANNEL_GAP;
     const kind = classify(edge, source, target, document.nodes);
     const sides = sidesFor(kind, source, target);
-    let points = directRoute(kind, source, target, sides.source, sides.target, offset, maximumRight, minimumTop);
+    const channelKey = offsetChannelKey(kind, edge, sides.source);
+    const channelIndex = channelKey ? offsetCountByChannel.get(channelKey) ?? 0 : 0;
+    if (channelKey) offsetCountByChannel.set(channelKey, channelIndex + 1);
+    const offset = channelIndex * CHANNEL_GAP;
+    let points = directRoute(kind, source, target, sides.source, sides.target, offset, maximumRight);
     const obstacles = rects.filter((rect) => rect.id !== source.id && rect.id !== target.id);
     if (routeIntersects(points, obstacles)) {
       avoidedEdgeIds.push(edge.id);
-      points = outerRoute(source, target, sides.source, sides.target, offset, maximumRight, minimumTop);
+      points = kind === 'BACK'
+        ? backRoute(source, target, offset, maximumRight)
+        : outerRoute(source, target, sides.source, sides.target, offset, maximumRight, minimumTop);
     }
     points = compact(points);
     const collision = routeIntersects(points, obstacles);
@@ -80,14 +86,15 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
 function classify(edge: CanvasEdge, source: NodeRect, target: NodeRect, nodes: CanvasNode[]): RouteKind {
   const sourceNode = nodes.find((node) => node.id === edge.source);
   const targetNode = nodes.find((node) => node.id === edge.target);
-  if (target.y < source.y || (target.x <= source.x && sourceNode?.stageId === targetNode?.stageId)) return 'BACK';
   if (sourceNode?.stageId && targetNode?.stageId && sourceNode.stageId !== targetNode.stageId) return 'CROSS_STAGE';
+  if (edge.sourceHandle !== 'no' && target.y > source.y + source.height + CHANNEL_GAP && target.x <= source.x) return 'WRAP';
+  if (target.y < source.y || (target.x <= source.x && sourceNode?.stageId === targetNode?.stageId)) return 'BACK';
   if (edge.sourceHandle === 'no' || target.y > source.y + source.height + CHANNEL_GAP) return 'BRANCH';
   return 'FORWARD';
 }
 
 function sidesFor(kind: RouteKind, source: NodeRect, target: NodeRect): { source: RouteSide; target: RouteSide } {
-  if (kind === 'CROSS_STAGE') return { source: 'BOTTOM', target: 'TOP' };
+  if (kind === 'CROSS_STAGE' || kind === 'WRAP') return { source: 'BOTTOM', target: 'TOP' };
   if (kind === 'BRANCH') return { source: 'BOTTOM', target: target.x > source.x ? 'LEFT' : 'TOP' };
   if (kind === 'BACK') return { source: 'RIGHT', target: 'RIGHT' };
   return { source: 'RIGHT', target: 'LEFT' };
@@ -101,12 +108,11 @@ function directRoute(
   targetSide: RouteSide,
   offset: number,
   maximumRight: number,
-  minimumTop: number,
 ): Point[] {
   const start = port(source, sourceSide);
   const finish = port(target, targetSide);
-  if (kind === 'BACK') return outerRoute(source, target, sourceSide, targetSide, offset, maximumRight, minimumTop);
-  if (kind === 'CROSS_STAGE') {
+  if (kind === 'BACK') return backRoute(source, target, offset, maximumRight);
+  if (kind === 'CROSS_STAGE' || kind === 'WRAP') {
     const channelY = start.y + Math.max(PORT_GAP, (finish.y - start.y) / 2) + offset;
     return [start, { x: start.x, y: channelY }, { x: finish.x, y: channelY }, finish];
   }
@@ -117,6 +123,30 @@ function directRoute(
   }
   const channelX = start.x + Math.max(PORT_GAP, (finish.x - start.x) / 2) + offset;
   return [start, { x: channelX, y: start.y }, { x: channelX, y: finish.y }, finish];
+}
+
+function backRoute(source: NodeRect, target: NodeRect, offset: number, maximumRight: number): Point[] {
+  const start = port(source, 'RIGHT');
+  const finish = port(target, 'RIGHT');
+  const outerX = maximumRight + OUTER_GAP + offset;
+  const sourceApproachX = start.x + PORT_GAP;
+  const targetApproachX = finish.x + PORT_GAP;
+  const targetChannelY = target.y - PORT_GAP - offset;
+  return [
+    start,
+    { x: sourceApproachX, y: start.y },
+    { x: outerX, y: start.y },
+    { x: outerX, y: targetChannelY },
+    { x: targetApproachX, y: targetChannelY },
+    { x: targetApproachX, y: finish.y },
+    finish,
+  ];
+}
+
+function offsetChannelKey(kind: RouteKind, edge: CanvasEdge, sourceSide: RouteSide): string | null {
+  if (kind === 'FORWARD') return null;
+  if (kind === 'BACK') return 'BACK';
+  return `${kind}:${edge.source}:${sourceSide}`;
 }
 
 function outerRoute(
