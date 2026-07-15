@@ -3,12 +3,17 @@ import { z } from 'zod';
 import { FlowLocatorV1Schema } from './flow-knowledge';
 
 const IdV1Schema = z.string().min(1).max(200);
+const OpaqueReferenceIdV1Schema = IdV1Schema.refine(
+  (value) => encodeURIComponentSafely(value) !== null,
+  '引用 ID 必须是可安全编码的 Unicode 文本',
+);
 const ShortTextV1Schema = z.string().min(1).max(500);
 const MarkdownV1Schema = z.string().max(200_000);
 const TimestampV1Schema = z.string().datetime();
-const EvidenceSourceV1Schema = z.enum([
+export const EvidenceSourceV1Schema = z.enum([
   'WORKSPACE_FLOW',
   'WORKSPACE_DOCUMENT',
+  'SESSION_ATTACHMENT',
   'SANTEXWELL',
   'PRIOR_CONVERSATION',
 ]);
@@ -59,7 +64,7 @@ export const RouteDecisionV1Schema = z.object({
   contextAssessment: z.string().min(1).max(5_000),
   route: z.enum(['DIRECT', 'FOCUSED', 'COMPOSITE', 'OPEN_RESEARCH']),
   sources: SourceOptionsV1Schema,
-  tasks: z.array(RouteTaskV1Schema).max(4),
+  tasks: z.array(RouteTaskV1Schema).max(5),
   budget: RouteBudgetV1Schema,
   executionMode: z.enum(['SEQUENTIAL', 'PARALLEL']),
   maxConcurrency: z.number().int().min(1).max(3),
@@ -75,6 +80,13 @@ export const RouteDecisionV1Schema = z.object({
     taskIds.add(task.id);
   });
   decision.tasks.forEach((task, taskIndex) => {
+    if (new Set(task.dependsOn).size !== task.dependsOn.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['tasks', taskIndex, 'dependsOn'],
+        message: '任务依赖不能重复',
+      });
+    }
     task.dependsOn.forEach((dependency, dependencyIndex) => {
       if (dependency === task.id || !taskIds.has(dependency)) {
         context.addIssue({
@@ -118,7 +130,121 @@ export const RouteDecisionV1Schema = z.object({
   if (decision.executionMode === 'SEQUENTIAL' && decision.maxConcurrency !== 1) {
     context.addIssue({ code: 'custom', path: ['maxConcurrency'], message: '顺序执行的最大并发必须为 1' });
   }
+
+  const sourceEnabledByTaskKind = {
+    WORKSPACE_FLOW: decision.sources.workspaceFlows,
+    WORKSPACE_DOCUMENT: decision.sources.workspaceDocuments,
+    SESSION_ATTACHMENT: decision.sources.sessionAttachments,
+    SANTEXWELL: decision.sources.santexwell,
+  } as const;
+  decision.tasks.forEach((task, index) => {
+    if (task.kind !== 'REDUCE' && !sourceEnabledByTaskKind[task.kind]) {
+      context.addIssue({
+        code: 'custom',
+        path: ['tasks', index, 'kind'],
+        message: '任务不能使用已禁用的数据源',
+      });
+    }
+  });
+
+  const workers = decision.tasks.filter((task) => task.kind !== 'REDUCE');
+  const reducers = decision.tasks.filter((task) => task.kind === 'REDUCE');
+  if (workers.length > decision.budget.maxWorkers) {
+    context.addIssue({ code: 'custom', path: ['tasks'], message: '工作任务数量不能超过路线预算' });
+  }
+  if (decision.tasks.length > decision.budget.maxWorkers + 1) {
+    context.addIssue({ code: 'custom', path: ['tasks'], message: '总任务数不能超过工作任务预算加一个汇总任务' });
+  }
+
+  if (decision.route === 'DIRECT') {
+    if (workers.length > 1 || decision.budget.maxWorkers > 1) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'DIRECT 路线最多允许一个工作任务' });
+    }
+    if (reducers.length > 0 || decision.budget.useReducer) {
+      context.addIssue({ code: 'custom', path: ['budget', 'useReducer'], message: 'DIRECT 路线不能使用汇总任务' });
+    }
+    if (decision.budget.allowRaw) {
+      context.addIssue({ code: 'custom', path: ['budget', 'allowRaw'], message: 'DIRECT 路线不能读取原始资料' });
+    }
+    if (decision.budget.maxWorkspaceCandidates > 1) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkspaceCandidates'], message: 'DIRECT 路线最多检查一个工作区候选项' });
+    }
+    if (decision.budget.maxFlowHops > 1) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxFlowHops'], message: 'DIRECT 路线最多遍历一跳流程' });
+    }
+    if (decision.budget.maxVaultClusters !== 0 || decision.budget.maxVaultDigests !== 0) {
+      context.addIssue({ code: 'custom', path: ['budget'], message: 'DIRECT 路线不能使用知识库聚类或摘要' });
+    }
+  }
+
+  if (decision.route === 'FOCUSED') {
+    if (workers.length > 1 || decision.budget.maxWorkers > 1) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'FOCUSED 路线最多允许一个工作任务' });
+    }
+    if (decision.maxConcurrency !== 1 || decision.budget.maxConcurrency !== 1) {
+      context.addIssue({ code: 'custom', path: ['maxConcurrency'], message: 'FOCUSED 路线的最大并发必须为 1' });
+    }
+    if (reducers.length > 0 || decision.budget.useReducer) {
+      context.addIssue({ code: 'custom', path: ['budget', 'useReducer'], message: 'FOCUSED 路线不能使用汇总任务' });
+    }
+    if (decision.budget.allowRaw) {
+      context.addIssue({ code: 'custom', path: ['budget', 'allowRaw'], message: 'FOCUSED 路线不能读取原始资料' });
+    }
+    if (decision.budget.maxWorkspaceCandidates > 3) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkspaceCandidates'], message: 'FOCUSED 路线最多检查三个工作区候选项' });
+    }
+    if (decision.budget.maxFlowHops > 2) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxFlowHops'], message: 'FOCUSED 路线最多遍历两跳流程' });
+    }
+    if (decision.budget.maxVaultClusters > 1 || decision.budget.maxVaultDigests > 2) {
+      context.addIssue({ code: 'custom', path: ['budget'], message: 'FOCUSED 路线的知识库预算超出上限' });
+    }
+  }
+
+  if (decision.route === 'COMPOSITE') {
+    if (workers.length > 3 || decision.budget.maxWorkers > 3) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'COMPOSITE 路线最多允许三个工作任务' });
+    }
+    if (decision.budget.allowRaw) {
+      context.addIssue({ code: 'custom', path: ['budget', 'allowRaw'], message: 'COMPOSITE 路线不能读取原始资料' });
+    }
+    validateReducerTopology(decision.budget.useReducer, workers, reducers, context);
+  }
+
+  if (decision.route === 'OPEN_RESEARCH') {
+    if (workers.length < 2 || workers.length > 4 || decision.budget.maxWorkers < 2 || decision.budget.maxWorkers > 4) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'OPEN_RESEARCH 路线必须允许并安排二至四个工作任务' });
+    }
+    if (decision.budget.maxVaultClusters > 2 || decision.budget.maxVaultDigests > 6) {
+      context.addIssue({ code: 'custom', path: ['budget'], message: 'OPEN_RESEARCH 路线的知识库预算超出上限' });
+    }
+    validateReducerTopology(decision.budget.useReducer, workers, reducers, context);
+  }
 });
+
+function validateReducerTopology(
+  useReducer: boolean,
+  workers: readonly { id: string }[],
+  reducers: readonly { dependsOn: readonly string[] }[],
+  context: z.RefinementCtx,
+): void {
+  if (!useReducer) {
+    context.addIssue({ code: 'custom', path: ['budget', 'useReducer'], message: '该路线必须启用汇总任务' });
+  }
+  if (reducers.length !== 1) {
+    context.addIssue({ code: 'custom', path: ['tasks'], message: '该路线必须且只能包含一个汇总任务' });
+    return;
+  }
+
+  const workerIds = new Set(workers.map((worker) => worker.id));
+  const reducerDependencies = reducers[0]!.dependsOn;
+  if (
+    reducerDependencies.length !== workerIds.size
+    || reducerDependencies.some((dependency) => !workerIds.has(dependency))
+  ) {
+    context.addIssue({ code: 'custom', path: ['tasks'], message: '汇总任务必须依赖全部且仅依赖工作任务' });
+  }
+}
 
 const WorkspaceFlowLocatorV1Schema = z.object({
   kind: z.literal('WORKSPACE_FLOW'),
@@ -129,6 +255,15 @@ const WorkspaceDocumentLocatorV1Schema = z.object({
   kind: z.literal('WORKSPACE_DOCUMENT'),
   workspaceId: IdV1Schema,
   sourceItemId: IdV1Schema,
+  documentId: IdV1Schema,
+  revision: IdV1Schema,
+  fragmentId: IdV1Schema.optional(),
+}).strict();
+
+export const SessionAttachmentLocatorV1Schema = z.object({
+  kind: z.literal('SESSION_ATTACHMENT'),
+  conversationId: IdV1Schema,
+  attachmentId: IdV1Schema,
   documentId: IdV1Schema,
   revision: IdV1Schema,
   fragmentId: IdV1Schema.optional(),
@@ -150,6 +285,7 @@ const PriorConversationLocatorV1Schema = z.object({
 export const InternalEvidenceLocatorV1Schema = z.discriminatedUnion('kind', [
   WorkspaceFlowLocatorV1Schema,
   WorkspaceDocumentLocatorV1Schema,
+  SessionAttachmentLocatorV1Schema,
   SantexwellLocatorV1Schema,
   PriorConversationLocatorV1Schema,
 ]);
@@ -166,25 +302,32 @@ export const ValidatedEvidenceV1Schema = z.object({
   }
 });
 
+export const TaskFindingStatusV1Schema = z.enum(['FOUND', 'NO_EVIDENCE', 'PARTIAL', 'CONFLICT']);
+
 export const TaskFindingV1Schema = z.object({
   taskId: IdV1Schema,
-  status: z.enum(['FOUND', 'NO_EVIDENCE', 'PARTIAL', 'CONFLICT']),
+  status: TaskFindingStatusV1Schema,
   findings: z.array(z.string().min(1).max(5_000)).max(100),
   validatedEvidence: z.array(ValidatedEvidenceV1Schema).max(100),
   conflicts: z.array(z.string().min(1).max(5_000)).max(50),
   gaps: z.array(z.string().min(1).max(5_000)).max(50),
 }).strict();
 
-function isSafeProductHref(value: string): boolean {
-  return value.startsWith('/') && !value.startsWith('//') && !value.includes('\\');
-}
+export const PublicTaskFindingV1Schema = z.object({
+  taskId: IdV1Schema,
+  status: TaskFindingStatusV1Schema,
+  summary: z.string().min(1).max(5_000),
+  conflicts: z.array(z.string().min(1).max(5_000)).max(50),
+  gaps: z.array(z.string().min(1).max(5_000)).max(50),
+  evidenceCount: z.number().int().min(0).max(100),
+}).strict();
 
 export const CitationV1Schema = z.object({
-  referenceId: IdV1Schema,
+  referenceId: OpaqueReferenceIdV1Schema,
   source: EvidenceSourceV1Schema,
   title: ShortTextV1Schema,
   excerpt: z.string().min(1).max(10_000),
-  href: z.string().max(2_048).refine(isSafeProductHref, '引用地址必须是后端生成的产品内路径').nullable(),
+  href: z.string().min(1).max(2_048).nullable(),
   invalidReason: z.string().min(1).max(1_000).optional(),
 }).strict().superRefine((citation, context) => {
   if (citation.href === null && !citation.invalidReason) {
@@ -192,6 +335,12 @@ export const CitationV1Schema = z.object({
   }
   if (citation.href !== null && citation.invalidReason) {
     context.addIssue({ code: 'custom', path: ['invalidReason'], message: '有效引用不能同时标记失效原因' });
+  }
+  if (citation.href !== null) {
+    const encodedReferenceId = encodeURIComponentSafely(citation.referenceId);
+    if (encodedReferenceId === null || citation.href !== `/references/${encodedReferenceId}`) {
+      context.addIssue({ code: 'custom', path: ['href'], message: '引用地址必须精确匹配不透明 reference 路由' });
+    }
   }
 });
 
@@ -208,12 +357,62 @@ export const FlowProposalChangeV1Schema = z.object({
   summary: z.string().min(1).max(2_000),
 }).strict();
 
+export const DiagramNodeV1Schema = z.object({
+  id: IdV1Schema,
+  label: ShortTextV1Schema,
+  summary: z.string().min(1).max(2_000).optional(),
+}).strict();
+
+export const DiagramEdgeV1Schema = z.object({
+  id: IdV1Schema,
+  source: IdV1Schema,
+  target: IdV1Schema,
+  label: ShortTextV1Schema.optional(),
+}).strict();
+
+export const DiagramArtifactV1Schema = z.object({
+  ...ArtifactBaseV1Shape,
+  kind: z.literal('DIAGRAM'),
+  direction: z.enum(['LR', 'TB']),
+  nodes: z.array(DiagramNodeV1Schema).min(1).max(200),
+  edges: z.array(DiagramEdgeV1Schema).max(400),
+}).strict().superRefine((diagram, context) => {
+  const nodeIds = new Set<string>();
+  diagram.nodes.forEach((node, index) => {
+    if (nodeIds.has(node.id)) {
+      context.addIssue({ code: 'custom', path: ['nodes', index, 'id'], message: '图示节点 ID 必须唯一' });
+    }
+    nodeIds.add(node.id);
+  });
+
+  const edgeIds = new Set<string>();
+  diagram.edges.forEach((edge, index) => {
+    if (edgeIds.has(edge.id)) {
+      context.addIssue({ code: 'custom', path: ['edges', index, 'id'], message: '图示连线 ID 必须唯一' });
+    }
+    edgeIds.add(edge.id);
+    if (!nodeIds.has(edge.source)) {
+      context.addIssue({ code: 'custom', path: ['edges', index, 'source'], message: '图示连线起点必须引用已有节点' });
+    }
+    if (!nodeIds.has(edge.target)) {
+      context.addIssue({ code: 'custom', path: ['edges', index, 'target'], message: '图示连线终点必须引用已有节点' });
+    }
+  });
+});
+
+export const ReferenceCollectionEntryV1Schema = z.object({
+  referenceId: OpaqueReferenceIdV1Schema,
+  title: ShortTextV1Schema,
+  summary: z.string().min(1).max(2_000),
+}).strict();
+
+export const ReferenceCollectionArtifactV1Schema = z.object({
+  ...ArtifactBaseV1Shape,
+  kind: z.literal('REFERENCE_COLLECTION'),
+  references: z.array(ReferenceCollectionEntryV1Schema).min(1).max(200),
+}).strict();
+
 export const ArtifactV1Schema = z.discriminatedUnion('kind', [
-  z.object({
-    ...ArtifactBaseV1Shape,
-    kind: z.literal('MARKDOWN'),
-    markdown: MarkdownV1Schema,
-  }).strict(),
   z.object({
     ...ArtifactBaseV1Shape,
     kind: z.literal('REPORT'),
@@ -223,12 +422,7 @@ export const ArtifactV1Schema = z.discriminatedUnion('kind', [
       markdown: MarkdownV1Schema,
     }).strict()).max(100),
   }).strict(),
-  z.object({
-    ...ArtifactBaseV1Shape,
-    kind: z.literal('DIAGRAM'),
-    format: z.literal('MERMAID'),
-    source: z.string().min(1).max(200_000),
-  }).strict(),
+  DiagramArtifactV1Schema,
   z.object({
     ...ArtifactBaseV1Shape,
     kind: z.literal('FLOW_PROPOSAL'),
@@ -237,6 +431,7 @@ export const ArtifactV1Schema = z.discriminatedUnion('kind', [
     summary: z.string().min(1).max(5_000),
     changes: z.array(FlowProposalChangeV1Schema).min(1).max(500),
   }).strict(),
+  ReferenceCollectionArtifactV1Schema,
 ]);
 
 export const AgentAnswerSectionV1Schema = z.object({
@@ -328,7 +523,7 @@ export const AgentRunEventV1Schema = z.discriminatedUnion('type', [
   z.object({
     ...ProvisionalEventV1Shape,
     type: z.literal('task.finding'),
-    payload: z.object({ finding: TaskFindingV1Schema }).strict(),
+    payload: z.object({ finding: PublicTaskFindingV1Schema }).strict(),
   }).strict(),
   z.object({
     ...ProvisionalEventV1Shape,
@@ -473,16 +668,33 @@ function isSafeVaultRelativePath(value: string): boolean {
   return segments.every((segment) => segment.length > 0 && segment !== '.' && segment !== '..');
 }
 
+function encodeURIComponentSafely(value: string): string | null {
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 export type SourceOptionsV1 = z.infer<typeof SourceOptionsV1Schema>;
 export type RouteBudgetV1 = z.infer<typeof RouteBudgetV1Schema>;
 export type RouteComplexityV1 = z.infer<typeof RouteComplexityV1Schema>;
 export type RouteTaskV1 = z.infer<typeof RouteTaskV1Schema>;
 export type RouteDecisionV1 = z.infer<typeof RouteDecisionV1Schema>;
+export type EvidenceSourceV1 = z.infer<typeof EvidenceSourceV1Schema>;
+export type SessionAttachmentLocatorV1 = z.infer<typeof SessionAttachmentLocatorV1Schema>;
 export type InternalEvidenceLocatorV1 = z.infer<typeof InternalEvidenceLocatorV1Schema>;
 export type ValidatedEvidenceV1 = z.infer<typeof ValidatedEvidenceV1Schema>;
+export type TaskFindingStatusV1 = z.infer<typeof TaskFindingStatusV1Schema>;
 export type TaskFindingV1 = z.infer<typeof TaskFindingV1Schema>;
+export type PublicTaskFindingV1 = z.infer<typeof PublicTaskFindingV1Schema>;
 export type CitationV1 = z.infer<typeof CitationV1Schema>;
 export type FlowProposalChangeV1 = z.infer<typeof FlowProposalChangeV1Schema>;
+export type DiagramNodeV1 = z.infer<typeof DiagramNodeV1Schema>;
+export type DiagramEdgeV1 = z.infer<typeof DiagramEdgeV1Schema>;
+export type DiagramArtifactV1 = z.infer<typeof DiagramArtifactV1Schema>;
+export type ReferenceCollectionEntryV1 = z.infer<typeof ReferenceCollectionEntryV1Schema>;
+export type ReferenceCollectionArtifactV1 = z.infer<typeof ReferenceCollectionArtifactV1Schema>;
 export type ArtifactV1 = z.infer<typeof ArtifactV1Schema>;
 export type AgentAnswerSectionV1 = z.infer<typeof AgentAnswerSectionV1Schema>;
 export type FlowFeedbackV1 = z.infer<typeof FlowFeedbackV1Schema>;

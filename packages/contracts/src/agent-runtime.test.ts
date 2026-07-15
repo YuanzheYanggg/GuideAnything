@@ -7,6 +7,7 @@ import {
   BridgeEventV1Schema,
   BridgeRequestV1Schema,
   CitationV1Schema,
+  PublicTaskFindingV1Schema,
   RouteBudgetV1Schema,
   RouteDecisionV1Schema,
   SourceOptionsV1Schema,
@@ -16,31 +17,145 @@ import {
 describe('agent runtime contracts', () => {
   it('bounds source options and route budgets', () => {
     expect(SourceOptionsV1Schema.parse(sourceOptions())).toEqual(sourceOptions());
-    expect(RouteBudgetV1Schema.parse(routeBudget()).maxFlowHops).toBe(2);
-    expect(RouteBudgetV1Schema.safeParse({ ...routeBudget(), maxWorkers: 5 }).success).toBe(false);
-    expect(RouteBudgetV1Schema.safeParse({ ...routeBudget(), maxConcurrency: 0 }).success).toBe(false);
-    expect(RouteBudgetV1Schema.safeParse({ ...routeBudget(), maxFlowHops: 3 }).success).toBe(false);
+    expect(RouteBudgetV1Schema.parse(focusedBudget()).maxFlowHops).toBe(2);
+    expect(RouteBudgetV1Schema.safeParse({ ...focusedBudget(), maxWorkers: 5 }).success).toBe(false);
+    expect(RouteBudgetV1Schema.safeParse({ ...focusedBudget(), maxConcurrency: 0 }).success).toBe(false);
+    expect(RouteBudgetV1Schema.safeParse({ ...focusedBudget(), maxFlowHops: 3 }).success).toBe(false);
   });
 
   it('parses a bounded route decision with typed dependent tasks', () => {
-    const decision = RouteDecisionV1Schema.parse(routeDecision([
-        { id: 'flow', kind: 'WORKSPACE_FLOW', objective: '检查流程节点与分支', dependsOn: [], priority: 1 },
-        { id: 'documents', kind: 'WORKSPACE_DOCUMENT', objective: '核对流程说明', dependsOn: ['flow'], priority: 2 },
-    ]));
+    const decision = RouteDecisionV1Schema.parse(validRouteDecision('COMPOSITE'));
 
-    expect(decision.tasks[1]?.dependsOn).toEqual(['flow']);
+    expect(decision.tasks.find((task) => task.id === 'documents')?.dependsOn).toEqual(['flow']);
+    expect(decision.tasks.find((task) => task.kind === 'REDUCE')?.dependsOn).toEqual(['flow', 'documents']);
   });
 
   it('rejects cyclic route task dependencies', () => {
-    expect(RouteDecisionV1Schema.safeParse(routeDecision([
+    expect(RouteDecisionV1Schema.safeParse(compositeDecision([
       { id: 'a', kind: 'WORKSPACE_FLOW', objective: 'A', dependsOn: ['b'], priority: 1 },
       { id: 'b', kind: 'WORKSPACE_DOCUMENT', objective: 'B', dependsOn: ['a'], priority: 2 },
+      { id: 'reduce', kind: 'REDUCE', objective: '汇总', dependsOn: ['a', 'b'], priority: 3 },
     ])).success).toBe(false);
-    expect(RouteDecisionV1Schema.safeParse(routeDecision([
+    expect(RouteDecisionV1Schema.safeParse(compositeDecision([
       { id: 'a', kind: 'WORKSPACE_FLOW', objective: 'A', dependsOn: ['c'], priority: 1 },
       { id: 'b', kind: 'WORKSPACE_DOCUMENT', objective: 'B', dependsOn: ['a'], priority: 2 },
       { id: 'c', kind: 'SANTEXWELL', objective: 'C', dependsOn: ['b'], priority: 3 },
+      { id: 'reduce', kind: 'REDUCE', objective: '汇总', dependsOn: ['a', 'b', 'c'], priority: 4 },
     ])).success).toBe(false);
+  });
+
+  it('accepts route-specific worker, reducer, and budget combinations', () => {
+    expect(RouteDecisionV1Schema.safeParse(validRouteDecision('DIRECT')).success).toBe(true);
+    expect(RouteDecisionV1Schema.safeParse(validRouteDecision('FOCUSED')).success).toBe(true);
+    expect(RouteDecisionV1Schema.safeParse(validRouteDecision('COMPOSITE')).success).toBe(true);
+    expect(RouteDecisionV1Schema.safeParse(validRouteDecision('OPEN_RESEARCH')).success).toBe(true);
+
+    const openWithFourWorkers = openResearchDecision([
+      routeTask('flow', 'WORKSPACE_FLOW'),
+      routeTask('documents', 'WORKSPACE_DOCUMENT'),
+      routeTask('attachment', 'SESSION_ATTACHMENT'),
+      routeTask('vault', 'SANTEXWELL'),
+      routeTask('reduce', 'REDUCE', ['flow', 'documents', 'attachment', 'vault']),
+    ], {
+      sources: { workspaceFlows: true, workspaceDocuments: true, sessionAttachments: true, santexwell: true },
+      budget: { ...openBudget(), maxWorkers: 4 },
+    });
+    expect(RouteDecisionV1Schema.safeParse(openWithFourWorkers).success).toBe(true);
+  });
+
+  it('rejects tasks for disabled sources', () => {
+    for (const kind of ['WORKSPACE_FLOW', 'WORKSPACE_DOCUMENT', 'SESSION_ATTACHMENT', 'SANTEXWELL'] as const) {
+      expect(RouteDecisionV1Schema.safeParse(focusedDecision([
+        routeTask('worker', kind),
+      ], {
+        sources: { workspaceFlows: false, workspaceDocuments: false, sessionAttachments: false, santexwell: false },
+      })).success).toBe(false);
+    }
+  });
+
+  it('rejects route budgets outside deterministic route limits', () => {
+    const direct = validRouteDecision('DIRECT');
+    const focused = validRouteDecision('FOCUSED');
+    const composite = validRouteDecision('COMPOSITE');
+    const open = validRouteDecision('OPEN_RESEARCH');
+    const invalid = [
+      { ...direct, budget: { ...direct.budget, maxWorkers: 2 } },
+      { ...direct, budget: { ...direct.budget, allowRaw: true } },
+      { ...direct, budget: { ...direct.budget, useReducer: true } },
+      { ...direct, budget: { ...direct.budget, maxWorkspaceCandidates: 2 } },
+      { ...direct, budget: { ...direct.budget, maxFlowHops: 2 } },
+      { ...direct, budget: { ...direct.budget, maxVaultClusters: 1 } },
+      { ...direct, budget: { ...direct.budget, maxVaultDigests: 1 } },
+      { ...focused, budget: { ...focused.budget, maxWorkers: 2 } },
+      { ...focused, budget: { ...focused.budget, maxConcurrency: 2 }, executionMode: 'PARALLEL', maxConcurrency: 2 },
+      { ...focused, budget: { ...focused.budget, allowRaw: true } },
+      { ...focused, budget: { ...focused.budget, useReducer: true } },
+      { ...focused, budget: { ...focused.budget, maxWorkspaceCandidates: 4 } },
+      { ...focused, budget: { ...focused.budget, maxVaultClusters: 2 } },
+      { ...focused, budget: { ...focused.budget, maxVaultDigests: 3 } },
+      { ...composite, budget: { ...composite.budget, maxWorkers: 4 } },
+      { ...composite, budget: { ...composite.budget, allowRaw: true } },
+      { ...open, budget: { ...open.budget, maxWorkers: 1 } },
+      { ...open, budget: { ...open.budget, maxVaultClusters: 3 } },
+      { ...open, budget: { ...open.budget, maxVaultDigests: 7 } },
+    ];
+
+    invalid.forEach((decision) => {
+      expect(RouteDecisionV1Schema.safeParse(decision).success).toBe(false);
+    });
+  });
+
+  it('enforces worker counts and reducer topology', () => {
+    const composite = validRouteDecision('COMPOSITE');
+    const open = validRouteDecision('OPEN_RESEARCH');
+    const reduce = composite.tasks.find((task) => task.kind === 'REDUCE')!;
+
+    expect(RouteDecisionV1Schema.safeParse({
+      ...focusedDecision([routeTask('flow', 'WORKSPACE_FLOW')]),
+      budget: { ...focusedBudget(), maxWorkers: 0 },
+    }).success).toBe(false);
+    expect(RouteDecisionV1Schema.safeParse({
+      ...composite,
+      tasks: composite.tasks.filter((task) => task.kind !== 'REDUCE'),
+    }).success).toBe(false);
+    expect(RouteDecisionV1Schema.safeParse({
+      ...composite,
+      tasks: [...composite.tasks, { ...reduce, id: 'reduce-2' }],
+    }).success).toBe(false);
+    expect(RouteDecisionV1Schema.safeParse({
+      ...composite,
+      tasks: composite.tasks.map((task) => task.kind === 'REDUCE' ? { ...task, dependsOn: ['flow'] } : task),
+    }).success).toBe(false);
+    expect(RouteDecisionV1Schema.safeParse({
+      ...composite,
+      budget: { ...composite.budget, useReducer: false },
+    }).success).toBe(false);
+    expect(RouteDecisionV1Schema.safeParse({
+      ...open,
+      tasks: [routeTask('flow', 'WORKSPACE_FLOW'), routeTask('reduce', 'REDUCE', ['flow'])],
+      budget: { ...open.budget, maxWorkers: 2 },
+    }).success).toBe(false);
+    expect(RouteDecisionV1Schema.safeParse({
+      ...validRouteDecision('DIRECT'),
+      tasks: [routeTask('flow', 'WORKSPACE_FLOW'), routeTask('reduce', 'REDUCE', ['flow'])],
+    }).success).toBe(false);
+  });
+
+  it('rejects duplicate task dependencies', () => {
+    const composite = validRouteDecision('COMPOSITE');
+
+    expect(RouteDecisionV1Schema.safeParse({
+      ...composite,
+      tasks: composite.tasks.map((task) => task.kind === 'REDUCE'
+        ? { ...task, dependsOn: ['flow', 'documents', 'flow'] }
+        : task),
+    }).success).toBe(false);
+    expect(RouteDecisionV1Schema.safeParse({
+      ...composite,
+      tasks: composite.tasks.map((task) => task.id === 'documents'
+        ? { ...task, dependsOn: ['flow', 'flow'] }
+        : task),
+    }).success).toBe(false);
   });
 
   it('keeps validated internal locators out of public citations', () => {
@@ -83,6 +198,131 @@ describe('agent runtime contracts', () => {
     }).success).toBe(false);
   });
 
+  it('accepts only the opaque backend reference route for citation hrefs', () => {
+    const referenceId = 'reference/订单 1';
+    const citation = {
+      referenceId,
+      source: 'WORKSPACE_FLOW',
+      title: '订单处理',
+      excerpt: '复核订单',
+      href: `/references/${encodeURIComponent(referenceId)}`,
+    };
+
+    expect(CitationV1Schema.safeParse(citation).success).toBe(true);
+    for (const href of [
+      '/Users/operator/private.md',
+      '/guides/reference%2F%E8%AE%A2%E5%8D%95%201',
+      '/references/reference%2F%E8%AE%A2%E5%8D%95%201/extra',
+      '/references/reference%2F%E8%AE%A2%E5%8D%95%201?download=1',
+    ]) {
+      expect(CitationV1Schema.safeParse({ ...citation, href }).success).toBe(false);
+    }
+    expect(() => CitationV1Schema.safeParse({
+      ...citation,
+      referenceId: '\uD800',
+      href: '/references/invalid',
+    })).not.toThrow();
+    expect(CitationV1Schema.safeParse({
+      ...citation,
+      referenceId: '\uD800',
+      href: '/references/invalid',
+    }).success).toBe(false);
+  });
+
+  it('parses session attachment evidence with a strict locator', () => {
+    const finding = TaskFindingV1Schema.parse({
+      taskId: 'attachment',
+      status: 'FOUND',
+      findings: ['附件包含订单复核要求。'],
+      validatedEvidence: [{
+        id: 'evidence-attachment',
+        source: 'SESSION_ATTACHMENT',
+        title: '订单说明',
+        excerpt: '异常订单需要复核。',
+        locator: {
+          kind: 'SESSION_ATTACHMENT',
+          conversationId: 'conversation-1',
+          attachmentId: 'attachment-1',
+          documentId: 'document-1',
+          revision: 'revision-1',
+          fragmentId: 'fragment-1',
+        },
+      }],
+      conflicts: [],
+      gaps: [],
+    });
+
+    expect(finding.validatedEvidence[0]?.locator.kind).toBe('SESSION_ATTACHMENT');
+    expect(TaskFindingV1Schema.safeParse({
+      ...finding,
+      validatedEvidence: [{
+        ...finding.validatedEvidence[0],
+        locator: {
+          kind: 'SESSION_ATTACHMENT',
+          conversationId: 'conversation-1',
+          attachmentId: 'attachment-1',
+          documentId: 'document-1',
+        },
+      }],
+    }).success).toBe(false);
+    expect(TaskFindingV1Schema.safeParse({
+      ...finding,
+      validatedEvidence: [{
+        ...finding.validatedEvidence[0],
+        locator: { ...finding.validatedEvidence[0]?.locator, workspaceId: 'not-allowed' },
+      }],
+    }).success).toBe(false);
+  });
+
+  it('exposes only browser-safe task findings in run events', () => {
+    const finding = PublicTaskFindingV1Schema.parse({
+      taskId: 'flow',
+      status: 'PARTIAL',
+      summary: '已找到流程节点，仍需核对附件。',
+      conflicts: [],
+      gaps: ['附件尚未完成解析。'],
+      evidenceCount: 2,
+    });
+    const event = AgentRunEventV1Schema.parse({
+      id: 'event-finding',
+      runId: 'run-1',
+      sequence: 2,
+      planVersion: 1,
+      phase: 'PROVISIONAL',
+      type: 'task.finding',
+      payload: { finding },
+      createdAt: '2026-07-15T00:00:01.000Z',
+    });
+    const serialized = JSON.stringify(event);
+
+    expect(serialized).not.toContain('locator');
+    expect(serialized).not.toContain('relativePath');
+    expect(serialized).not.toContain('validatedEvidence');
+    expect(AgentRunEventV1Schema.safeParse({
+      ...event,
+      payload: {
+        finding: {
+          taskId: 'flow',
+          status: 'FOUND',
+          findings: ['内部发现'],
+          validatedEvidence: [{
+            id: 'evidence-vault',
+            source: 'SANTEXWELL',
+            title: '内部页面',
+            excerpt: '内部证据',
+            locator: {
+              kind: 'SANTEXWELL',
+              relativePath: 'wiki_v2/内部.md',
+              revision: 'revision-1',
+            },
+          }],
+          conflicts: [],
+          gaps: [],
+        },
+      },
+    }).success).toBe(false);
+  });
+
   it('keeps route events ordered and JSON-safe', () => {
     const event = AgentRunEventV1Schema.parse({
       id: 'event-1',
@@ -121,7 +361,7 @@ describe('agent runtime contracts', () => {
     }).success).toBe(false);
   });
 
-  it('discriminates all public artifact payloads', () => {
+  it('discriminates exactly four browser-safe artifact payloads', () => {
     const common = {
       id: 'artifact-1',
       runId: 'run-1',
@@ -129,27 +369,126 @@ describe('agent runtime contracts', () => {
       createdAt: '2026-07-15T00:00:00.000Z',
     };
     const artifacts = [
-      { ...common, kind: 'MARKDOWN', markdown: '# 结论' },
-      { ...common, id: 'artifact-2', kind: 'REPORT', summary: '流程基本完整。', sections: [{ title: '结论', markdown: '需要补充复核。' }] },
-      { ...common, id: 'artifact-3', kind: 'DIAGRAM', format: 'MERMAID', source: 'flowchart LR\nA-->B' },
+      { ...common, kind: 'REPORT', summary: '流程基本完整。', sections: [{ title: '结论', markdown: '需要补充复核。' }] },
       {
         ...common,
-        id: 'artifact-4',
+        id: 'artifact-2',
+        kind: 'DIAGRAM',
+        direction: 'LR',
+        nodes: [
+          { id: 'submit', label: '提交订单' },
+          { id: 'review', label: '复核订单', summary: '检查异常订单。' },
+        ],
+        edges: [{ id: 'submit-review', source: 'submit', target: 'review', label: '异常时' }],
+      },
+      {
+        ...common,
+        id: 'artifact-3',
         kind: 'FLOW_PROPOSAL',
         guideId: 'guide-1',
         baseSnapshotId: 'snapshot-1',
         summary: '增加复核节点。',
         changes: [{ id: 'change-1', kind: 'ADD_NODE', summary: '在提交后增加复核。' }],
       },
+      {
+        ...common,
+        id: 'artifact-4',
+        kind: 'REFERENCE_COLLECTION',
+        references: [{ referenceId: 'reference-1', title: '订单复核规范', summary: '异常订单需要人工复核。' }],
+      },
     ];
 
     expect(artifacts.map((artifact) => ArtifactV1Schema.parse(artifact).kind)).toEqual([
-      'MARKDOWN',
       'REPORT',
       'DIAGRAM',
       'FLOW_PROPOSAL',
+      'REFERENCE_COLLECTION',
     ]);
-    expect(ArtifactV1Schema.safeParse({ ...common, kind: 'DIAGRAM', markdown: '# wrong' }).success).toBe(false);
+    expect(ArtifactV1Schema.safeParse({ ...common, kind: 'MARKDOWN', markdown: '# 结论' }).success).toBe(false);
+    expect(ArtifactV1Schema.safeParse({
+      ...common,
+      kind: 'DIAGRAM',
+      format: 'MERMAID',
+      source: 'flowchart LR\nA-->B',
+    }).success).toBe(false);
+  });
+
+  it('keeps reference collections bounded and free of internal locators', () => {
+    const collection = {
+      id: 'artifact-references',
+      runId: 'run-1',
+      title: '参考资料',
+      createdAt: '2026-07-15T00:00:00.000Z',
+      kind: 'REFERENCE_COLLECTION',
+      references: [{ referenceId: 'reference-1', title: '订单规范', summary: '包含订单复核要求。' }],
+    };
+    const parsed = ArtifactV1Schema.parse(collection);
+
+    expect(JSON.stringify(parsed)).not.toContain('locator');
+    expect(JSON.stringify(parsed)).not.toContain('relativePath');
+    expect(ArtifactV1Schema.safeParse({
+      ...collection,
+      references: [{ ...collection.references[0], relativePath: 'wiki_v2/订单.md' }],
+    }).success).toBe(false);
+    expect(ArtifactV1Schema.safeParse({
+      ...collection,
+      references: [{ ...collection.references[0], locator: { kind: 'SANTEXWELL' } }],
+    }).success).toBe(false);
+    expect(ArtifactV1Schema.safeParse({
+      ...collection,
+      references: [{ ...collection.references[0], referenceId: '\uD800' }],
+    }).success).toBe(false);
+    expect(ArtifactV1Schema.safeParse({ ...collection, references: [] }).success).toBe(false);
+    expect(ArtifactV1Schema.safeParse({
+      ...collection,
+      references: Array.from({ length: 201 }, (_, index) => ({
+        referenceId: `reference-${index}`,
+        title: `参考 ${index}`,
+        summary: '摘要',
+      })),
+    }).success).toBe(false);
+  });
+
+  it('validates controlled diagram topology and bounds', () => {
+    const diagram = {
+      id: 'artifact-diagram',
+      runId: 'run-1',
+      title: '订单流程',
+      createdAt: '2026-07-15T00:00:00.000Z',
+      kind: 'DIAGRAM',
+      direction: 'TB',
+      nodes: [
+        { id: 'submit', label: '提交订单' },
+        { id: 'review', label: '复核订单' },
+      ],
+      edges: [{ id: 'submit-review', source: 'submit', target: 'review' }],
+    };
+
+    expect(ArtifactV1Schema.safeParse(diagram).success).toBe(true);
+    const invalidDiagrams = [
+      { ...diagram, direction: 'RL' },
+      { ...diagram, nodes: [...diagram.nodes, { id: 'submit', label: '重复节点' }] },
+      { ...diagram, edges: [...diagram.edges, { ...diagram.edges[0], target: 'submit' }] },
+      { ...diagram, edges: [{ ...diagram.edges[0], source: 'missing' }] },
+      { ...diagram, edges: [{ ...diagram.edges[0], target: 'missing' }] },
+      {
+        ...diagram,
+        nodes: Array.from({ length: 201 }, (_, index) => ({ id: `node-${index}`, label: `节点 ${index}` })),
+        edges: [],
+      },
+      {
+        ...diagram,
+        edges: Array.from({ length: 401 }, (_, index) => ({
+          id: `edge-${index}`,
+          source: 'submit',
+          target: 'review',
+        })),
+      },
+    ];
+
+    invalidDiagrams.forEach((invalid) => {
+      expect(ArtifactV1Schema.safeParse(invalid).success).toBe(false);
+    });
   });
 
   it('parses internal answers without requiring public hrefs', () => {
@@ -216,7 +555,7 @@ function sourceOptions() {
   };
 }
 
-function routeBudget() {
+function focusedBudget() {
   return {
     maxWorkers: 1,
     maxConcurrency: 1,
@@ -229,13 +568,34 @@ function routeBudget() {
   };
 }
 
-function routeDecision(tasks: Array<{
+type RouteTaskFixture = {
   id: string;
   kind: 'WORKSPACE_FLOW' | 'WORKSPACE_DOCUMENT' | 'SESSION_ATTACHMENT' | 'SANTEXWELL' | 'REDUCE';
   objective: string;
   dependsOn: string[];
   priority: number;
-}>) {
+};
+
+type DecisionOverrides = {
+  sources?: ReturnType<typeof sourceOptions>;
+  budget?: ReturnType<typeof focusedBudget>;
+  executionMode?: 'SEQUENTIAL' | 'PARALLEL';
+  maxConcurrency?: number;
+};
+
+function routeTask(
+  id: string,
+  kind: RouteTaskFixture['kind'],
+  dependsOn: string[] = [],
+): RouteTaskFixture {
+  return { id, kind, objective: `执行 ${id}`, dependsOn, priority: 1 };
+}
+
+function routeDecision(
+  route: 'DIRECT' | 'FOCUSED' | 'COMPOSITE' | 'OPEN_RESEARCH',
+  tasks: RouteTaskFixture[],
+  overrides: DecisionOverrides = {},
+) {
   return {
     intent: '检查当前订单流程是否缺少复核步骤',
     complexity: {
@@ -246,14 +606,111 @@ function routeDecision(tasks: Array<{
       ambiguity: 1,
     },
     contextAssessment: '问题限定在当前指南。',
-    route: 'FOCUSED',
-    sources: sourceOptions(),
+    route,
+    sources: overrides.sources ?? sourceOptions(),
     tasks,
-    budget: routeBudget(),
-    executionMode: 'SEQUENTIAL',
-    maxConcurrency: 1,
+    budget: overrides.budget ?? focusedBudget(),
+    executionMode: overrides.executionMode ?? 'SEQUENTIAL',
+    maxConcurrency: overrides.maxConcurrency ?? 1,
     stopConditions: ['已找到足够证据支撑结论'],
     confidence: 0.84,
     userFacingPlan: '先检查当前流程节点，再核对相关说明。',
   } as const;
+}
+
+function focusedDecision(tasks: RouteTaskFixture[], overrides: DecisionOverrides = {}) {
+  return routeDecision('FOCUSED', tasks, {
+    sources: { workspaceFlows: true, workspaceDocuments: true, sessionAttachments: true, santexwell: true },
+    budget: focusedBudget(),
+    ...overrides,
+  });
+}
+
+function compositeDecision(tasks: RouteTaskFixture[], overrides: DecisionOverrides = {}) {
+  return routeDecision('COMPOSITE', tasks, {
+    sources: { workspaceFlows: true, workspaceDocuments: true, sessionAttachments: true, santexwell: true },
+    budget: compositeBudget(),
+    executionMode: 'PARALLEL',
+    maxConcurrency: 2,
+    ...overrides,
+  });
+}
+
+function openResearchDecision(tasks: RouteTaskFixture[], overrides: DecisionOverrides = {}) {
+  return routeDecision('OPEN_RESEARCH', tasks, {
+    sources: { workspaceFlows: true, workspaceDocuments: true, sessionAttachments: true, santexwell: true },
+    budget: openBudget(),
+    executionMode: 'PARALLEL',
+    maxConcurrency: 2,
+    ...overrides,
+  });
+}
+
+function validRouteDecision(route: 'DIRECT' | 'FOCUSED' | 'COMPOSITE' | 'OPEN_RESEARCH') {
+  if (route === 'DIRECT') {
+    return routeDecision(route, [routeTask('flow', 'WORKSPACE_FLOW')], {
+      sources: { workspaceFlows: true, workspaceDocuments: false, sessionAttachments: false, santexwell: false },
+      budget: directBudget(),
+    });
+  }
+  if (route === 'FOCUSED') {
+    return focusedDecision([routeTask('flow', 'WORKSPACE_FLOW')], {
+      sources: { workspaceFlows: true, workspaceDocuments: false, sessionAttachments: false, santexwell: false },
+    });
+  }
+  if (route === 'COMPOSITE') {
+    return compositeDecision([
+      routeTask('flow', 'WORKSPACE_FLOW'),
+      routeTask('documents', 'WORKSPACE_DOCUMENT', ['flow']),
+      routeTask('reduce', 'REDUCE', ['flow', 'documents']),
+    ], {
+      sources: { workspaceFlows: true, workspaceDocuments: true, sessionAttachments: false, santexwell: false },
+    });
+  }
+  return openResearchDecision([
+    routeTask('flow', 'WORKSPACE_FLOW'),
+    routeTask('vault', 'SANTEXWELL'),
+    routeTask('reduce', 'REDUCE', ['flow', 'vault']),
+  ], {
+    sources: { workspaceFlows: true, workspaceDocuments: false, sessionAttachments: false, santexwell: true },
+  });
+}
+
+function directBudget() {
+  return {
+    maxWorkers: 1,
+    maxConcurrency: 1,
+    maxWorkspaceCandidates: 1,
+    maxFlowHops: 1,
+    maxVaultClusters: 0,
+    maxVaultDigests: 0,
+    allowRaw: false,
+    useReducer: false,
+  };
+}
+
+function compositeBudget() {
+  return {
+    maxWorkers: 2,
+    maxConcurrency: 2,
+    maxWorkspaceCandidates: 12,
+    maxFlowHops: 2,
+    maxVaultClusters: 1,
+    maxVaultDigests: 2,
+    allowRaw: false,
+    useReducer: true,
+  };
+}
+
+function openBudget() {
+  return {
+    maxWorkers: 2,
+    maxConcurrency: 2,
+    maxWorkspaceCandidates: 12,
+    maxFlowHops: 2,
+    maxVaultClusters: 2,
+    maxVaultDigests: 6,
+    allowRaw: true,
+    useReducer: true,
+  };
 }
