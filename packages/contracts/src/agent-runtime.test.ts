@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AgentCommittedAnswerV1Schema,
   AgentInternalAnswerV1Schema,
   AgentRunEventV1Schema,
   ArtifactV1Schema,
@@ -61,6 +62,87 @@ describe('agent runtime contracts', () => {
       budget: { ...openBudget(), maxWorkers: 4 },
     });
     expect(RouteDecisionV1Schema.safeParse(openWithFourWorkers).success).toBe(true);
+
+    const compositeWithThreeWorkers = compositeDecision([
+      routeTask('flow', 'WORKSPACE_FLOW'),
+      routeTask('documents', 'WORKSPACE_DOCUMENT'),
+      routeTask('vault', 'SANTEXWELL'),
+      routeTask('reduce', 'REDUCE', ['flow', 'documents', 'vault']),
+    ], {
+      budget: { ...compositeBudget(), maxWorkers: 3, maxConcurrency: 3 },
+      maxConcurrency: 3,
+    });
+    expect(RouteDecisionV1Schema.safeParse(compositeWithThreeWorkers).success).toBe(true);
+  });
+
+  it('requires DIRECT to execute sequentially at concurrency one', () => {
+    const direct = validRouteDecision('DIRECT');
+    const invalid = [
+      { ...direct, executionMode: 'PARALLEL' },
+      { ...direct, budget: { ...direct.budget, maxConcurrency: 2 } },
+      {
+        ...direct,
+        executionMode: 'PARALLEL',
+        maxConcurrency: 2,
+        budget: { ...direct.budget, maxConcurrency: 2 },
+      },
+    ];
+
+    invalid.forEach((decision) => {
+      expect(RouteDecisionV1Schema.safeParse(decision).success).toBe(false);
+    });
+  });
+
+  it('requires FOCUSED to reserve and schedule exactly one worker', () => {
+    const invalid = [
+      focusedDecision([]),
+      focusedDecision([], { budget: { ...focusedBudget(), maxWorkers: 0 } }),
+      focusedDecision([routeTask('flow', 'WORKSPACE_FLOW')], {
+        budget: { ...focusedBudget(), maxWorkers: 0 },
+      }),
+      focusedDecision([
+        routeTask('flow', 'WORKSPACE_FLOW'),
+        routeTask('documents', 'WORKSPACE_DOCUMENT'),
+      ], {
+        budget: { ...focusedBudget(), maxWorkers: 2 },
+      }),
+    ];
+
+    invalid.forEach((decision) => {
+      expect(RouteDecisionV1Schema.safeParse(decision).success).toBe(false);
+    });
+  });
+
+  it('requires COMPOSITE to use two or three workers and one bounded vault cluster', () => {
+    const oneWorker = compositeDecision([
+      routeTask('flow', 'WORKSPACE_FLOW'),
+      routeTask('reduce', 'REDUCE', ['flow']),
+    ]);
+    const invalid = [
+      oneWorker,
+      { ...oneWorker, budget: { ...oneWorker.budget, maxWorkers: 1 } },
+      {
+        ...validRouteDecision('COMPOSITE'),
+        budget: { ...compositeBudget(), maxVaultClusters: 2 },
+      },
+      {
+        ...validRouteDecision('COMPOSITE'),
+        budget: { ...compositeBudget(), maxVaultDigests: 3 },
+      },
+      compositeDecision([
+        routeTask('flow', 'WORKSPACE_FLOW'),
+        routeTask('documents', 'WORKSPACE_DOCUMENT'),
+        routeTask('attachment', 'SESSION_ATTACHMENT'),
+        routeTask('vault', 'SANTEXWELL'),
+        routeTask('reduce', 'REDUCE', ['flow', 'documents', 'attachment', 'vault']),
+      ], {
+        budget: { ...compositeBudget(), maxWorkers: 4 },
+      }),
+    ];
+
+    invalid.forEach((decision) => {
+      expect(RouteDecisionV1Schema.safeParse(decision).success).toBe(false);
+    });
   });
 
   it('rejects tasks for disabled sources', () => {
@@ -271,6 +353,27 @@ describe('agent runtime contracts', () => {
         ...finding.validatedEvidence[0],
         locator: { ...finding.validatedEvidence[0]?.locator, workspaceId: 'not-allowed' },
       }],
+    }).success).toBe(false);
+  });
+
+  it('requires stable document identity in Santexwell locators', () => {
+    const finding = santexwellFinding();
+    const locator = finding.validatedEvidence[0]!.locator;
+    const { fragmentId: _fragmentId, ...withoutFragment } = locator;
+    const {
+      documentId: _documentId,
+      fragmentId: _unstableFragmentId,
+      ...withoutDocumentIdentity
+    } = locator;
+
+    expect(TaskFindingV1Schema.safeParse(finding).success).toBe(true);
+    expect(TaskFindingV1Schema.safeParse({
+      ...finding,
+      validatedEvidence: [{ ...finding.validatedEvidence[0], locator: withoutFragment }],
+    }).success).toBe(true);
+    expect(TaskFindingV1Schema.safeParse({
+      ...finding,
+      validatedEvidence: [{ ...finding.validatedEvidence[0], locator: withoutDocumentIdentity }],
     }).success).toBe(false);
   });
 
@@ -491,34 +594,187 @@ describe('agent runtime contracts', () => {
     });
   });
 
-  it('parses internal answers without requiring public hrefs', () => {
-    const answer = AgentInternalAnswerV1Schema.parse({
-      mode: 'ANSWER',
-      conclusion: '现有流程缺少异常复核。',
-      sections: [{ id: 'details', title: '检查结果', markdown: '退回分支没有复核节点。' }],
-      evidence: [{
-        id: 'evidence-vault',
+  it('accepts internal artifacts without backend-owned metadata', () => {
+    const answer = AgentInternalAnswerV1Schema.parse(internalAnswer());
+
+    expect(answer.evidence[0]).not.toHaveProperty('href');
+    expect(answer.artifacts.map((artifact) => artifact.kind)).toEqual([
+      'REPORT',
+      'DIAGRAM',
+      'FLOW_PROPOSAL',
+      'REFERENCE_COLLECTION',
+    ]);
+    answer.artifacts.forEach((artifact) => {
+      expect(artifact).not.toHaveProperty('id');
+      expect(artifact).not.toHaveProperty('runId');
+      expect(artifact).not.toHaveProperty('createdAt');
+    });
+  });
+
+  it('keeps internal and public artifact payloads isolated', () => {
+    const answer = internalAnswer();
+    const report = answer.artifacts[0]!;
+    const publicCollection = {
+      id: 'artifact-references',
+      runId: 'run-1',
+      title: '参考资料',
+      createdAt: '2026-07-15T00:00:00.000Z',
+      kind: 'REFERENCE_COLLECTION',
+      references: [{ referenceId: 'reference-1', title: '订单规范', summary: '包含订单复核要求。' }],
+    };
+
+    expect(AgentInternalAnswerV1Schema.safeParse({
+      ...answer,
+      artifacts: [{
+        ...report,
+        id: 'artifact-report',
+        runId: 'run-1',
+        createdAt: '2026-07-15T00:00:00.000Z',
+      }],
+    }).success).toBe(false);
+    expect(AgentInternalAnswerV1Schema.safeParse({
+      ...answer,
+      artifacts: [publicCollection],
+    }).success).toBe(false);
+    expect(ArtifactV1Schema.safeParse({
+      ...publicCollection,
+      evidenceIds: ['evidence-vault'],
+    }).success).toBe(false);
+    expect(ArtifactV1Schema.safeParse({
+      kind: 'REPORT',
+      title: '内部报告',
+      summary: '缺少后端字段。',
+      sections: [],
+    }).success).toBe(false);
+  });
+
+  it('requires internal reference collections to use unique validated evidence IDs', () => {
+    const answer = internalAnswer();
+    const referenceCollection = answer.artifacts.find((artifact) => artifact.kind === 'REFERENCE_COLLECTION')!;
+    const withEvidenceIds = (evidenceIds: string[]) => ({
+      ...answer,
+      artifacts: [{ ...referenceCollection, evidenceIds }],
+    });
+
+    expect(AgentInternalAnswerV1Schema.safeParse(withEvidenceIds([])).success).toBe(false);
+    expect(AgentInternalAnswerV1Schema.safeParse(withEvidenceIds(['evidence-vault', 'evidence-vault'])).success).toBe(false);
+    expect(AgentInternalAnswerV1Schema.safeParse(withEvidenceIds(['missing-evidence'])).success).toBe(false);
+    expect(AgentInternalAnswerV1Schema.safeParse(withEvidenceIds(
+      Array.from({ length: 201 }, (_, index) => `evidence-${index}`),
+    )).success).toBe(false);
+  });
+
+  it('keeps flow feedback in committed answers through browser-safe references', () => {
+    const referenceId = 'flow/reference 1';
+    const answer = AgentCommittedAnswerV1Schema.parse(committedAnswer([
+      {
+        kind: 'GAP',
+        message: '退回分支缺少复核节点。',
+        referenceId,
+        href: `/references/${encodeURIComponent(referenceId)}`,
+      },
+      {
+        kind: 'CONFLICT',
+        message: '原流程快照已不可用。',
+        referenceId: 'expired-reference',
+        href: null,
+        invalidReason: '原流程快照已删除。',
+      },
+    ]));
+    const serialized = JSON.stringify(answer.flowFeedback);
+
+    expect(answer.flowFeedback).toHaveLength(2);
+    expect(serialized).not.toContain('locator');
+    expect(serialized).not.toContain('relativePath');
+  });
+
+  it('requires exact safe reference routes for public flow feedback', () => {
+    const referenceId = 'flow/reference 1';
+    const valid = {
+      kind: 'IMPROVEMENT',
+      message: '建议增加异常复核节点。',
+      referenceId,
+      href: `/references/${encodeURIComponent(referenceId)}`,
+    };
+    const invalid = [
+      { ...valid, href: '/Users/operator/private.md' },
+      { ...valid, href: '/guides/flow%2Freference%201' },
+      { ...valid, href: null },
+      { ...valid, invalidReason: '不应同时存在。' },
+      { ...valid, locator: { guideId: 'guide-1', snapshotId: 'snapshot-1', nodeId: 'review' } },
+      { ...valid, relativePath: 'wiki_v2/订单.md' },
+    ];
+
+    invalid.forEach((feedback) => {
+      expect(AgentCommittedAnswerV1Schema.safeParse(committedAnswer([feedback])).success).toBe(false);
+    });
+    expect(() => AgentCommittedAnswerV1Schema.safeParse(committedAnswer([{
+      ...valid,
+      referenceId: '\uD800',
+      href: '/references/invalid',
+    }]))).not.toThrow();
+    expect(AgentCommittedAnswerV1Schema.safeParse(committedAnswer([{
+      ...valid,
+      referenceId: '\uD800',
+      href: '/references/invalid',
+    }]))).toMatchObject({ success: false });
+  });
+
+  it('requires committed flow feedback while keeping internal feedback locator-only', () => {
+    const committed = committedAnswer([]);
+    const { flowFeedback: _flowFeedback, ...withoutFlowFeedback } = committed;
+    const internal = internalAnswer();
+
+    expect(AgentCommittedAnswerV1Schema.safeParse(withoutFlowFeedback).success).toBe(false);
+    expect(AgentInternalAnswerV1Schema.safeParse({
+      ...internal,
+      flowFeedback: [{
+        ...internal.flowFeedback[0],
+        referenceId: 'reference-1',
+        href: '/references/reference-1',
+      }],
+    }).success).toBe(false);
+  });
+
+  it('keeps stable Santexwell locator details out of committed answer events', () => {
+    const finding = TaskFindingV1Schema.parse(santexwellFinding());
+    const referenceId = 'vault/reference 1';
+    const answer = AgentCommittedAnswerV1Schema.parse({
+      ...committedAnswer([{
+        kind: 'GAP',
+        message: '规范要求增加异常复核。',
+        referenceId,
+        href: `/references/${encodeURIComponent(referenceId)}`,
+      }]),
+      citations: [{
+        referenceId,
         source: 'SANTEXWELL',
         title: '订单复核规范',
         excerpt: '异常订单需要人工复核。',
-        locator: {
-          kind: 'SANTEXWELL',
-          relativePath: 'wiki_v2/订单复核规范.md',
-          revision: 'revision-7',
-          heading: '异常处理',
-        },
+        href: `/references/${encodeURIComponent(referenceId)}`,
       }],
-      flowFeedback: [{
-        kind: 'GAP',
-        message: '建议在退回分支增加复核节点。',
-        locator: { guideId: 'guide-1', snapshotId: 'snapshot-1', nodeId: 'return' },
-      }],
-      evidenceStatus: 'SUPPORTED',
-      artifacts: [],
-      suggestedQuestions: ['是否需要生成流程修改建议？'],
     });
+    const event = AgentRunEventV1Schema.parse({
+      id: 'event-answer',
+      runId: 'run-1',
+      sequence: 3,
+      planVersion: 1,
+      phase: 'COMMITTED',
+      type: 'answer.committed',
+      payload: { answer },
+      createdAt: '2026-07-15T00:00:02.000Z',
+    });
+    const serialized = JSON.stringify(event);
 
-    expect(answer.evidence[0]).not.toHaveProperty('href');
+    expect(finding.validatedEvidence[0]?.locator).toMatchObject({
+      documentId: 'document-orders',
+      fragmentId: 'fragment-review',
+      relativePath: 'wiki_v2/订单复核规范.md',
+    });
+    expect(serialized).not.toContain('locator');
+    expect(serialized).not.toContain('relativePath');
+    expect(serialized).not.toContain('documentId');
+    expect(serialized).not.toContain('fragmentId');
   });
 
   it('discriminates bridge requests and bridge events', () => {
@@ -545,6 +801,103 @@ describe('agent runtime contracts', () => {
     expect(BridgeRequestV1Schema.safeParse({ ...request, type: 'CANCEL', prompt: 'leak' }).success).toBe(false);
   });
 });
+
+function santexwellFinding() {
+  return {
+    taskId: 'vault',
+    status: 'FOUND',
+    findings: ['规范要求异常订单人工复核。'],
+    validatedEvidence: [{
+      id: 'evidence-vault',
+      source: 'SANTEXWELL',
+      title: '订单复核规范',
+      excerpt: '异常订单需要人工复核。',
+      locator: {
+        kind: 'SANTEXWELL',
+        documentId: 'document-orders',
+        fragmentId: 'fragment-review',
+        relativePath: 'wiki_v2/订单复核规范.md',
+        revision: 'revision-7',
+        heading: '异常处理',
+      },
+    }],
+    conflicts: [],
+    gaps: [],
+  };
+}
+
+function internalAnswer() {
+  return {
+    mode: 'ANSWER',
+    conclusion: '现有流程缺少异常复核。',
+    sections: [{ id: 'details', title: '检查结果', markdown: '退回分支没有复核节点。' }],
+    evidence: [{
+      id: 'evidence-vault',
+      source: 'SANTEXWELL',
+      title: '订单复核规范',
+      excerpt: '异常订单需要人工复核。',
+      locator: {
+        kind: 'SANTEXWELL',
+        documentId: 'document-orders',
+        fragmentId: 'fragment-review',
+        relativePath: 'wiki_v2/订单复核规范.md',
+        revision: 'revision-7',
+        heading: '异常处理',
+      },
+    }],
+    flowFeedback: [{
+      kind: 'GAP',
+      message: '建议在退回分支增加复核节点。',
+      locator: { guideId: 'guide-1', snapshotId: 'snapshot-1', nodeId: 'return' },
+    }],
+    evidenceStatus: 'SUPPORTED',
+    artifacts: [
+      {
+        kind: 'REPORT',
+        title: '流程检查报告',
+        summary: '现有流程需要增加异常复核。',
+        sections: [{ title: '发现', markdown: '退回分支没有复核节点。' }],
+      },
+      {
+        kind: 'DIAGRAM',
+        title: '建议流程',
+        direction: 'LR',
+        nodes: [
+          { id: 'submit', label: '提交订单' },
+          { id: 'review', label: '复核订单' },
+        ],
+        edges: [{ id: 'submit-review', source: 'submit', target: 'review' }],
+      },
+      {
+        kind: 'FLOW_PROPOSAL',
+        title: '异常复核修改建议',
+        guideId: 'guide-1',
+        baseSnapshotId: 'snapshot-1',
+        summary: '在退回分支增加复核节点。',
+        changes: [{ id: 'change-1', kind: 'ADD_NODE', summary: '增加异常复核节点。' }],
+      },
+      {
+        kind: 'REFERENCE_COLLECTION',
+        title: '结论依据',
+        evidenceIds: ['evidence-vault'],
+      },
+    ],
+    suggestedQuestions: ['是否需要生成流程修改建议？'],
+  };
+}
+
+function committedAnswer(flowFeedback: unknown[]) {
+  return {
+    mode: 'FLOW_REVIEW',
+    conclusion: '现有流程缺少异常复核。',
+    sections: [{ id: 'details', title: '检查结果', markdown: '退回分支没有复核节点。' }],
+    evidenceStatus: 'SUPPORTED',
+    citations: [],
+    flowFeedback,
+    artifacts: [],
+    suggestedQuestions: ['是否需要生成流程修改建议？'],
+  };
+}
 
 function sourceOptions() {
   return {

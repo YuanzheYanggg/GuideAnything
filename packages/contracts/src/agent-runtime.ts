@@ -160,6 +160,12 @@ export const RouteDecisionV1Schema = z.object({
     if (workers.length > 1 || decision.budget.maxWorkers > 1) {
       context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'DIRECT 路线最多允许一个工作任务' });
     }
+    if (decision.executionMode !== 'SEQUENTIAL') {
+      context.addIssue({ code: 'custom', path: ['executionMode'], message: 'DIRECT 路线必须顺序执行' });
+    }
+    if (decision.maxConcurrency !== 1 || decision.budget.maxConcurrency !== 1) {
+      context.addIssue({ code: 'custom', path: ['maxConcurrency'], message: 'DIRECT 路线的最大并发必须为 1' });
+    }
     if (reducers.length > 0 || decision.budget.useReducer) {
       context.addIssue({ code: 'custom', path: ['budget', 'useReducer'], message: 'DIRECT 路线不能使用汇总任务' });
     }
@@ -178,8 +184,8 @@ export const RouteDecisionV1Schema = z.object({
   }
 
   if (decision.route === 'FOCUSED') {
-    if (workers.length > 1 || decision.budget.maxWorkers > 1) {
-      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'FOCUSED 路线最多允许一个工作任务' });
+    if (workers.length !== 1 || decision.budget.maxWorkers !== 1) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'FOCUSED 路线必须且只能安排一个工作任务' });
     }
     if (decision.maxConcurrency !== 1 || decision.budget.maxConcurrency !== 1) {
       context.addIssue({ code: 'custom', path: ['maxConcurrency'], message: 'FOCUSED 路线的最大并发必须为 1' });
@@ -202,11 +208,19 @@ export const RouteDecisionV1Schema = z.object({
   }
 
   if (decision.route === 'COMPOSITE') {
-    if (workers.length > 3 || decision.budget.maxWorkers > 3) {
-      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'COMPOSITE 路线最多允许三个工作任务' });
+    if (
+      workers.length < 2
+      || workers.length > 3
+      || decision.budget.maxWorkers < 2
+      || decision.budget.maxWorkers > 3
+    ) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkers'], message: 'COMPOSITE 路线必须允许并安排二至三个工作任务' });
     }
     if (decision.budget.allowRaw) {
       context.addIssue({ code: 'custom', path: ['budget', 'allowRaw'], message: 'COMPOSITE 路线不能读取原始资料' });
+    }
+    if (decision.budget.maxVaultClusters > 1 || decision.budget.maxVaultDigests > 2) {
+      context.addIssue({ code: 'custom', path: ['budget'], message: 'COMPOSITE 路线最多使用一个主要知识库聚类及两个摘要' });
     }
     validateReducerTopology(decision.budget.useReducer, workers, reducers, context);
   }
@@ -269,8 +283,10 @@ export const SessionAttachmentLocatorV1Schema = z.object({
   fragmentId: IdV1Schema.optional(),
 }).strict();
 
-const SantexwellLocatorV1Schema = z.object({
+export const SantexwellLocatorV1Schema = z.object({
   kind: z.literal('SANTEXWELL'),
+  documentId: IdV1Schema,
+  fragmentId: IdV1Schema.optional(),
   relativePath: z.string().min(1).max(2_048).refine(isSafeVaultRelativePath, '知识路径必须是安全的 Markdown 相对路径'),
   revision: IdV1Schema,
   heading: z.string().min(1).max(500).optional(),
@@ -322,32 +338,49 @@ export const PublicTaskFindingV1Schema = z.object({
   evidenceCount: z.number().int().min(0).max(100),
 }).strict();
 
-export const CitationV1Schema = z.object({
+const PublicReferenceV1Shape = {
   referenceId: OpaqueReferenceIdV1Schema,
+  href: z.string().min(1).max(2_048).nullable(),
+  invalidReason: z.string().min(1).max(1_000).optional(),
+};
+
+export const PublicReferenceV1Schema = z.object(PublicReferenceV1Shape)
+  .strict()
+  .superRefine(validatePublicReference);
+
+export const CitationV1Schema = z.object({
+  ...PublicReferenceV1Shape,
   source: EvidenceSourceV1Schema,
   title: ShortTextV1Schema,
   excerpt: z.string().min(1).max(10_000),
-  href: z.string().min(1).max(2_048).nullable(),
-  invalidReason: z.string().min(1).max(1_000).optional(),
-}).strict().superRefine((citation, context) => {
-  if (citation.href === null && !citation.invalidReason) {
+}).strict().superRefine(validatePublicReference);
+
+function validatePublicReference(
+  reference: { referenceId: string; href: string | null; invalidReason?: string | undefined },
+  context: z.RefinementCtx,
+): void {
+  if (reference.href === null && !reference.invalidReason) {
     context.addIssue({ code: 'custom', path: ['invalidReason'], message: '不可导航的引用必须说明失效原因' });
   }
-  if (citation.href !== null && citation.invalidReason) {
+  if (reference.href !== null && reference.invalidReason) {
     context.addIssue({ code: 'custom', path: ['invalidReason'], message: '有效引用不能同时标记失效原因' });
   }
-  if (citation.href !== null) {
-    const encodedReferenceId = encodeURIComponentSafely(citation.referenceId);
-    if (encodedReferenceId === null || citation.href !== `/references/${encodedReferenceId}`) {
+  if (reference.href !== null) {
+    const encodedReferenceId = encodeURIComponentSafely(reference.referenceId);
+    if (encodedReferenceId === null || reference.href !== `/references/${encodedReferenceId}`) {
       context.addIssue({ code: 'custom', path: ['href'], message: '引用地址必须精确匹配不透明 reference 路由' });
     }
   }
-});
+}
+
+const InternalArtifactBaseV1Shape = {
+  title: z.string().min(1).max(200),
+};
 
 const ArtifactBaseV1Shape = {
   id: IdV1Schema,
   runId: IdV1Schema,
-  title: z.string().min(1).max(200),
+  ...InternalArtifactBaseV1Shape,
   createdAt: TimestampV1Schema,
 };
 
@@ -370,13 +403,102 @@ export const DiagramEdgeV1Schema = z.object({
   label: ShortTextV1Schema.optional(),
 }).strict();
 
-export const DiagramArtifactV1Schema = z.object({
-  ...ArtifactBaseV1Shape,
-  kind: z.literal('DIAGRAM'),
+const ReportArtifactContentV1Shape = {
+  summary: z.string().max(5_000),
+  sections: z.array(z.object({
+    title: z.string().min(1).max(200),
+    markdown: MarkdownV1Schema,
+  }).strict()).max(100),
+};
+
+const DiagramArtifactContentV1Shape = {
   direction: z.enum(['LR', 'TB']),
   nodes: z.array(DiagramNodeV1Schema).min(1).max(200),
   edges: z.array(DiagramEdgeV1Schema).max(400),
-}).strict().superRefine((diagram, context) => {
+};
+
+const FlowProposalArtifactContentV1Shape = {
+  guideId: IdV1Schema,
+  baseSnapshotId: IdV1Schema,
+  summary: z.string().min(1).max(5_000),
+  changes: z.array(FlowProposalChangeV1Schema).min(1).max(500),
+};
+
+export const DiagramArtifactV1Schema = z.object({
+  ...ArtifactBaseV1Shape,
+  kind: z.literal('DIAGRAM'),
+  ...DiagramArtifactContentV1Shape,
+}).strict().superRefine(validateDiagramTopology);
+
+export const InternalDiagramArtifactV1Schema = z.object({
+  ...InternalArtifactBaseV1Shape,
+  kind: z.literal('DIAGRAM'),
+  ...DiagramArtifactContentV1Shape,
+}).strict().superRefine(validateDiagramTopology);
+
+export const ReferenceCollectionEntryV1Schema = z.object({
+  referenceId: OpaqueReferenceIdV1Schema,
+  title: ShortTextV1Schema,
+  summary: z.string().min(1).max(2_000),
+}).strict();
+
+export const ReferenceCollectionArtifactV1Schema = z.object({
+  ...ArtifactBaseV1Shape,
+  kind: z.literal('REFERENCE_COLLECTION'),
+  references: z.array(ReferenceCollectionEntryV1Schema).min(1).max(200),
+}).strict();
+
+const InternalEvidenceIdsV1Schema = z.array(IdV1Schema).min(1).max(200).superRefine((evidenceIds, context) => {
+  if (new Set(evidenceIds).size !== evidenceIds.length) {
+    context.addIssue({ code: 'custom', message: '内部参考资料的 evidence ID 必须唯一' });
+  }
+});
+
+export const InternalReferenceCollectionArtifactV1Schema = z.object({
+  ...InternalArtifactBaseV1Shape,
+  kind: z.literal('REFERENCE_COLLECTION'),
+  evidenceIds: InternalEvidenceIdsV1Schema,
+}).strict();
+
+export const InternalArtifactV1Schema = z.discriminatedUnion('kind', [
+  z.object({
+    ...InternalArtifactBaseV1Shape,
+    kind: z.literal('REPORT'),
+    ...ReportArtifactContentV1Shape,
+  }).strict(),
+  InternalDiagramArtifactV1Schema,
+  z.object({
+    ...InternalArtifactBaseV1Shape,
+    kind: z.literal('FLOW_PROPOSAL'),
+    ...FlowProposalArtifactContentV1Shape,
+  }).strict(),
+  InternalReferenceCollectionArtifactV1Schema,
+]);
+
+export const PublicArtifactV1Schema = z.discriminatedUnion('kind', [
+  z.object({
+    ...ArtifactBaseV1Shape,
+    kind: z.literal('REPORT'),
+    ...ReportArtifactContentV1Shape,
+  }).strict(),
+  DiagramArtifactV1Schema,
+  z.object({
+    ...ArtifactBaseV1Shape,
+    kind: z.literal('FLOW_PROPOSAL'),
+    ...FlowProposalArtifactContentV1Shape,
+  }).strict(),
+  ReferenceCollectionArtifactV1Schema,
+]);
+
+export const ArtifactV1Schema = PublicArtifactV1Schema;
+
+function validateDiagramTopology(
+  diagram: {
+    nodes: readonly { id: string }[];
+    edges: readonly { id: string; source: string; target: string }[];
+  },
+  context: z.RefinementCtx,
+): void {
   const nodeIds = new Set<string>();
   diagram.nodes.forEach((node, index) => {
     if (nodeIds.has(node.id)) {
@@ -398,41 +520,7 @@ export const DiagramArtifactV1Schema = z.object({
       context.addIssue({ code: 'custom', path: ['edges', index, 'target'], message: '图示连线终点必须引用已有节点' });
     }
   });
-});
-
-export const ReferenceCollectionEntryV1Schema = z.object({
-  referenceId: OpaqueReferenceIdV1Schema,
-  title: ShortTextV1Schema,
-  summary: z.string().min(1).max(2_000),
-}).strict();
-
-export const ReferenceCollectionArtifactV1Schema = z.object({
-  ...ArtifactBaseV1Shape,
-  kind: z.literal('REFERENCE_COLLECTION'),
-  references: z.array(ReferenceCollectionEntryV1Schema).min(1).max(200),
-}).strict();
-
-export const ArtifactV1Schema = z.discriminatedUnion('kind', [
-  z.object({
-    ...ArtifactBaseV1Shape,
-    kind: z.literal('REPORT'),
-    summary: z.string().max(5_000),
-    sections: z.array(z.object({
-      title: z.string().min(1).max(200),
-      markdown: MarkdownV1Schema,
-    }).strict()).max(100),
-  }).strict(),
-  DiagramArtifactV1Schema,
-  z.object({
-    ...ArtifactBaseV1Shape,
-    kind: z.literal('FLOW_PROPOSAL'),
-    guideId: IdV1Schema,
-    baseSnapshotId: IdV1Schema,
-    summary: z.string().min(1).max(5_000),
-    changes: z.array(FlowProposalChangeV1Schema).min(1).max(500),
-  }).strict(),
-  ReferenceCollectionArtifactV1Schema,
-]);
+}
 
 export const AgentAnswerSectionV1Schema = z.object({
   id: IdV1Schema,
@@ -440,11 +528,21 @@ export const AgentAnswerSectionV1Schema = z.object({
   markdown: MarkdownV1Schema,
 }).strict();
 
-export const FlowFeedbackV1Schema = z.object({
-  kind: z.enum(['GAP', 'CONFLICT', 'IMPROVEMENT']),
+export const FlowFeedbackKindV1Schema = z.enum(['GAP', 'CONFLICT', 'IMPROVEMENT']);
+
+export const InternalFlowFeedbackV1Schema = z.object({
+  kind: FlowFeedbackKindV1Schema,
   message: z.string().min(1).max(5_000),
   locator: FlowLocatorV1Schema,
 }).strict();
+
+export const FlowFeedbackV1Schema = InternalFlowFeedbackV1Schema;
+
+export const PublicFlowFeedbackV1Schema = z.object({
+  kind: FlowFeedbackKindV1Schema,
+  message: z.string().min(1).max(5_000),
+  ...PublicReferenceV1Shape,
+}).strict().superRefine(validatePublicReference);
 
 export const EvidenceStatusV1Schema = z.enum(['SUPPORTED', 'PARTIAL', 'INSUFFICIENT', 'CONFLICTING']);
 export const AgentAnswerModeV1Schema = z.enum(['ANSWER', 'REPORT', 'FLOW_REVIEW', 'FLOW_PROPOSAL']);
@@ -456,9 +554,23 @@ export const AgentInternalAnswerV1Schema = z.object({
   evidence: z.array(ValidatedEvidenceV1Schema).max(200),
   flowFeedback: z.array(FlowFeedbackV1Schema).max(100),
   evidenceStatus: EvidenceStatusV1Schema,
-  artifacts: z.array(ArtifactV1Schema).max(20),
+  artifacts: z.array(InternalArtifactV1Schema).max(20),
   suggestedQuestions: z.array(z.string().min(1).max(1_000)).max(12),
-}).strict();
+}).strict().superRefine((answer, context) => {
+  const evidenceIds = new Set(answer.evidence.map((evidence) => evidence.id));
+  answer.artifacts.forEach((artifact, artifactIndex) => {
+    if (artifact.kind !== 'REFERENCE_COLLECTION') return;
+    artifact.evidenceIds.forEach((evidenceId, evidenceIndex) => {
+      if (!evidenceIds.has(evidenceId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['artifacts', artifactIndex, 'evidenceIds', evidenceIndex],
+          message: '内部参考资料必须引用当前答案中的 validated evidence',
+        });
+      }
+    });
+  });
+});
 
 export const AgentCommittedAnswerV1Schema = z.object({
   mode: AgentAnswerModeV1Schema,
@@ -466,6 +578,7 @@ export const AgentCommittedAnswerV1Schema = z.object({
   sections: z.array(AgentAnswerSectionV1Schema).max(100),
   evidenceStatus: EvidenceStatusV1Schema,
   citations: z.array(CitationV1Schema).max(200),
+  flowFeedback: z.array(PublicFlowFeedbackV1Schema).max(100),
   artifacts: z.array(ArtifactV1Schema).max(20),
   suggestedQuestions: z.array(z.string().min(1).max(1_000)).max(12),
 }).strict();
@@ -683,21 +796,30 @@ export type RouteTaskV1 = z.infer<typeof RouteTaskV1Schema>;
 export type RouteDecisionV1 = z.infer<typeof RouteDecisionV1Schema>;
 export type EvidenceSourceV1 = z.infer<typeof EvidenceSourceV1Schema>;
 export type SessionAttachmentLocatorV1 = z.infer<typeof SessionAttachmentLocatorV1Schema>;
+export type SantexwellLocatorV1 = z.infer<typeof SantexwellLocatorV1Schema>;
 export type InternalEvidenceLocatorV1 = z.infer<typeof InternalEvidenceLocatorV1Schema>;
 export type ValidatedEvidenceV1 = z.infer<typeof ValidatedEvidenceV1Schema>;
 export type TaskFindingStatusV1 = z.infer<typeof TaskFindingStatusV1Schema>;
 export type TaskFindingV1 = z.infer<typeof TaskFindingV1Schema>;
 export type PublicTaskFindingV1 = z.infer<typeof PublicTaskFindingV1Schema>;
+export type PublicReferenceV1 = z.infer<typeof PublicReferenceV1Schema>;
 export type CitationV1 = z.infer<typeof CitationV1Schema>;
 export type FlowProposalChangeV1 = z.infer<typeof FlowProposalChangeV1Schema>;
 export type DiagramNodeV1 = z.infer<typeof DiagramNodeV1Schema>;
 export type DiagramEdgeV1 = z.infer<typeof DiagramEdgeV1Schema>;
 export type DiagramArtifactV1 = z.infer<typeof DiagramArtifactV1Schema>;
+export type InternalDiagramArtifactV1 = z.infer<typeof InternalDiagramArtifactV1Schema>;
 export type ReferenceCollectionEntryV1 = z.infer<typeof ReferenceCollectionEntryV1Schema>;
 export type ReferenceCollectionArtifactV1 = z.infer<typeof ReferenceCollectionArtifactV1Schema>;
+export type InternalReferenceCollectionArtifactV1 = z.infer<typeof InternalReferenceCollectionArtifactV1Schema>;
+export type InternalArtifactV1 = z.infer<typeof InternalArtifactV1Schema>;
+export type PublicArtifactV1 = z.infer<typeof PublicArtifactV1Schema>;
 export type ArtifactV1 = z.infer<typeof ArtifactV1Schema>;
 export type AgentAnswerSectionV1 = z.infer<typeof AgentAnswerSectionV1Schema>;
+export type FlowFeedbackKindV1 = z.infer<typeof FlowFeedbackKindV1Schema>;
+export type InternalFlowFeedbackV1 = z.infer<typeof InternalFlowFeedbackV1Schema>;
 export type FlowFeedbackV1 = z.infer<typeof FlowFeedbackV1Schema>;
+export type PublicFlowFeedbackV1 = z.infer<typeof PublicFlowFeedbackV1Schema>;
 export type EvidenceStatusV1 = z.infer<typeof EvidenceStatusV1Schema>;
 export type AgentAnswerModeV1 = z.infer<typeof AgentAnswerModeV1Schema>;
 export type AgentInternalAnswerV1 = z.infer<typeof AgentInternalAnswerV1Schema>;
