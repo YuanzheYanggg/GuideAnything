@@ -5,8 +5,10 @@ import {
   ConversationDetailV1Schema,
   ConversationSummaryV1Schema,
   CreateConversationRequestV1Schema,
+  AgentMessageAcceptedV1Schema,
   ReferenceResolutionV1Schema,
   SendConversationMessageRequestV1Schema,
+  SendGlobalConversationMessageRequestV1Schema,
 } from './conversation-api';
 import { AgentRunEventV1Schema, PublicRoutePlanV1Schema } from './agent-runtime';
 
@@ -72,6 +74,36 @@ describe('conversation API contracts', () => {
     }).success).toBe(false);
   });
 
+  it('keeps global messages Santexwell-only with no attachments or workspace context', () => {
+    const base = {
+      clientMessageId: 'client-global-1',
+      text: '花式纱有哪些分类？',
+      sources: {
+        workspaceFlows: false as const,
+        workspaceDocuments: false as const,
+        sessionAttachments: false as const,
+        santexwell: true as const,
+      },
+      attachmentIds: [],
+    };
+    expect(SendGlobalConversationMessageRequestV1Schema.safeParse({
+      ...base,
+      selectedContext: { kind: 'KNOWLEDGE_FRAGMENT', documentId: 'document-1', fragmentId: 'fragment-1' },
+    }).success).toBe(true);
+    expect(SendGlobalConversationMessageRequestV1Schema.safeParse({
+      ...base,
+      selectedContext: { kind: 'FLOW_NODE', snapshotId: 'snapshot-1', nodeId: 'approve' },
+    }).success).toBe(false);
+    expect(SendGlobalConversationMessageRequestV1Schema.safeParse({
+      ...base,
+      attachmentIds: ['attachment-1'],
+    }).success).toBe(false);
+    expect(SendGlobalConversationMessageRequestV1Schema.safeParse({
+      ...base,
+      sources: { ...base.sources, sessionAttachments: true },
+    }).success).toBe(false);
+  });
+
   it('separates user text from committed assistant answers', () => {
     const detail = ConversationDetailV1Schema.parse({
       conversation: {
@@ -131,6 +163,7 @@ describe('conversation API contracts', () => {
       tasks: [
         { id: 'flow', label: '检查当前流程', sourceKind: 'WORKSPACE_FLOW' },
         { id: 'vault', label: '补充知识库依据', sourceKind: 'SANTEXWELL' },
+        { id: 'reduce', label: '汇总已验证结果', sourceKind: 'REDUCE' },
       ],
     });
     expect(plan).not.toHaveProperty('contextAssessment');
@@ -187,6 +220,126 @@ describe('conversation API contracts', () => {
     expect(run).not.toHaveProperty('routeDecision');
   });
 
+  it('rejects mismatched accepted runs and impossible run states', () => {
+    const message = {
+      id: 'message-user',
+      role: 'USER' as const,
+      clientMessageId: 'client-message-1',
+      content: '检查当前节点。',
+      sources: {
+        workspaceFlows: true,
+        workspaceDocuments: false,
+        sessionAttachments: false,
+        santexwell: false,
+      },
+      createdAt: now,
+    };
+    const run = {
+      id: 'run-1',
+      conversationId: 'conversation-1',
+      initiatingMessageId: message.id,
+      runSequence: 1,
+      planVersion: 1,
+      route: null,
+      status: 'QUEUED' as const,
+      sources: message.sources,
+      lastEventSequence: 0,
+      createdAt: now,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: now,
+      error: null,
+    };
+    expect(AgentMessageAcceptedV1Schema.safeParse({
+      message,
+      run,
+      eventsPath: '/agent-runs/run-1/events',
+    }).success).toBe(true);
+    expect(AgentMessageAcceptedV1Schema.safeParse({
+      message,
+      run: { ...run, initiatingMessageId: 'other-message' },
+      eventsPath: '/agent-runs/run-1/events',
+    }).success).toBe(false);
+    expect(AgentMessageAcceptedV1Schema.safeParse({
+      message,
+      run: { ...run, sources: { ...run.sources, santexwell: true } },
+      eventsPath: '/agent-runs/run-1/events',
+    }).success).toBe(false);
+    expect(AgentRunSnapshotV1Schema.safeParse({
+      ...run,
+      route: 'FOCUSED',
+      publicPlan: {
+        route: 'DIRECT', userFacingPlan: '错误路线', executionMode: 'SEQUENTIAL', tasks: [],
+      },
+    }).success).toBe(false);
+    expect(AgentRunSnapshotV1Schema.safeParse({
+      ...run,
+      status: 'COMPLETED',
+      completedAt: null,
+    }).success).toBe(false);
+    expect(AgentRunSnapshotV1Schema.safeParse({
+      ...run,
+      status: 'COMPLETED',
+      completedAt: now,
+      error: { code: 'SHOULD_NOT_EXIST', message: '不应存在', retryable: false },
+    }).success).toBe(false);
+  });
+
+  it('binds detail runs and global message sources to the conversation', () => {
+    const globalConversation = {
+      id: 'conversation-global',
+      scope: 'GLOBAL_SANTEXWELL' as const,
+      workspaceId: null,
+      title: '全局问答',
+      status: 'ACTIVE' as const,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const globalUserMessage = {
+      id: 'message-global',
+      role: 'USER' as const,
+      clientMessageId: 'client-global',
+      content: '问题',
+      sources: {
+        workspaceFlows: false,
+        workspaceDocuments: false,
+        sessionAttachments: false,
+        santexwell: true,
+      },
+      createdAt: now,
+    };
+    expect(ConversationDetailV1Schema.safeParse({
+      conversation: globalConversation,
+      messages: [{
+        ...globalUserMessage,
+        sources: { ...globalUserMessage.sources, workspaceFlows: true },
+      }],
+      latestRun: null,
+      attachments: [],
+    }).success).toBe(false);
+    expect(ConversationDetailV1Schema.safeParse({
+      conversation: globalConversation,
+      messages: [globalUserMessage],
+      latestRun: {
+        id: 'run-other',
+        conversationId: 'other-conversation',
+        initiatingMessageId: globalUserMessage.id,
+        runSequence: 1,
+        planVersion: 1,
+        route: null,
+        status: 'QUEUED',
+        sources: globalUserMessage.sources,
+        lastEventSequence: 0,
+        createdAt: now,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: now,
+        error: null,
+      },
+      attachments: [],
+    }).success).toBe(false);
+  });
+
   it('allows only safe app-local reference destinations', () => {
     const resolved = ReferenceResolutionV1Schema.parse({
       status: 'VALID',
@@ -207,6 +360,8 @@ describe('conversation API contracts', () => {
       '/api/private',
       '/knowledge/santexwell\\secret',
       '/knowledge/santexwell?token=secret',
+      '/api/../versions/version-1/learn?nodeId=approve',
+      '/api/%2e%2e/knowledge/santexwell?document=document-1',
     ]) {
       expect(ReferenceResolutionV1Schema.safeParse({
         status: 'VALID',
@@ -217,6 +372,23 @@ describe('conversation API contracts', () => {
         target: { kind: 'SANTEXWELL_FRAGMENT', href },
       }).success, href).toBe(false);
     }
+
+    expect(ReferenceResolutionV1Schema.safeParse({
+      status: 'VALID',
+      referenceId: 'reference-wrong-source',
+      source: 'SANTEXWELL',
+      title: '错误映射',
+      excerpt: '错误映射。',
+      target: { kind: 'PUBLISHED_FLOW_NODE', href: '/versions/version-1/learn?nodeId=approve' },
+    }).success).toBe(false);
+    expect(ReferenceResolutionV1Schema.safeParse({
+      status: 'VALID',
+      referenceId: 'reference-conversation',
+      source: 'PRIOR_CONVERSATION',
+      title: '历史对话',
+      excerpt: '历史结论。',
+      target: { kind: 'CONVERSATION_MESSAGE', href: '/knowledge/santexwell?conversation=conversation-1' },
+    }).success).toBe(false);
 
     expect(ReferenceResolutionV1Schema.parse({
       status: 'INVALID',

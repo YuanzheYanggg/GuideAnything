@@ -8,6 +8,7 @@ import {
   BridgeEventV1Schema,
   BridgeRequestV1Schema,
   CitationV1Schema,
+  PublicRoutePlanV1Schema,
   PublicTaskFindingV1Schema,
   RouteBudgetV1Schema,
   RouteDecisionV1Schema,
@@ -477,6 +478,28 @@ describe('agent runtime contracts', () => {
     });
 
     expect(JSON.parse(JSON.stringify(event))).toEqual(event);
+  });
+
+  it('keeps public route plans topologically consistent', () => {
+    expect(PublicRoutePlanV1Schema.safeParse({
+      route: 'DIRECT',
+      userFacingPlan: '直接检查当前上下文。',
+      executionMode: 'PARALLEL',
+      tasks: [
+        { id: 'same', label: '任务一', sourceKind: 'WORKSPACE_FLOW' },
+        { id: 'same', label: '任务二', sourceKind: 'SANTEXWELL' },
+      ],
+    }).success).toBe(false);
+    expect(PublicRoutePlanV1Schema.safeParse({
+      route: 'COMPOSITE',
+      userFacingPlan: '并行检查后汇总。',
+      executionMode: 'PARALLEL',
+      tasks: [
+        { id: 'flow', label: '检查流程', sourceKind: 'WORKSPACE_FLOW' },
+        { id: 'vault', label: '检查知识库', sourceKind: 'SANTEXWELL' },
+        { id: 'reduce', label: '汇总结论', sourceKind: 'REDUCE' },
+      ],
+    }).success).toBe(true);
   });
 
   it('rejects invalid event phases, sequences, and payloads', () => {

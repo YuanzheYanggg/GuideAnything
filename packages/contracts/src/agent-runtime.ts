@@ -76,7 +76,35 @@ export const PublicRoutePlanV1Schema = z.object({
   userFacingPlan: z.string().min(1).max(5_000),
   executionMode: z.enum(['SEQUENTIAL', 'PARALLEL']),
   tasks: z.array(PublicRoutePlanTaskV1Schema).max(5),
-}).strict();
+}).strict().superRefine((plan, context) => {
+  const taskIds = new Set<string>();
+  plan.tasks.forEach((task, index) => {
+    if (taskIds.has(task.id)) {
+      context.addIssue({ code: 'custom', path: ['tasks', index, 'id'], message: '公开计划任务 ID 必须唯一' });
+    }
+    taskIds.add(task.id);
+  });
+  const workerCount = plan.tasks.filter((task) => task.sourceKind !== 'REDUCE').length;
+  const reducerCount = plan.tasks.length - workerCount;
+  if ((plan.route === 'DIRECT' || plan.route === 'FOCUSED') && plan.executionMode !== 'SEQUENTIAL') {
+    context.addIssue({ code: 'custom', path: ['executionMode'], message: '直接或聚焦路线必须顺序执行' });
+  }
+  if ((plan.route === 'COMPOSITE' || plan.route === 'OPEN_RESEARCH') && plan.executionMode !== 'PARALLEL') {
+    context.addIssue({ code: 'custom', path: ['executionMode'], message: '复合或开放研究路线必须并行执行' });
+  }
+  if (plan.route === 'DIRECT' && (workerCount > 1 || reducerCount !== 0)) {
+    context.addIssue({ code: 'custom', path: ['tasks'], message: 'DIRECT 公开计划最多一个工作任务且不能包含汇总任务' });
+  }
+  if (plan.route === 'FOCUSED' && (workerCount !== 1 || reducerCount !== 0)) {
+    context.addIssue({ code: 'custom', path: ['tasks'], message: 'FOCUSED 公开计划必须只有一个工作任务且不能包含汇总任务' });
+  }
+  if (plan.route === 'COMPOSITE' && (workerCount < 2 || workerCount > 3 || reducerCount !== 1)) {
+    context.addIssue({ code: 'custom', path: ['tasks'], message: 'COMPOSITE 公开计划必须有二至三个工作任务和一个汇总任务' });
+  }
+  if (plan.route === 'OPEN_RESEARCH' && (workerCount < 2 || workerCount > 4 || reducerCount !== 1)) {
+    context.addIssue({ code: 'custom', path: ['tasks'], message: 'OPEN_RESEARCH 公开计划必须有二至四个工作任务和一个汇总任务' });
+  }
+});
 
 export const RouteDecisionV1Schema = z.object({
   intent: z.string().min(1).max(2_000),
