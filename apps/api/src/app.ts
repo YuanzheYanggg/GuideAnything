@@ -7,6 +7,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { registerArtifactRoutes } from './modules/artifacts/routes';
 import { registerAuthRoutes } from './modules/auth/routes';
+import { registerConversationAttachmentRoutes } from './modules/conversation-attachments/routes';
 import { registerConversationRoutes, type ConversationRouteRuntime } from './modules/conversations/routes';
 import { registerGuideRoutes } from './modules/guides/routes';
 import { registerMediaRoutes } from './modules/media/routes';
@@ -60,9 +61,21 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.get('/api/health', async () => ({ status: 'ok' }));
   await registerAuthRoutes(app, options.database);
   await registerArtifactRoutes(app, options.database);
-  if (options.agentRuntime) await registerConversationRoutes(app, options.database, options.agentRuntime);
+  if (options.agentRuntime) {
+    await registerConversationRoutes(
+      app,
+      options.database,
+      options.agentRuntime,
+      options.uploadDir ?? resolve('data/uploads'),
+    );
+  }
   await registerGuideRoutes(app, options.database);
   await registerKnowledgeRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
+  await registerConversationAttachmentRoutes(
+    app,
+    options.database,
+    options.uploadDir ?? resolve('data/uploads'),
+  );
   await registerMediaRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
   await registerPersonalRoutes(app, options.database);
   await registerSearchRoutes(app, options.database);

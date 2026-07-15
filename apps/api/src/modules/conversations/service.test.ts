@@ -96,6 +96,46 @@ describe('ConversationService', () => {
       sources: sources({ sessionAttachments: true }),
       attachmentIds: ['attachment-1'],
     })).toThrowError(expect.objectContaining({ statusCode: 400, code: 'ATTACHMENT_NOT_READY' }));
+    expect(() => service.sendWorkspace('owner-1', 'workspace-1', conversation.id, {
+      clientMessageId: 'client-attachment-empty',
+      text: '附件来源不能空开',
+      sources: sources({ sessionAttachments: true }),
+      attachmentIds: [],
+    })).toThrowError(expect.objectContaining({ statusCode: 400, code: 'ATTACHMENT_SELECTION_REQUIRED' }));
+  });
+
+  it('uses the canonical attachment projection for dynamic and failed states', () => {
+    const conversation = service.createWorkspace('owner-1', 'workspace-1', '失败附件');
+    const now = '2026-07-15T00:00:00.000Z';
+    database.prepare(
+      `INSERT INTO knowledge_sources (
+        id, scope, kind, workspace_id, conversation_id, created_by, status, revision,
+        config_json, created_at, updated_at
+      ) VALUES ('source-failed', 'SESSION', 'SESSION_ATTACHMENT', NULL, ?, 'owner-1',
+                'FAILED', 'revision-failed', '{}', ?, ?)`,
+    ).run(conversation.id, now, now);
+    database.prepare(
+      `INSERT INTO knowledge_documents (
+        id, source_id, flow_snapshot_id, relative_locator, title, checksum, revision,
+        parse_status, metadata_json, created_at, updated_at
+      ) VALUES ('document-failed', 'source-failed', NULL, 'failed.pdf', '失败.pdf',
+                'revision-failed', 'revision-failed', 'FAILED',
+                '{"sourceKind":"SESSION_ATTACHMENT","failureCode":"DOCUMENT_NO_TEXT"}', ?, ?)`,
+    ).run(now, now);
+    database.prepare(
+      `INSERT INTO conversation_attachments (
+        id, conversation_id, owner_id, source_id, original_name, mime_type, size,
+        storage_key, status, expires_at, created_at, updated_at
+      ) VALUES ('attachment-failed', ?, 'owner-1', 'source-failed', '失败.pdf',
+                'application/pdf', 10, 'conversations/fixture/failed.pdf', 'FAILED',
+                '2026-07-22T00:00:00.000Z', ?, ?)`,
+    ).run(conversation.id, now, now);
+
+    expect(service.readWorkspace('owner-1', 'workspace-1', conversation.id).attachments).toEqual([
+      expect.objectContaining({
+        id: 'attachment-failed', status: 'FAILED', failureMessage: '文档中没有可检索文本。',
+      }),
+    ]);
   });
 
   it('validates selected flow context against the conversation workspace', () => {

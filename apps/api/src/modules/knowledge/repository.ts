@@ -696,8 +696,23 @@ function documentMatchesScope(database: DatabaseSync, row: SearchRow, scope: Kno
 function canReadSessionAttachment(database: DatabaseSync, row: SearchRow, scope: KnowledgeSearchScope): boolean {
   if (!scope.userId || !scope.conversationId || row.conversation_id !== scope.conversationId) return false;
   return Boolean(database.prepare(
-    `SELECT 1 FROM conversations WHERE id = ? AND owner_id = ?`,
-  ).get(row.conversation_id, scope.userId));
+    `SELECT 1
+     FROM conversations AS conversation
+     JOIN workspaces AS workspace
+       ON workspace.id = conversation.workspace_id AND workspace.status = 'ACTIVE'
+     JOIN workspace_members AS member
+       ON member.workspace_id = conversation.workspace_id AND member.user_id = conversation.owner_id
+     JOIN conversation_attachments AS attachment
+       ON attachment.conversation_id = conversation.id
+      AND attachment.owner_id = conversation.owner_id
+      AND attachment.source_id = ?
+     WHERE conversation.id = ?
+       AND conversation.owner_id = ?
+       AND conversation.scope = 'WORKSPACE'
+       AND conversation.status = 'ACTIVE'
+       AND attachment.status = 'READY'
+       AND attachment.expires_at > ?`,
+  ).get(row.source_id, row.conversation_id, scope.userId, new Date().toISOString()));
 }
 
 function canReadFlow(database: DatabaseSync, documentId: string, scope: KnowledgeSearchScope): boolean {

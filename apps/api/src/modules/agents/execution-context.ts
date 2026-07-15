@@ -125,7 +125,10 @@ function requireAttachments(
   sources: SourceOptionsV1,
   now: Date,
 ): void {
-  if (attachmentIds.length === 0) return;
+  if (attachmentIds.length === 0) {
+    if (sources.sessionAttachments) throw new Error('启用会话附件来源时必须选择至少一个附件');
+    return;
+  }
   if (!sources.sessionAttachments) throw new Error('本轮未启用会话附件');
   const placeholders = attachmentIds.map(() => '?').join(', ');
   const row = database.prepare(

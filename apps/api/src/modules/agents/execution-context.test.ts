@@ -87,6 +87,29 @@ describe('loadAgentRunExecutionContext', () => {
     ).run();
     expect(() => loadAgentRunExecutionContext(database, queued.accepted.run.id)).toThrow(/附件/u);
   });
+
+  it('rejects a persisted attachment source switch without selected attachment ids', () => {
+    const conversation = createConversation(database, {
+      scope: 'WORKSPACE', workspaceId: 'workspace-1', ownerId: 'owner-1', title: '空附件来源',
+    });
+    const queued = enqueueConversationRun(database, {
+      conversationId: conversation.id,
+      ownerId: 'owner-1',
+      request: {
+        clientMessageId: 'client-empty-attachment-source',
+        text: '不能扩大到不存在的附件来源。',
+        sources: {
+          workspaceFlows: false,
+          workspaceDocuments: false,
+          sessionAttachments: true,
+          santexwell: false,
+        },
+        attachmentIds: [],
+      },
+    });
+
+    expect(() => loadAgentRunExecutionContext(database, queued.accepted.run.id)).toThrow(/选择.*附件/u);
+  });
 });
 
 function seedWorkspaceRun(database: DatabaseSync): { conversationId: string; runId: string } {

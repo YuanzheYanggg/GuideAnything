@@ -11,6 +11,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 
 import { httpError } from '../../lib/http-error';
+import { ConversationAttachmentService } from '../conversation-attachments/service';
 import { RunEventBroker, streamPersistedRunEvents } from './events';
 import {
   getRunSnapshotForOwner,
@@ -42,8 +43,12 @@ export async function registerConversationRoutes(
   app: FastifyInstance,
   database: DatabaseSync,
   runtime: ConversationRouteRuntime,
+  uploadRoot: string,
 ): Promise<void> {
-  const service = new ConversationService(database);
+  const service = new ConversationService(
+    database,
+    new ConversationAttachmentService(database, uploadRoot),
+  );
 
   app.get('/api/knowledge/santexwell/conversations', {
     preHandler: app.authenticateRequest,

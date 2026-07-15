@@ -3,7 +3,6 @@ import {
   AgentMessageAcceptedV1Schema,
   AgentRunSnapshotV1Schema,
   ConversationAssistantMessageV1Schema,
-  ConversationAttachmentSummaryV1Schema,
   ConversationDetailV1Schema,
   ConversationSummaryV1Schema,
   ConversationUserMessageV1Schema,
@@ -23,6 +22,8 @@ import {
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
+
+import { listConversationAttachments } from '../conversation-attachments/repository';
 
 export interface CreateConversationInput {
   scope: 'GLOBAL_SANTEXWELL' | 'WORKSPACE';
@@ -238,35 +239,11 @@ export function getConversationDetailForOwner(
      ORDER BY run.run_sequence DESC, run.id DESC
      LIMIT 1`,
   ).get(conversationId) as unknown as RunRow | undefined;
-  const attachmentRows = database.prepare(
-    `SELECT id, original_name, mime_type, size, status, expires_at, created_at, updated_at
-     FROM conversation_attachments
-     WHERE conversation_id = ? AND owner_id = ?
-     ORDER BY created_at ASC, id ASC`,
-  ).all(conversationId, ownerId) as unknown as Array<{
-    id: string;
-    original_name: string;
-    mime_type: string;
-    size: number;
-    status: string;
-    expires_at: string;
-    created_at: string;
-    updated_at: string;
-  }>;
   return ConversationDetailV1Schema.parse({
     conversation,
     messages,
     latestRun: latestRunRow ? mapRunSnapshot(latestRunRow) : null,
-    attachments: attachmentRows.map((row) => ConversationAttachmentSummaryV1Schema.parse({
-      id: row.id,
-      originalName: row.original_name,
-      mimeType: row.mime_type,
-      size: row.size,
-      status: row.status,
-      expiresAt: row.expires_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    })),
+    attachments: listConversationAttachments(database, conversationId, ownerId),
   });
 }
 

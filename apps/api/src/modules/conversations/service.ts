@@ -8,6 +8,7 @@ import {
 import type { DatabaseSync } from 'node:sqlite';
 
 import { httpError } from '../../lib/http-error';
+import { ConversationAttachmentService } from '../conversation-attachments/service';
 import { getWorkspacePermission } from '../workspaces/repository';
 import {
   createConversation,
@@ -19,7 +20,14 @@ import {
 } from './repository';
 
 export class ConversationService {
-  constructor(private readonly database: DatabaseSync) {}
+  private readonly attachmentService: ConversationAttachmentService;
+
+  constructor(
+    private readonly database: DatabaseSync,
+    attachmentService?: ConversationAttachmentService,
+  ) {
+    this.attachmentService = attachmentService ?? new ConversationAttachmentService(database, '');
+  }
 
   createGlobal(ownerId: string, title?: string) {
     return createConversation(this.database, {
@@ -100,7 +108,7 @@ export class ConversationService {
     this.requireWorkspaceAccess(ownerId, workspaceId);
     const request = SendConversationMessageRequestV1Schema.parse(untrustedRequest);
     this.requireConversation(ownerId, conversationId, 'WORKSPACE', workspaceId);
-    this.requireAttachments(ownerId, conversationId, request);
+    this.requireAttachments(ownerId, workspaceId, conversationId, request);
     this.requireSelectedContext(conversationId, workspaceId, request);
     return enqueueConversationRun(this.database, {
       conversationId,
@@ -135,26 +143,25 @@ export class ConversationService {
 
   private requireAttachments(
     ownerId: string,
+    workspaceId: string,
     conversationId: string,
     request: SendConversationMessageRequestV1,
   ): void {
-    if (request.attachmentIds.length === 0) return;
+    if (request.attachmentIds.length === 0) {
+      if (request.sources.sessionAttachments) {
+        throw httpError(400, 'ATTACHMENT_SELECTION_REQUIRED', '启用附件来源时必须选择至少一个已就绪附件');
+      }
+      return;
+    }
     if (!request.sources.sessionAttachments) {
       throw httpError(400, 'ATTACHMENT_SOURCE_DISABLED', '本轮未启用会话附件');
     }
-    const placeholders = request.attachmentIds.map(() => '?').join(', ');
-    const row = this.database.prepare(
-      `SELECT COUNT(*) AS count
-       FROM conversation_attachments
-       WHERE id IN (${placeholders})
-         AND conversation_id = ?
-         AND owner_id = ?
-         AND status = 'READY'
-         AND expires_at > ?`,
-    ).get(...request.attachmentIds, conversationId, ownerId, new Date().toISOString()) as { count: number };
-    if (row.count !== request.attachmentIds.length) {
-      throw httpError(400, 'ATTACHMENT_NOT_READY', '一个或多个会话附件不存在、未就绪或已过期');
-    }
+    this.attachmentService.requireReadyForMessage(
+      ownerId,
+      workspaceId,
+      conversationId,
+      request.attachmentIds,
+    );
   }
 
   private requireSelectedContext(
