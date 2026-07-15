@@ -9,6 +9,8 @@ const STAGE_PADDING = 40;
 const GRID_COLUMN_GAP = 72;
 const EMPTY_GRID_CELL_WIDTH = 240;
 const EMPTY_GRID_CELL_HEIGHT = 104;
+const MAX_FLOW_ROW_WIDTH = 1_800;
+const FLOW_ROW_GAP_Y = 96;
 
 interface NodeSize {
   width: number;
@@ -57,6 +59,21 @@ interface GridGeometry {
 interface DecisionBranchPlacement {
   sourceId: string;
   priority: number | undefined;
+}
+
+interface RankedStageNode {
+  node: CanvasNode;
+  row: number;
+}
+
+interface WrappedRankGroup {
+  x: number;
+  width: number;
+  nodes: RankedStageNode[];
+}
+
+interface WrappedFlowRow {
+  groups: WrappedRankGroup[];
 }
 
 export interface HierarchyLayoutReport {
@@ -121,7 +138,8 @@ export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutRe
   const stages = document.stages ?? [];
   const lanes = orderedLanes(document.lanes ?? []);
   const positioned = placePrimary(layoutNodes, ranked.rankById, stages, contentByParent, document.edges);
-  const withContent = placeContent(remainingContent, positioned, contentByParent);
+  const withExpandedSubguides = placeExpandedSubguideArtifacts(document.nodes, positioned);
+  const withContent = placeContent(remainingContent, withExpandedSubguides, contentByParent);
   const byId = new Map(withContent.map((node) => [node.id, node]));
   const next = { ...document, nodes: document.nodes.map((node) => byId.get(node.id) ?? node) };
 
@@ -323,14 +341,16 @@ function buildPrimaryGraph(edges: CanvasEdge[], primaryIds: Set<string>): Primar
 
 function rankFromEntry(entryNodeId: string | undefined, primary: CanvasNode[], graph: PrimaryGraph): RankedPrimaryNodes {
   const primaryIds = new Set(primary.map((node) => node.id));
-  const roots = entryNodeId && primaryIds.has(entryNodeId)
+  let roots = entryNodeId && primaryIds.has(entryNodeId)
     ? [entryNodeId]
     : primary.filter((node) => graph.incomingCount.get(node.id) === 0).map((node) => node.id);
-  const reachable = reachableFrom(roots, graph.outgoing);
+  if (roots.length === 0 && primary.length > 0) roots = [primary[0]!.id];
+  const acyclicOutgoing = withoutDepthFirstBackEdges(primary, roots, graph.outgoing);
+  const reachable = reachableFrom(roots, acyclicOutgoing);
   const inDegree = new Map<string, number>();
   reachable.forEach((id) => inDegree.set(id, 0));
   reachable.forEach((id) => {
-    graph.outgoing.get(id)!.forEach((target) => {
+    acyclicOutgoing.get(id)!.forEach((target) => {
       if (reachable.has(target)) inDegree.set(target, inDegree.get(target)! + 1);
     });
   });
@@ -351,7 +371,7 @@ function rankFromEntry(entryNodeId: string | undefined, primary: CanvasNode[], g
     const id = queue[index]!;
     dequeued.add(id);
     const rank = rankById.get(id)!;
-    graph.outgoing.get(id)!.forEach((target) => {
+    acyclicOutgoing.get(id)!.forEach((target) => {
       if (!reachable.has(target)) return;
       if (!rootIds.has(target) && !dequeued.has(target)) {
         rankById.set(target, Math.max(rankById.get(target) ?? 0, rank + 1));
@@ -379,6 +399,41 @@ function rankFromEntry(entryNodeId: string | undefined, primary: CanvasNode[], g
     cycleNodeIds: primary.filter((node) => cycleIds.has(node.id)).map((node) => node.id),
     unconnectedPrimaryIds: primary.filter((node) => !reachable.has(node.id)).map((node) => node.id),
   };
+}
+
+function withoutDepthFirstBackEdges(
+  primary: CanvasNode[],
+  roots: string[],
+  outgoing: Map<string, string[]>,
+): Map<string, string[]> {
+  const result = new Map(primary.map((node) => [node.id, [] as string[]]));
+  const state = new Map<string, 'visiting' | 'finished'>();
+  const traversalOrder = [...roots, ...primary.map((node) => node.id).filter((id) => !roots.includes(id))];
+
+  traversalOrder.forEach((root) => {
+    if (state.has(root)) return;
+    state.set(root, 'visiting');
+    const stack: Array<{ id: string; nextIndex: number }> = [{ id: root, nextIndex: 0 }];
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      const targets = outgoing.get(frame.id)!;
+      if (frame.nextIndex >= targets.length) {
+        state.set(frame.id, 'finished');
+        stack.pop();
+        continue;
+      }
+      const target = targets[frame.nextIndex]!;
+      frame.nextIndex += 1;
+      if (state.get(target) === 'visiting') continue;
+      result.get(frame.id)!.push(target);
+      if (!state.has(target)) {
+        state.set(target, 'visiting');
+        stack.push({ id: target, nextIndex: 0 });
+      }
+    }
+  });
+
+  return result;
 }
 
 function reachableFrom(roots: string[], outgoing: Map<string, string[]>): Set<string> {
@@ -509,28 +564,29 @@ function placePrimary(primary: CanvasNode[], rankById: Map<string, number>, stag
       const ranks = inStage.map((node) => rankById.get(node.id)!);
       const minimumRank = Math.min(...ranks);
       const localRankById = new Map(inStage.map((node) => [node.id, rankById.get(node.id)! - minimumRank]));
-      const rankX = localRankX(inStage, localRankById);
-      const rowHeight = Math.max(...inStage.map((node) => gridOccupiedHeight(node, contentByParent)), EMPTY_GRID_CELL_HEIGHT);
-      const occupiedRows = new Set<number>();
-      const byRank = new Map<number, CanvasNode[]>();
-      inStage.forEach((node) => {
-        const rank = localRankById.get(node.id)!;
-        const ranked = byRank.get(rank) ?? [];
-        ranked.push(node);
-        byRank.set(rank, ranked);
-      });
-      [...byRank.keys()].sort((left, right) => left - right).forEach((rank) => {
-        const usedAtRank = new Set<number>();
-        orderRankNodes(byRank.get(rank)!, branchesByTarget).forEach((node) => {
-          let row = branchRows.get(node.id) ?? 0;
-          while (usedAtRank.has(row)) row += 1;
-          usedAtRank.add(row);
-          occupiedRows.add(row);
-          const positioned = { ...node, position: { x: rankX.get(rank)!, y: stageY + row * (rowHeight + NODE_GAP_Y) } };
+      const flowRows = wrapStageRanks(inStage, localRankById, branchesByTarget, branchRows);
+      let flowRowY = stageY;
+      flowRows.forEach((flowRow) => {
+        const heightByNodeRow = new Map<number, number>();
+        flowRow.groups.forEach((group) => group.nodes.forEach(({ node, row }) => {
+          heightByNodeRow.set(row, Math.max(heightByNodeRow.get(row) ?? 0, gridOccupiedHeight(node, contentByParent)));
+        }));
+        const maximumNodeRow = Math.max(0, ...heightByNodeRow.keys());
+        const yByNodeRow = new Map<number, number>();
+        let flowRowHeight = 0;
+        for (let row = 0; row <= maximumNodeRow; row += 1) {
+          yByNodeRow.set(row, flowRowHeight);
+          const rowHeight = heightByNodeRow.get(row) ?? 0;
+          if (rowHeight > 0) flowRowHeight += rowHeight + NODE_GAP_Y;
+        }
+        flowRowHeight = Math.max(EMPTY_GRID_CELL_HEIGHT, flowRowHeight > 0 ? flowRowHeight - NODE_GAP_Y : 0);
+        flowRow.groups.forEach((group) => group.nodes.forEach(({ node, row }) => {
+          const positioned = { ...node, position: { x: group.x, y: flowRowY + (yByNodeRow.get(row) ?? 0) } };
           nodes.push(positioned);
           byId.set(node.id, positioned);
-          stageHeight = Math.max(stageHeight, positioned.position.y - stageY + gridOccupiedHeight(node, contentByParent));
-        });
+        }));
+        stageHeight = flowRowY - stageY + flowRowHeight;
+        flowRowY += flowRowHeight + FLOW_ROW_GAP_Y;
       });
     }
     if (stageId !== null && stageHeight === 0) stageHeight = EMPTY_GRID_CELL_HEIGHT;
@@ -538,6 +594,51 @@ function placePrimary(primary: CanvasNode[], rankById: Map<string, number>, stag
     if (stageHeight > 0) stageY += stageHeight + STAGE_GAP_Y;
   });
   return { nodes, byId, unassignedContentX: 0, unassignedContentY, contentPlacement: 'below' };
+}
+
+function wrapStageRanks(
+  nodes: CanvasNode[],
+  rankById: Map<string, number>,
+  branchesByTarget: Map<string, DecisionBranchPlacement>,
+  branchRows: Map<string, number>,
+): WrappedFlowRow[] {
+  const byRank = new Map<number, CanvasNode[]>();
+  nodes.forEach((node) => {
+    const rank = rankById.get(node.id)!;
+    const ranked = byRank.get(rank) ?? [];
+    ranked.push(node);
+    byRank.set(rank, ranked);
+  });
+
+  const groups = [...byRank.keys()].sort((left, right) => left - right).map((rank) => {
+    const usedRows = new Set<number>();
+    const rankedNodes = orderRankNodes(byRank.get(rank)!, branchesByTarget).map((node) => {
+      let row = branchRows.get(node.id) ?? 0;
+      while (usedRows.has(row)) row += 1;
+      usedRows.add(row);
+      return { node, row };
+    });
+    return {
+      x: 0,
+      width: Math.max(...rankedNodes.map(({ node }) => nodeSize(node).width)),
+      nodes: rankedNodes,
+    };
+  });
+
+  const rows: WrappedFlowRow[] = [];
+  let current: WrappedFlowRow = { groups: [] };
+  let nextX = 0;
+  groups.forEach((group) => {
+    if (current.groups.length > 0 && nextX + group.width > MAX_FLOW_ROW_WIDTH) {
+      rows.push(current);
+      current = { groups: [] };
+      nextX = 0;
+    }
+    current.groups.push({ ...group, x: nextX });
+    nextX += group.width + BASE_RANK_GAP;
+  });
+  if (current.groups.length > 0) rows.push(current);
+  return rows;
 }
 
 function localRankX(nodes: CanvasNode[], rankById: Map<string, number>): Map<number, number> {
@@ -747,6 +848,40 @@ function placeContent(content: CanvasNode[], positioned: PrimaryPlacement, conte
     nextYByParent.set(parent.id, contentY + nodeSize(node).height + CONTENT_GAP_Y);
   });
   return nodes;
+}
+
+function placeExpandedSubguideArtifacts(allNodes: CanvasNode[], positioned: PrimaryPlacement): PrimaryPlacement {
+  const references = positioned.nodes
+    .filter((node): node is CanvasNode<'subguide'> => node.type === 'subguide' && Boolean(node.data.expanded))
+    .sort(compareNodes);
+  if (references.length === 0) return positioned;
+
+  const nodes = [...positioned.nodes];
+  const byId = new Map(positioned.byId);
+  let nextY = positioned.unassignedContentY;
+  references.forEach((reference) => {
+    const derived = allNodes.filter((node) => !node.hidden && node.source?.referenceNodeId === reference.id);
+    if (derived.length === 0) return;
+    const minimumX = Math.min(...derived.map((node) => node.position.x));
+    const minimumY = Math.min(...derived.map((node) => node.position.y));
+    const maximumY = Math.max(...derived.map((node) => node.position.y + nodeSize(node).height));
+    const offsetX = positioned.unassignedContentX - minimumX;
+    const offsetY = nextY - minimumY;
+    derived.forEach((node) => {
+      const moved = {
+        ...node,
+        position: {
+          x: node.position.x + offsetX,
+          y: node.position.y + offsetY,
+        },
+      };
+      nodes.push(moved);
+      byId.set(moved.id, moved);
+    });
+    nextY += maximumY - minimumY + STAGE_GAP_Y;
+  });
+
+  return { ...positioned, nodes, byId, unassignedContentY: nextY };
 }
 
 function reportFor(

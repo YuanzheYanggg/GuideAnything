@@ -51,6 +51,20 @@ describe('orthogonal edge routing', () => {
     expectOrthogonal(route.points);
   });
 
+  it('uses the gap between rows when a forward flow wraps back to the left', () => {
+    const result = routeCanvasEdges(document(
+      [process('row-end', 1_200, 0), process('next-row', 0, 320)],
+      [edge('wrapped', 'row-end', 'next-row')],
+    ));
+    const route = result.routesByEdgeId.get('wrapped')!;
+
+    expect(route.kind).toBe('WRAP');
+    expect(route.sourceSide).toBe('BOTTOM');
+    expect(route.targetSide).toBe('TOP');
+    expect(result.report.backEdgeIds).toEqual([]);
+    expectOrthogonal(route.points);
+  });
+
   it('routes backward edges through the outer right gutter', () => {
     const nodes = [process('first', 0, 0), process('last', 640, 0), process('middle', 320, 0)];
     const result = routeCanvasEdges(document(nodes, [edge('back', 'last', 'first')]));
@@ -60,6 +74,17 @@ describe('orthogonal edge routing', () => {
     expect(Math.max(...route.points.map((point) => point.x))).toBeGreaterThan(840);
     expect(result.report.backEdgeIds).toEqual(['back']);
     expectNoNonEndpointIntersection(route, nodes, ['last', 'first']);
+  });
+
+  it('returns through the gap above the target when a tall node blocks a top-down back route', () => {
+    const blocker = { ...process('blocker', 600, 180), size: { width: 500, height: 500 } };
+    const nodes = [blocker, process('target', 700, 800), process('source', 1_000, 1_100)];
+    const result = routeCanvasEdges(document(nodes, [edge('feedback', 'source', 'target')]));
+    const route = result.routesByEdgeId.get('feedback')!;
+
+    expect(route.kind).toBe('BACK');
+    expect(result.report.collisionEdgeIds).toEqual([]);
+    expectNoNonEndpointIntersection(route, nodes, ['source', 'target']);
   });
 
   it('uses stable parallel offsets instead of completely overlapping shared channels', () => {
