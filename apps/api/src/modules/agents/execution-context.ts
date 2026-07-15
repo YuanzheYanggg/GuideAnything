@@ -24,6 +24,7 @@ interface ExecutionRow {
   message_sources_json: string;
   selected_context_json: string | null;
   attachment_ids_json: string;
+  steering_instruction: string | null;
 }
 
 export function loadAgentRunExecutionContext(
@@ -38,7 +39,12 @@ export function loadAgentRunExecutionContext(
             conversation.status AS conversation_status,
             message.content AS message_text,
             message.source_options_json AS message_sources_json,
-            message.selected_context_json, message.attachment_ids_json
+            message.selected_context_json, message.attachment_ids_json,
+            (
+              SELECT steer.instruction FROM agent_run_steers AS steer
+              WHERE steer.run_id = run.id AND steer.plan_version = run.plan_version
+              LIMIT 1
+            ) AS steering_instruction
      FROM agent_runs AS run
      JOIN conversations AS conversation ON conversation.id = run.conversation_id
      JOIN conversation_messages AS message
@@ -104,6 +110,7 @@ export function loadAgentRunExecutionContext(
     planVersion: row.plan_version,
     status: AgentRunStatusV1Schema.parse(row.run_status),
     text: row.message_text,
+    ...(row.steering_instruction ? { steeringInstruction: row.steering_instruction } : {}),
     sources: runSources,
     ...(selectedContext ? { selectedContext } : {}),
     attachmentIds,

@@ -68,6 +68,21 @@ export class AgentRunEventStore {
     this.broker.publish(event);
     return event;
   }
+
+  appendFailure(
+    runId: string,
+    payload: Extract<AgentRunEventV1, { type: 'run.failed' }>['payload'],
+  ): AgentRunEventV1 {
+    const run = getRunById(this.database, runId);
+    if (!run) throw new Error('运行不存在');
+    return this.append({
+      runId,
+      planVersion: run.plan_version,
+      phase: 'COMMITTED',
+      type: 'run.failed',
+      payload,
+    });
+  }
 }
 
 export function appendRunEvent(
@@ -234,6 +249,7 @@ class AsyncEventQueue {
 }
 
 function updateRunStateForEvent(database: DatabaseSync, event: AgentRunEventV1): void {
+  if (event.phase === 'PROVISIONAL' && event.stale) return;
   const now = event.createdAt;
   if (event.type === 'route.started') {
     database.prepare(
@@ -287,6 +303,7 @@ function assertRunEventTransition(
   run: NonNullable<ReturnType<typeof getRunById>>,
   input: AppendRunEventInput,
 ): void {
+  if (input.phase === 'PROVISIONAL' && input.planVersion < run.plan_version) return;
   if (ROUTING_EVENT_TYPES.has(input.type)) {
     const allowed = input.type === 'route.started'
       ? run.status === 'QUEUED' || run.status === 'ROUTING'

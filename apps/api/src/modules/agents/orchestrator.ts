@@ -27,7 +27,12 @@ import { z } from 'zod';
 
 import { commitValidatedAnswer } from './validator';
 import { buildPromptHarness } from './prompt-harness';
-import { requiresDeepRouterReview } from './router';
+import {
+  assertDeepReviewTightens,
+  requiresDeepRouterReview,
+  RouterPolicyError,
+  userRequestsComprehensiveResearch,
+} from './router';
 import type { AgentRuntimeClient } from './runtime-client';
 import { RuntimeClientError } from './runtime-client';
 import { enforceSchedulePolicy, SchedulePolicyError } from './scheduler';
@@ -46,6 +51,10 @@ export type RunEventAppendInput = AgentRunEventV1 extends infer Event
 
 export interface AgentRunEventSink {
   append(input: RunEventAppendInput): unknown;
+  appendFailure(
+    runId: string,
+    payload: Extract<AgentRunEventV1, { type: 'run.failed' }>['payload'],
+  ): unknown;
 }
 
 export interface AgentRunExecutionContext {
@@ -57,6 +66,7 @@ export interface AgentRunExecutionContext {
   planVersion: number;
   status: AgentRunStatusV1;
   text: string;
+  steeringInstruction?: string;
   sources: SourceOptionsV1;
   selectedContext?: SelectedAgentContextV1;
   attachmentIds: string[];
@@ -78,6 +88,12 @@ export interface AgentRetrievalRequest {
 
 export interface AgentEvidenceRetriever {
   retrieve(request: AgentRetrievalRequest): Promise<readonly ValidatedEvidenceV1[]>;
+  isWorkspaceEvidenceSufficient?(request: {
+    context: AgentRunExecutionContext;
+    decision: RouteDecisionV1;
+    evidence: readonly ValidatedEvidenceV1[];
+    signal: AbortSignal;
+  }): boolean | Promise<boolean>;
 }
 
 export interface ResolvedAgentReference {
@@ -90,10 +106,13 @@ export interface AgentEvidenceResolver {
   resolveEvidence(
     context: AgentRunExecutionContext,
     evidence: ValidatedEvidenceV1,
+    signal?: AbortSignal,
   ): Promise<ResolvedAgentReference>;
   resolveFlowFeedback(
     context: AgentRunExecutionContext,
     feedback: AgentInternalAnswerV1['flowFeedback'][number],
+    evidence: ValidatedEvidenceV1,
+    signal?: AbortSignal,
   ): Promise<ResolvedAgentReference>;
 }
 
@@ -123,19 +142,32 @@ export interface AgentOrchestratorOptions {
   trustedHarness?: readonly string[];
   createId?: () => string;
   now?: () => Date;
+  timeouts?: Partial<AgentOrchestratorTimeouts>;
+}
+
+export interface AgentOrchestratorTimeouts {
+  routerMs: number;
+  workerMs: number;
+  reducerMs: number;
+  runMs: number;
+  cancelMs: number;
 }
 
 interface ActiveRun {
-  controller: AbortController;
+  runController: AbortController;
+  planController: AbortController;
   childIds: Set<string>;
   planVersion: number;
   committing: boolean;
   cancelReason?: string;
+  pendingSteerVersion?: number;
+  timedOut: boolean;
 }
 
 interface RetrievalState {
   evidenceByTaskId: Map<string, ValidatedEvidenceV1[]>;
   allEvidence: ValidatedEvidenceV1[];
+  skippedTaskIds: Set<string>;
 }
 
 interface AnswerExecution {
@@ -155,8 +187,14 @@ class AgentOrchestrationError extends Error {
 }
 
 const PUBLIC_ERROR_CODE = /^[A-Z0-9_]{1,80}$/u;
-const COMPREHENSIVE_REQUEST = /(?:全面|完整|系统(?:性)?|综合|彻底|深入|开放研究)/u;
 const MAX_TRUSTED_HARNESS_ITEMS = 15;
+const DEFAULT_TIMEOUTS: AgentOrchestratorTimeouts = {
+  routerMs: 30_000,
+  workerMs: 90_000,
+  reducerMs: 90_000,
+  runMs: 240_000,
+  cancelMs: 2_000,
+};
 
 export class AgentOrchestrator {
   readonly #runtime: AgentRuntimeClient;
@@ -169,6 +207,7 @@ export class AgentOrchestrator {
   readonly #trustedHarness: readonly string[];
   readonly #createId: () => string;
   readonly #now: () => Date;
+  readonly #timeouts: AgentOrchestratorTimeouts;
   readonly #activeRuns = new Map<string, ActiveRun>();
 
   constructor(options: AgentOrchestratorOptions) {
@@ -192,6 +231,8 @@ export class AgentOrchestrator {
     this.#trustedHarness = options.trustedHarness ?? [];
     this.#createId = options.createId ?? randomUUID;
     this.#now = options.now ?? (() => new Date());
+    this.#timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
+    assertTimeouts(this.#timeouts);
   }
 
   async execute(runId: string, externalSignal?: AbortSignal): Promise<AgentRunExecutionResult> {
@@ -199,95 +240,83 @@ export class AgentOrchestrator {
       throw new AgentOrchestrationError('RUN_ALREADY_ACTIVE', '运行已经在执行。', false);
     }
     const active: ActiveRun = {
-      controller: new AbortController(),
+      runController: new AbortController(),
+      planController: new AbortController(),
       childIds: new Set(),
       planVersion: 1,
       committing: false,
+      timedOut: false,
     };
     this.#activeRuns.set(runId, active);
     const onExternalAbort = () => {
-      if (!active.committing) active.controller.abort(externalSignal?.reason);
+      if (active.committing) return;
+      active.runController.abort(externalSignal?.reason);
+      active.planController.abort(externalSignal?.reason);
     };
     externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
     if (externalSignal?.aborted) onExternalAbort();
+    const runTimeout = setTimeout(() => {
+      active.timedOut = true;
+      const error = new AgentOrchestrationError('RUN_TIMEOUT', '本次只读问答超过运行时限。', true);
+      active.runController.abort(error);
+      active.planController.abort(error);
+    }, this.#timeouts.runMs);
 
-    let context: AgentRunExecutionContext | undefined;
     try {
-      context = await this.#loadContext(runId);
-      assertExecutionContext(context, runId);
-      active.planVersion = context.planVersion;
-      throwIfAborted(active.controller.signal);
-
-      this.#append(runId, context.planVersion, 'PROVISIONAL', 'route.started', {
-        intent: conciseText(context.text, 2_000),
-      });
-      const mediumDecision = await this.#invokeRoute(
-        active,
-        context,
-        'ROUTER',
-        'MEDIUM',
-        'medium-router',
-        this.#routerPrompt(context, 'ROUTER'),
-      );
-      throwIfAborted(active.controller.signal);
-
-      const needsDeepReview = requiresDeepRouterReview(mediumDecision, {
-        requestedVaultClusters: mediumDecision.budget.maxVaultClusters,
-        userRequestedComprehensive: COMPREHENSIVE_REQUEST.test(context.text),
-        crossStagePlan: mediumDecision.complexity.scopeBreadth >= 4,
-      });
-      const finalDecision = needsDeepReview
-        ? await this.#invokeRoute(
+      while (true) {
+        const context = await runBounded(
+          () => Promise.resolve(this.#loadContext(runId)),
+          active.runController.signal,
+          this.#timeouts.runMs,
+          new AgentOrchestrationError('RUN_CONTEXT_TIMEOUT', '运行上下文读取超时。', true),
+        );
+        assertExecutionContext(context, runId);
+        active.planVersion = context.planVersion;
+        active.planController = new AbortController();
+        if (active.runController.signal.aborted) {
+          active.planController.abort(active.runController.signal.reason);
+        }
+        try {
+          return await this.#executePlan(active, context);
+        } catch (error) {
+          if (
+            active.pendingSteerVersion !== undefined
+            && active.pendingSteerVersion > context.planVersion
+            && !active.runController.signal.aborted
+          ) {
+            delete active.pendingSteerVersion;
+            await this.#cancelChildren(active);
+            continue;
+          }
+          const persistedPlanVersion = await this.#readNewerPersistedPlanVersion(
+            runId,
+            context.planVersion,
             active,
-            context,
-            'DEEP_ROUTER',
-            'HIGH',
-            'deep-router',
-            this.#routerPrompt(context, 'DEEP_ROUTER', mediumDecision),
-          )
-        : mediumDecision;
-      const scheduled = enforceSchedulePolicy(finalDecision, {
-        allowedSources: context.sources,
-        allowRawApproved: needsDeepReview,
-        configuredMaxConcurrency: this.#configuredMaxConcurrency,
-      });
-      assertAtMostThreeWorkers(scheduled);
-      const publicPlan = toPublicPlan(scheduled);
-      this.#append(runId, context.planVersion, 'PROVISIONAL', 'route.completed', {
-        route: scheduled.route,
-        userFacingPlan: scheduled.userFacingPlan,
-      });
-      this.#append(runId, context.planVersion, 'PROVISIONAL', 'plan.committed', {
-        plan: publicPlan,
-      });
-
-      const retrieval = await this.#retrieveEvidence(context, scheduled, active.controller.signal);
-      throwIfAborted(active.controller.signal);
-      const answerExecution = scheduled.budget.useReducer
-        ? await this.#executeMapReduce(active, context, scheduled, retrieval)
-        : await this.#executeFocused(active, context, scheduled, retrieval);
-      throwIfAborted(active.controller.signal);
-      const result = await this.#validateAndCommit(
-        active,
-        context,
-        answerExecution.answer,
-        answerExecution.allowedFlowEvidence,
-      );
-      return result;
+          );
+          if (persistedPlanVersion !== null) {
+            active.planVersion = persistedPlanVersion;
+            delete active.pendingSteerVersion;
+            await this.#cancelChildren(active);
+            continue;
+          }
+          throw error;
+        }
+      }
     } catch (error) {
-      if (!context) throw error;
-      if (active.controller.signal.aborted) {
-        await this.#cancelChildren(active);
-        this.#append(runId, context.planVersion, 'COMMITTED', 'run.cancelled', {
+      await this.#cancelChildren(active);
+      if (active.runController.signal.aborted && !active.timedOut) {
+        this.#append(runId, active.planVersion, 'COMMITTED', 'run.cancelled', {
           ...(active.cancelReason ? { reason: active.cancelReason } : {}),
         });
         return { status: 'CANCELLED' };
       }
-      const failure = publicFailure(error);
-      await this.#cancelChildren(active);
-      this.#append(runId, context.planVersion, 'COMMITTED', 'run.failed', failure);
+      const failure = publicFailure(
+        active.timedOut ? active.runController.signal.reason : error,
+      );
+      this.#eventStore.appendFailure(runId, failure);
       return { status: 'FAILED' };
     } finally {
+      clearTimeout(runTimeout);
       externalSignal?.removeEventListener('abort', onExternalAbort);
       this.#activeRuns.delete(runId);
     }
@@ -297,14 +326,113 @@ export class AgentOrchestrator {
     const active = this.#activeRuns.get(runId);
     if (!active || active.committing) return;
     if (reason?.trim()) active.cancelReason = conciseText(reason.trim(), 2_000);
-    active.controller.abort(new DOMException('Agent run cancelled', 'AbortError'));
+    const error = new DOMException('Agent run cancelled', 'AbortError');
+    active.runController.abort(error);
+    active.planController.abort(error);
     await this.#cancelChildren(active);
   }
 
+  isActive(runId: string): boolean {
+    return this.#activeRuns.has(runId);
+  }
+
+  async steer(runId: string, planVersion: number, instruction: string): Promise<void> {
+    const active = this.#activeRuns.get(runId);
+    if (!active || active.committing || planVersion <= active.planVersion) return;
+    if (!Number.isInteger(planVersion) || planVersion < 2 || !instruction.trim()) {
+      throw new Error('Steer 参数无效');
+    }
+    active.pendingSteerVersion = planVersion;
+    active.planVersion = planVersion;
+    active.planController.abort(new DOMException('Agent plan steered', 'AbortError'));
+    await this.#cancelChildren(active);
+  }
+
+  async #executePlan(
+    active: ActiveRun,
+    context: AgentRunExecutionContext,
+  ): Promise<{ status: 'COMPLETED'; messageId: string }> {
+    this.#appendPlan(active, context, 'PROVISIONAL', 'route.started', {
+      intent: conciseText(context.text, 2_000),
+    });
+    const mediumDecision = await this.#invokeRoute(
+      active,
+      context,
+      'ROUTER',
+      'MEDIUM',
+      'medium-router',
+      this.#routerPrompt(context, 'ROUTER'),
+    );
+    assertCurrentPlan(active, context);
+
+    const needsDeepReview = requiresDeepRouterReview(mediumDecision, {
+      requestedVaultClusters: mediumDecision.budget.maxVaultClusters,
+      userRequestedComprehensive: userRequestsComprehensiveResearch(
+        `${context.text}\n${context.steeringInstruction ?? ''}`,
+      ),
+      crossStagePlan: mediumDecision.complexity.scopeBreadth >= 4,
+    });
+    const finalDecision = needsDeepReview
+      ? await this.#invokeRoute(
+          active,
+          context,
+          'DEEP_ROUTER',
+          'HIGH',
+          'deep-router',
+          this.#routerPrompt(context, 'DEEP_ROUTER', mediumDecision),
+        )
+      : mediumDecision;
+    if (needsDeepReview) assertDeepReviewTightens(mediumDecision, finalDecision);
+    const scheduled = enforceSchedulePolicy(finalDecision, {
+      allowedSources: context.sources,
+      allowRawApproved: needsDeepReview,
+      configuredMaxConcurrency: this.#configuredMaxConcurrency,
+    });
+    assertAtMostThreeWorkers(scheduled);
+    const publicPlan = toPublicPlan(scheduled);
+    this.#appendPlan(active, context, 'PROVISIONAL', 'route.completed', {
+      route: scheduled.route,
+      userFacingPlan: scheduled.userFacingPlan,
+    });
+    this.#appendPlan(active, context, 'PROVISIONAL', 'plan.committed', { plan: publicPlan });
+
+    const retrieval = await this.#retrieveEvidence(active, context, scheduled);
+    assertCurrentPlan(active, context);
+    const answerExecution = scheduled.budget.useReducer
+      ? await this.#executeMapReduce(active, context, scheduled, retrieval)
+      : await this.#executeFocused(active, context, scheduled, retrieval);
+    assertCurrentPlan(active, context);
+    return this.#validateAndCommit(
+      active,
+      context,
+      answerExecution.answer,
+      answerExecution.allowedFlowEvidence,
+    );
+  }
+
+  async #readNewerPersistedPlanVersion(
+    runId: string,
+    previousPlanVersion: number,
+    active: ActiveRun,
+  ): Promise<number | null> {
+    if (active.runController.signal.aborted) return null;
+    try {
+      const refreshed = await runBounded(
+        () => Promise.resolve(this.#loadContext(runId)),
+        active.runController.signal,
+        Math.min(this.#timeouts.routerMs, 5_000),
+        new AgentOrchestrationError('RUN_CONTEXT_TIMEOUT', '运行上下文读取超时。', true),
+      );
+      return refreshed.planVersion > previousPlanVersion ? refreshed.planVersion : null;
+    } catch {
+      return null;
+    }
+  }
+
   async #retrieveEvidence(
+    active: ActiveRun,
     context: AgentRunExecutionContext,
     decision: RouteDecisionV1,
-    signal: AbortSignal,
   ): Promise<RetrievalState> {
     const workers = decision.tasks.filter(
       (task): task is AgentRetrievalTask => task.kind !== 'REDUCE',
@@ -317,21 +445,47 @@ export class AgentOrchestrator {
     let remainingVault = decision.budget.maxVaultDigests;
     const evidenceByTaskId = new Map<string, ValidatedEvidenceV1[]>();
     const globallySeen = new Map<string, ValidatedEvidenceV1>();
+    const skippedTaskIds = new Set<string>();
+    let workspaceSufficient: boolean | undefined;
     for (const task of ordered) {
-      throwIfAborted(signal);
+      assertCurrentPlan(active, context);
       const isVault = task.kind === 'SANTEXWELL';
+      if (isVault && workspaceSufficient === undefined && this.#retriever.isWorkspaceEvidenceSufficient) {
+        const workspaceEvidence = [...globallySeen.values()].filter((item) => item.source !== 'SANTEXWELL');
+        workspaceSufficient = workspaceEvidence.length > 0 && await runBounded(
+          (signal) => Promise.resolve(this.#retriever.isWorkspaceEvidenceSufficient!({
+            context,
+            decision,
+            evidence: workspaceEvidence,
+            signal,
+          })),
+          active.planController.signal,
+          this.#timeouts.workerMs,
+          new AgentOrchestrationError('RETRIEVAL_TIMEOUT', '工作区证据充分性判断超时。', true),
+        );
+      }
+      if (isVault && workspaceSufficient) {
+        evidenceByTaskId.set(task.id, []);
+        skippedTaskIds.add(task.id);
+        continue;
+      }
       const maxCandidates = isVault ? remainingVault : remainingWorkspace;
       const raw = maxCandidates === 0
         ? []
-        : await this.#retriever.retrieve({
-            context,
-            decision,
-            task,
-            maxCandidates,
-            maxFlowHops: task.kind === 'WORKSPACE_FLOW' ? decision.budget.maxFlowHops : 0,
-            allowRaw: isVault && decision.budget.allowRaw,
-            signal,
-          });
+        : await runBounded(
+            (signal) => this.#retriever.retrieve({
+              context,
+              decision,
+              task,
+              maxCandidates,
+              maxFlowHops: task.kind === 'WORKSPACE_FLOW' ? decision.budget.maxFlowHops : 0,
+              allowRaw: isVault && decision.budget.allowRaw,
+              signal,
+            }),
+            active.planController.signal,
+            this.#timeouts.workerMs,
+            new AgentOrchestrationError('RETRIEVAL_TIMEOUT', '证据检索超过运行时限。', true),
+          );
       const validated = raw.slice(0, maxCandidates).map((item) => ValidatedEvidenceV1Schema.parse(item));
       for (const item of validated) {
         if (item.source !== task.kind) {
@@ -355,7 +509,7 @@ export class AgentOrchestrator {
       if (isVault) remainingVault -= validated.length;
       else remainingWorkspace -= validated.length;
     }
-    return { evidenceByTaskId, allEvidence: [...globallySeen.values()] };
+    return { evidenceByTaskId, allEvidence: [...globallySeen.values()], skippedTaskIds };
   }
 
   async #executeFocused(
@@ -367,11 +521,11 @@ export class AgentOrchestrator {
     const worker = decision.tasks.find((task) => task.kind !== 'REDUCE');
     const candidates = worker ? retrieval.evidenceByTaskId.get(worker.id) ?? [] : [];
     if (worker) {
-      this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'task.started', {
+      this.#appendPlan(active, context, 'PROVISIONAL', 'task.started', {
         taskId: worker.id,
         label: conciseText(worker.objective, 500),
       });
-      this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'task.progress', {
+      this.#appendPlan(active, context, 'PROVISIONAL', 'task.progress', {
         taskId: worker.id,
         message: '正在核对已授权的检索结果。',
         progress: 0.5,
@@ -386,11 +540,11 @@ export class AgentOrchestrator {
       this.#workerPrompt(context, decision, worker, candidates, 'FOCUSED_WORKER'),
     );
     const canonical = canonicalizeAnswer(answer, candidates);
-    this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'answer.draft.delta', {
+    this.#appendPlan(active, context, 'PROVISIONAL', 'answer.draft.delta', {
       delta: canonical.conclusion,
     });
     if (worker) {
-      this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'task.completed', {
+      this.#appendPlan(active, context, 'PROVISIONAL', 'task.completed', {
         taskId: worker.id,
         status: findingStatusForAnswer(canonical),
       });
@@ -404,40 +558,63 @@ export class AgentOrchestrator {
     decision: RouteDecisionV1,
     retrieval: RetrievalState,
   ): Promise<AnswerExecution> {
-    const workers = decision.tasks.filter((task) => task.kind !== 'REDUCE');
+    const allWorkers = decision.tasks.filter((task) => task.kind !== 'REDUCE');
+    for (const task of allWorkers.filter((item) => retrieval.skippedTaskIds.has(item.id))) {
+      this.#appendPlan(active, context, 'PROVISIONAL', 'task.started', {
+        taskId: task.id,
+        label: conciseText(task.objective, 500),
+      });
+      this.#appendPlan(active, context, 'PROVISIONAL', 'task.progress', {
+        taskId: task.id,
+        message: '工作区证据已经充分，本轮不再扩大到 Santexwell 检索。',
+        progress: 1,
+      });
+      this.#appendPlan(active, context, 'PROVISIONAL', 'task.completed', {
+        taskId: task.id,
+        status: 'NO_EVIDENCE',
+      });
+    }
+    const workers = allWorkers.filter((task) => !retrieval.skippedTaskIds.has(task.id));
     const findings = await mapWithConcurrency(
       workers,
       decision.maxConcurrency,
       async (task): Promise<TaskFindingV1> => {
-        this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'task.started', {
+        this.#appendPlan(active, context, 'PROVISIONAL', 'task.started', {
           taskId: task.id,
           label: conciseText(task.objective, 500),
         });
-        this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'task.progress', {
+        this.#appendPlan(active, context, 'PROVISIONAL', 'task.progress', {
           taskId: task.id,
           message: '正在核对该子任务的已授权证据。',
           progress: 0.5,
         });
         const candidates = retrieval.evidenceByTaskId.get(task.id) ?? [];
-        const untrusted = await this.#invokeFinding(
-          active,
-          context,
-          task,
-          this.#workerPrompt(context, decision, task, candidates, 'DEEP_WORKER'),
-        );
-        const finding = canonicalizeFinding(untrusted, task.id, candidates);
-        this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'task.finding', {
+        let finding: TaskFindingV1;
+        try {
+          const untrusted = await this.#invokeFinding(
+            active,
+            context,
+            task,
+            this.#workerPrompt(context, decision, task, candidates, 'DEEP_WORKER'),
+          );
+          finding = canonicalizeFinding(untrusted, task.id, candidates);
+        } catch (error) {
+          assertCurrentPlan(active, context);
+          if (!isDegradableWorkerFailure(error)) throw error;
+          finding = degradedFinding(task.id, candidates);
+        }
+        this.#appendPlan(active, context, 'PROVISIONAL', 'task.finding', {
           finding: toPublicFinding(finding),
         });
-        this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'task.completed', {
+        this.#appendPlan(active, context, 'PROVISIONAL', 'task.completed', {
           taskId: task.id,
           status: finding.status,
         });
         return finding;
       },
     );
-    throwIfAborted(active.controller.signal);
-    this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'reduce.started', {});
+    assertCurrentPlan(active, context);
+    this.#appendPlan(active, context, 'PROVISIONAL', 'reduce.started', {});
     const reducerCandidates = mergeFindingEvidence(findings);
     const untrustedAnswer = await this.#invokeAnswer(
       active,
@@ -448,7 +625,7 @@ export class AgentOrchestrator {
       this.#reducerPrompt(context, decision, findings),
     );
     const answer = canonicalizeAnswer(untrustedAnswer, reducerCandidates);
-    this.#append(context.runId, context.planVersion, 'PROVISIONAL', 'answer.draft.delta', {
+    this.#appendPlan(active, context, 'PROVISIONAL', 'answer.draft.delta', {
       delta: answer.conclusion,
     });
     return { answer, allowedFlowEvidence: reducerCandidates };
@@ -461,14 +638,24 @@ export class AgentOrchestrator {
     allowedFlowEvidence: readonly ValidatedEvidenceV1[],
   ): Promise<{ status: 'COMPLETED'; messageId: string }> {
     assertFlowFeedbackWasRetrieved(answer, allowedFlowEvidence);
-    this.#append(context.runId, context.planVersion, 'COMMITTED', 'answer.validating', {});
-    const resolvedEvidence = await Promise.all(
-      answer.evidence.map((item) => this.#evidenceResolver.resolveEvidence(context, item)),
+    const feedbackEvidence = answer.flowFeedback.map((feedback) => (
+      findFlowFeedbackEvidence(feedback, allowedFlowEvidence)
+    ));
+    this.#appendPlan(active, context, 'COMMITTED', 'answer.validating', {});
+    const [resolvedEvidence, resolvedFeedback] = await runBounded(
+      (signal) => Promise.all([
+        Promise.all(answer.evidence.map((item) => (
+          this.#evidenceResolver.resolveEvidence(context, item, signal)
+        ))),
+        Promise.all(answer.flowFeedback.map((item, index) => (
+          this.#evidenceResolver.resolveFlowFeedback(context, item, feedbackEvidence[index]!, signal)
+        ))),
+      ]),
+      active.planController.signal,
+      this.#timeouts.workerMs,
+      new AgentOrchestrationError('REFERENCE_RESOLUTION_TIMEOUT', '引用校验超过运行时限。', true),
     );
-    const resolvedFeedback = await Promise.all(
-      answer.flowFeedback.map((item) => this.#evidenceResolver.resolveFlowFeedback(context, item)),
-    );
-    throwIfAborted(active.controller.signal);
+    assertCurrentPlan(active, context);
     for (const [index, resolved] of resolvedEvidence.entries()) {
       PublicReferenceV1Schema.parse(resolved.reference);
       if (!sameEvidenceRecord(answer.evidence[index]!, resolved.evidence)) {
@@ -479,7 +666,16 @@ export class AgentOrchestrator {
         );
       }
     }
-    resolvedFeedback.forEach((resolved) => PublicReferenceV1Schema.parse(resolved.reference));
+    resolvedFeedback.forEach((resolved, index) => {
+      PublicReferenceV1Schema.parse(resolved.reference);
+      if (!sameEvidenceRecord(feedbackEvidence[index]!, resolved.evidence)) {
+        throw new AgentOrchestrationError(
+          'EVIDENCE_VALIDATION_FAILED',
+          '流程反馈引用在提交前发生变化。',
+          false,
+        );
+      }
+    });
     const references = [...resolvedEvidence, ...resolvedFeedback];
     assertUniqueReferenceIds(references);
     const committed = commitValidatedAnswer(answer, {
@@ -492,19 +688,24 @@ export class AgentOrchestrator {
       flowFeedbackReferences: resolvedFeedback.map((item) => item.reference),
       createId: this.#createId,
     });
-    throwIfAborted(active.controller.signal);
+    assertCurrentPlan(active, context);
     active.committing = true;
-    const persisted = await this.#outputCommitter.commit({ context, answer: committed, references });
+    const persisted = await runBounded(
+      () => this.#outputCommitter.commit({ context, answer: committed, references }),
+      active.runController.signal,
+      this.#timeouts.runMs,
+      new AgentOrchestrationError('COMMIT_TIMEOUT', '答案提交超过运行时限。', true),
+    );
     for (const citation of committed.citations) {
-      this.#append(context.runId, context.planVersion, 'COMMITTED', 'citation.committed', { citation });
+      this.#appendPlan(active, context, 'COMMITTED', 'citation.committed', { citation });
     }
-    this.#append(context.runId, context.planVersion, 'COMMITTED', 'answer.committed', {
+    this.#appendPlan(active, context, 'COMMITTED', 'answer.committed', {
       answer: committed,
     });
     for (const artifact of committed.artifacts) {
-      this.#append(context.runId, context.planVersion, 'COMMITTED', 'artifact.committed', { artifact });
+      this.#appendPlan(active, context, 'COMMITTED', 'artifact.committed', { artifact });
     }
-    this.#append(context.runId, context.planVersion, 'COMMITTED', 'run.completed', {
+    this.#appendPlan(active, context, 'COMMITTED', 'run.completed', {
       messageId: persisted.messageId,
     });
     return { status: 'COMPLETED', messageId: persisted.messageId };
@@ -577,12 +778,34 @@ export class AgentOrchestrator {
     stage: string,
     prompt: string,
   ): Promise<RouteDecisionV1> {
-    const request = this.#request(active, context, role, reasoningEffort, 'ROUTE_DECISION', stage, prompt);
-    try {
-      return await runRouteDecision(this.#runtime, request, active.controller.signal);
-    } finally {
-      active.childIds.delete(request.runId);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const request = this.#request(
+        active,
+        context,
+        role,
+        reasoningEffort,
+        'ROUTE_DECISION',
+        attempt === 0 ? stage : `${stage}-repair`,
+        attempt === 0 ? prompt : repairPrompt(prompt),
+      );
+      try {
+        return await runBounded(
+          (signal) => runRouteDecision(this.#runtime, request, signal),
+          active.planController.signal,
+          this.#timeouts.routerMs,
+          new AgentOrchestrationError('ROUTER_TIMEOUT', '任务路由超过运行时限。', true),
+        );
+      } catch (error) {
+        if (isPhaseTimeout(error) || (attempt === 0 && isRepairableTypedOutput(error))) {
+          await this.#cancelChild(request.runId);
+        }
+        if (attempt === 0 && isRepairableTypedOutput(error)) continue;
+        throw error;
+      } finally {
+        active.childIds.delete(request.runId);
+      }
     }
+    throw new Error('unreachable');
   }
 
   async #invokeFinding(
@@ -591,20 +814,34 @@ export class AgentOrchestrator {
     task: RouteTaskV1,
     prompt: string,
   ): Promise<TaskFindingV1> {
-    const request = this.#request(
-      active,
-      context,
-      'DEEP_WORKER',
-      'HIGH',
-      'TASK_FINDING',
-      `worker-${task.id}`,
-      prompt,
-    );
-    try {
-      return await runTaskFinding(this.#runtime, request, active.controller.signal);
-    } finally {
-      active.childIds.delete(request.runId);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const request = this.#request(
+        active,
+        context,
+        'DEEP_WORKER',
+        'HIGH',
+        'TASK_FINDING',
+        attempt === 0 ? `worker-${task.id}` : `worker-${task.id}-repair`,
+        attempt === 0 ? prompt : repairPrompt(prompt),
+      );
+      try {
+        return await runBounded(
+          (signal) => runTaskFinding(this.#runtime, request, signal),
+          active.planController.signal,
+          this.#timeouts.workerMs,
+          new AgentOrchestrationError('WORKER_TIMEOUT', '子任务超过运行时限。', true),
+        );
+      } catch (error) {
+        if (isPhaseTimeout(error) || (attempt === 0 && isRepairableTypedOutput(error))) {
+          await this.#cancelChild(request.runId);
+        }
+        if (attempt === 0 && isRepairableTypedOutput(error)) continue;
+        throw error;
+      } finally {
+        active.childIds.delete(request.runId);
+      }
     }
+    throw new Error('unreachable');
   }
 
   async #invokeAnswer(
@@ -615,12 +852,38 @@ export class AgentOrchestrator {
     stage: string,
     prompt: string,
   ): Promise<AgentInternalAnswerV1> {
-    const request = this.#request(active, context, role, reasoningEffort, 'ANSWER', stage, prompt);
-    try {
-      return await runFinalAnswer(this.#runtime, request, active.controller.signal);
-    } finally {
-      active.childIds.delete(request.runId);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const request = this.#request(
+        active,
+        context,
+        role,
+        reasoningEffort,
+        'ANSWER',
+        attempt === 0 ? stage : `${stage}-repair`,
+        attempt === 0 ? prompt : repairPrompt(prompt),
+      );
+      try {
+        return await runBounded(
+          (signal) => runFinalAnswer(this.#runtime, request, signal),
+          active.planController.signal,
+          role === 'REDUCER' ? this.#timeouts.reducerMs : this.#timeouts.workerMs,
+          new AgentOrchestrationError(
+            role === 'REDUCER' ? 'REDUCER_TIMEOUT' : 'WORKER_TIMEOUT',
+            role === 'REDUCER' ? '答案汇总超过运行时限。' : '回答生成超过运行时限。',
+            true,
+          ),
+        );
+      } catch (error) {
+        if (isPhaseTimeout(error) || (attempt === 0 && isRepairableTypedOutput(error))) {
+          await this.#cancelChild(request.runId);
+        }
+        if (attempt === 0 && isRepairableTypedOutput(error)) continue;
+        throw error;
+      } finally {
+        active.childIds.delete(request.runId);
+      }
     }
+    throw new Error('unreachable');
   }
 
   #request<TOutput extends BridgeOutputKindV1>(
@@ -632,14 +895,14 @@ export class AgentOrchestrator {
     stage: string,
     prompt: string,
   ): BridgeRunRequestV1 & { outputKind: TOutput } {
-    throwIfAborted(active.controller.signal);
+    assertCurrentPlan(active, context);
     const childId = childInvocationId(context.runId, stage, this.#createId());
     active.childIds.add(childId);
     return {
       type: 'RUN',
       requestId: conciseIdentifier(this.#createId()),
       runId: childId,
-      planVersion: context.planVersion,
+      planVersion: active.planVersion,
       role,
       reasoningEffort,
       outputKind,
@@ -650,7 +913,29 @@ export class AgentOrchestrator {
 
   async #cancelChildren(active: ActiveRun): Promise<void> {
     const childIds = [...active.childIds];
-    await Promise.allSettled(childIds.map((childId) => this.#runtime.cancel(childId)));
+    active.childIds.clear();
+    await Promise.all(childIds.map((childId) => this.#cancelChild(childId)));
+  }
+
+  async #cancelChild(childId: string): Promise<void> {
+    await settleWithin(this.#runtime.cancel(childId), this.#timeouts.cancelMs);
+  }
+
+  #appendPlan<TType extends AgentRunEventV1['type']>(
+    active: ActiveRun,
+    context: AgentRunExecutionContext,
+    phase: Extract<AgentRunEventV1, { type: TType }>['phase'],
+    type: TType,
+    payload: Extract<AgentRunEventV1, { type: TType }>['payload'],
+  ): void {
+    assertCurrentPlan(active, context);
+    this.#eventStore.append({
+      runId: context.runId,
+      planVersion: active.planVersion,
+      phase,
+      type,
+      payload,
+    } as RunEventAppendInput);
   }
 
   #append<TType extends AgentRunEventV1['type']>(
@@ -717,6 +1002,7 @@ function toPublicPlan(decision: RouteDecisionV1): PublicRoutePlanV1 {
 function publicUserRequest(context: AgentRunExecutionContext): Record<string, unknown> {
   return {
     text: context.text,
+    ...(context.steeringInstruction ? { steeringInstruction: context.steeringInstruction } : {}),
     scope: context.scope,
     sources: context.sources,
     ...(context.selectedContext ? { selectedContext: context.selectedContext } : {}),
@@ -862,6 +1148,22 @@ function findingStatusForAnswer(answer: AgentInternalAnswerV1): TaskFindingV1['s
   return answer.evidence.length > 0 ? 'FOUND' : 'NO_EVIDENCE';
 }
 
+function degradedFinding(
+  taskId: string,
+  candidates: readonly ValidatedEvidenceV1[],
+): TaskFindingV1 {
+  return TaskFindingV1Schema.parse({
+    taskId,
+    status: candidates.length > 0 ? 'PARTIAL' : 'NO_EVIDENCE',
+    findings: candidates.length > 0
+      ? ['已保留确定性检索到的候选证据，但该子任务暂时未能完成结构化归纳。']
+      : [],
+    validatedEvidence: candidates,
+    conflicts: [],
+    gaps: ['该子任务暂时未能完成；最终答案必须明确这一证据缺口。'],
+  });
+}
+
 function assertFlowFeedbackWasRetrieved(
   answer: AgentInternalAnswerV1,
   candidates: readonly ValidatedEvidenceV1[],
@@ -880,6 +1182,25 @@ function assertFlowFeedbackWasRetrieved(
       );
     }
   }
+}
+
+function findFlowFeedbackEvidence(
+  feedback: AgentInternalAnswerV1['flowFeedback'][number],
+  candidates: readonly ValidatedEvidenceV1[],
+): ValidatedEvidenceV1 {
+  const expectedLocator = JSON.stringify(feedback.locator);
+  const evidence = candidates.find((candidate) => (
+    candidate.locator.kind === 'WORKSPACE_FLOW'
+    && JSON.stringify(stripLocatorKind(candidate.locator)) === expectedLocator
+  ));
+  if (!evidence) {
+    throw new AgentOrchestrationError(
+      'EVIDENCE_VALIDATION_FAILED',
+      '流程反馈引用了未检索的节点。',
+      false,
+    );
+  }
+  return evidence;
 }
 
 function stripLocatorKind(locator: InternalEvidenceLocatorV1): Record<string, unknown> {
@@ -933,6 +1254,13 @@ function publicFailure(error: unknown): {
       retryable: false,
     };
   }
+  if (error instanceof RouterPolicyError) {
+    return {
+      code: error.code,
+      message: 'Deep Router 复核未通过最小充分路线策略。',
+      retryable: false,
+    };
+  }
   if (error instanceof AgentInvocationError || error instanceof RuntimeClientError) {
     return {
       code: PUBLIC_ERROR_CODE.test(error.code) ? error.code : 'RUNTIME_FAILED',
@@ -972,6 +1300,93 @@ function conciseText(value: string, maximum: number): string {
   return result || '（无公开内容）';
 }
 
-function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+function assertCurrentPlan(active: ActiveRun, context: AgentRunExecutionContext): void {
+  if (context.planVersion !== active.planVersion) {
+    throw active.planController.signal.reason ?? new DOMException('Agent plan changed', 'AbortError');
+  }
+  if (active.runController.signal.aborted) {
+    throw active.runController.signal.reason ?? new DOMException('Agent run aborted', 'AbortError');
+  }
+  if (active.planController.signal.aborted) {
+    throw active.planController.signal.reason ?? new DOMException('Agent plan aborted', 'AbortError');
+  }
+}
+
+async function runBounded<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+  timeoutError: Error,
+): Promise<T> {
+  if (parentSignal.aborted) {
+    throw parentSignal.reason ?? new DOMException('Agent operation aborted', 'AbortError');
+  }
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(parentSignal.reason);
+  parentSignal.addEventListener('abort', onAbort, { once: true });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let rejectAbort: ((reason: unknown) => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  const onOperationAbort = () => rejectAbort?.(
+    controller.signal.reason ?? new DOMException('Agent operation aborted', 'AbortError'),
+  );
+  controller.signal.addEventListener('abort', onOperationAbort, { once: true });
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([operation(controller.signal), aborted, timedOut]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    parentSignal.removeEventListener('abort', onAbort);
+    controller.signal.removeEventListener('abort', onOperationAbort);
+  }
+}
+
+async function settleWithin(operation: Promise<unknown>, timeoutMs: number): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      operation.catch(() => undefined),
+      new Promise<void>((resolve) => { timeout = setTimeout(resolve, timeoutMs); }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function repairPrompt(prompt: string): string {
+  return `${prompt}\n\n结构修复：上一次输出未通过目标 schema。只重新输出一个严格匹配 outputKind 的 JSON 对象，不得增加解释或新证据。`;
+}
+
+function isRepairableTypedOutput(error: unknown): boolean {
+  if (error instanceof z.ZodError) return true;
+  if (error instanceof AgentInvocationError || error instanceof RuntimeClientError) {
+    return error.code === 'BRIDGE_OUTPUT_KIND_INVALID'
+      || error.code === 'BRIDGE_OUTPUT_MISSING'
+      || error.code === 'BRIDGE_EVENT_INVALID';
+  }
+  return false;
+}
+
+function isPhaseTimeout(error: unknown): boolean {
+  return error instanceof AgentOrchestrationError && error.code.endsWith('_TIMEOUT');
+}
+
+function isDegradableWorkerFailure(error: unknown): boolean {
+  return error instanceof AgentInvocationError
+    || error instanceof RuntimeClientError
+    || error instanceof z.ZodError
+    || isPhaseTimeout(error);
+}
+
+function assertTimeouts(timeouts: AgentOrchestratorTimeouts): void {
+  for (const [name, value] of Object.entries(timeouts)) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > 900_000) {
+      throw new Error(`Agent timeout ${name} 必须是 1 到 900000 的整数`);
+    }
+  }
 }

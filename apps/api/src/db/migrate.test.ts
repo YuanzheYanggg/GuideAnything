@@ -164,10 +164,11 @@ describe('database migrations', () => {
       'answer_citations',
       'artifacts',
       'conversation_attachments',
+      'agent_run_steers',
     ]));
     expect(database.prepare(
       'SELECT version FROM schema_migrations ORDER BY version',
-    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
 
     const indexesAndTriggers = database.prepare(
       "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_%'",
@@ -198,6 +199,7 @@ describe('database migrations', () => {
       'flow_knowledge_snapshots', 'conversations', 'conversation_messages',
       'agent_runs', 'agent_run_events', 'answer_citations', 'artifacts',
       'conversation_attachments',
+      'agent_run_steers',
     ]) {
       expect(strictByTable.get(table), `${table} should be STRICT`).toBe(1);
     }

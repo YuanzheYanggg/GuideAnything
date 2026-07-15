@@ -117,4 +117,9 @@ function assertAllowedSources(requested: SourceOptionsV1, allowed: SourceOptions
   const entries = Object.entries(requested) as Array<[keyof SourceOptionsV1, boolean]>;
   const disallowed = entries.find(([key, enabled]) => enabled && !allowed[key]);
   if (disallowed) throw new SchedulePolicyError(`路线请求了未授权的数据源：${disallowed[0]}`);
+  const requiredWorkspaceSource = (['workspaceFlows', 'workspaceDocuments', 'sessionAttachments'] as const)
+    .find((key) => allowed[key] && !requested[key]);
+  if (requiredWorkspaceSource) {
+    throw new SchedulePolicyError(`路线不能关闭本轮已启用的工作区来源：${requiredWorkspaceSource}`);
+  }
 }

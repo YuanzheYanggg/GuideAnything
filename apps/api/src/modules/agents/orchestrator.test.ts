@@ -149,6 +149,26 @@ describe('AgentOrchestrator', () => {
     });
   });
 
+  it('fails a deep-router attempt to broaden the medium budget as a non-retryable policy error', async () => {
+    const medium = compositeDecision({ confidence: 0.4 });
+    medium.budget.maxWorkspaceCandidates = 6;
+    const broadened = compositeDecision({ confidence: 0.9 });
+    const events = new RecordingEventSink();
+    const retriever = retrieverFrom({});
+    const result = await createOrchestrator({
+      runtime: new ScriptedRuntime([routeScript(medium), routeScript(broadened)]),
+      events,
+      retriever,
+    }).execute('public-run-deep-broadened');
+
+    expect(result.status).toBe('FAILED');
+    expect(retriever.retrieve).not.toHaveBeenCalled();
+    expect(events.items.at(-1)).toMatchObject({
+      type: 'run.failed',
+      payload: { code: 'ROUTER_POLICY_VIOLATION', retryable: false },
+    });
+  });
+
   it('cancels every active child invocation and commits only a cancellation terminal event', async () => {
     const runtime = new BlockingRuntime();
     const events = new RecordingEventSink();
@@ -166,6 +186,224 @@ describe('AgentOrchestrator', () => {
     });
     expect(events.items.some((event) => event.type === 'run.failed')).toBe(false);
   });
+
+  it('records a terminal failure even when execution context reauthorization fails', async () => {
+    const events = new RecordingEventSink();
+    const orchestrator = createOrchestrator({
+      events,
+      loadContext: async () => { throw new Error('用户已经失去工作区访问权限'); },
+    });
+
+    const result = await orchestrator.execute('public-run-context-failure');
+
+    expect(result).toEqual({ status: 'FAILED' });
+    expect(events.items.at(-1)).toMatchObject({
+      runId: 'public-run-context-failure',
+      type: 'run.failed',
+      payload: { code: 'AGENT_RUN_FAILED' },
+    });
+  });
+
+  it('skips vault retrieval when deterministic workspace evidence is already sufficient', async () => {
+    const flowEvidence = evidence('flow-sufficient', 'WORKSPACE_FLOW');
+    const runtime = new ScriptedRuntime([
+      routeScript(compositeDecision()),
+      findingScript(finding('flow', [flowEvidence])),
+      answerScript(answer([flowEvidence])),
+    ]);
+    const retriever: AgentEvidenceRetriever = {
+      retrieve: vi.fn(async ({ task }) => task.kind === 'WORKSPACE_FLOW' ? [flowEvidence] : []),
+      isWorkspaceEvidenceSufficient: vi.fn(async () => true),
+    };
+
+    const result = await createOrchestrator({ runtime, retriever }).execute('public-run-sufficient');
+
+    expect(result.status).toBe('COMPLETED');
+    expect(retriever.retrieve).toHaveBeenCalledTimes(1);
+    expect(retriever.retrieve).not.toHaveBeenCalledWith(expect.objectContaining({
+      task: expect.objectContaining({ kind: 'SANTEXWELL' }),
+    }));
+    expect(runtime.requests.map((request) => request.role)).toEqual([
+      'ROUTER', 'DEEP_WORKER', 'REDUCER',
+    ]);
+  });
+
+  it('degrades one failed map worker to a partial finding with a visible gap', async () => {
+    const flowEvidence = evidence('flow-partial', 'WORKSPACE_FLOW');
+    const vaultEvidence = evidence('vault-found', 'SANTEXWELL');
+    const runtime = new ScriptedRuntime([
+      routeScript(compositeDecision()),
+      failedScript('WORKER_UNAVAILABLE'),
+      findingScript(finding('vault', [vaultEvidence])),
+      answerScript(answer([flowEvidence, vaultEvidence])),
+    ]);
+    const events = new RecordingEventSink();
+    const result = await createOrchestrator({
+      runtime,
+      events,
+      retriever: retrieverFrom({ WORKSPACE_FLOW: [flowEvidence], SANTEXWELL: [vaultEvidence] }),
+    }).execute('public-run-partial');
+
+    expect(result.status).toBe('COMPLETED');
+    expect(events.items).toContainEqual(expect.objectContaining({
+      type: 'task.finding',
+      payload: expect.objectContaining({
+        finding: expect.objectContaining({ taskId: 'flow', status: 'PARTIAL' }),
+      }),
+    }));
+    expect(JSON.stringify(events.items)).toContain('暂时未能完成');
+  });
+
+  it('repairs an invalid typed router output exactly once', async () => {
+    const flowEvidence = evidence('flow-repaired', 'WORKSPACE_FLOW');
+    const runtime = new ScriptedRuntime([
+      invalidRouteScript(),
+      routeScript(focusedDecision()),
+      answerScript(answer([flowEvidence])),
+    ]);
+    const result = await createOrchestrator({
+      runtime,
+      retriever: retrieverFrom({ WORKSPACE_FLOW: [flowEvidence] }),
+    }).execute('public-run-repair');
+
+    expect(result.status).toBe('COMPLETED');
+    expect(runtime.requests.filter((request) => request.role === 'ROUTER')).toHaveLength(2);
+    expect(runtime.requests[1]?.prompt).toContain('结构修复');
+  });
+
+  it('rejects flow feedback when the resolver changes its evidence locator', async () => {
+    const flowEvidence = evidence('flow-feedback-source', 'WORKSPACE_FLOW');
+    const feedbackAnswer = answer([flowEvidence]);
+    feedbackAnswer.flowFeedback = [{
+      kind: 'GAP',
+      message: '补充复核节点。',
+      locator: { guideId: 'guide-1', snapshotId: 'snapshot-1', nodeId: 'approve' },
+    }];
+    const mismatchedResolver = resolver();
+    mismatchedResolver.resolveFlowFeedback = vi.fn(async () => ({
+      reference: { referenceId: 'reference-feedback', href: '/references/reference-feedback' },
+      evidence: {
+        ...flowEvidence,
+        locator: {
+          kind: 'WORKSPACE_FLOW' as const,
+          guideId: 'guide-1',
+          snapshotId: 'snapshot-1',
+          nodeId: 'other',
+        },
+      },
+    }));
+    const events = new RecordingEventSink();
+    const result = await createOrchestrator({
+      runtime: new ScriptedRuntime([
+        routeScript(focusedDecision()),
+        answerScript(feedbackAnswer),
+      ]),
+      events,
+      resolver: mismatchedResolver,
+      retriever: retrieverFrom({ WORKSPACE_FLOW: [flowEvidence] }),
+    }).execute('public-run-feedback-mismatch');
+
+    expect(result.status).toBe('FAILED');
+    expect(events.items.at(-1)).toMatchObject({
+      type: 'run.failed', payload: { code: 'EVIDENCE_VALIDATION_FAILED' },
+    });
+  });
+
+  it('reroutes an active run at the next plan version after steer', async () => {
+    const flowEvidence = evidence('flow-steered', 'WORKSPACE_FLOW');
+    const runtime = new BlockingFirstRuntime([
+      routeScript(focusedDecision()),
+      answerScript(answer([flowEvidence])),
+    ]);
+    let planVersion = 1;
+    const events = new RecordingEventSink();
+    const orchestrator = createOrchestrator({
+      runtime,
+      events,
+      loadContext: async (runId) => ({
+        ...executionContext(),
+        runId,
+        planVersion,
+        ...(planVersion === 2 ? { steeringInstruction: '只聚焦当前复核节点。' } : {}),
+      }),
+      retriever: retrieverFrom({ WORKSPACE_FLOW: [flowEvidence] }),
+    });
+
+    const execution = orchestrator.execute('public-run-steer');
+    await runtime.started;
+    planVersion = 2;
+    await orchestrator.steer('public-run-steer', 2, '只聚焦当前复核节点。');
+    const result = await execution;
+
+    expect(result.status).toBe('COMPLETED');
+    expect(runtime.requests.map((request) => request.planVersion)).toEqual([1, 2, 2]);
+    expect(runtime.requests[1]?.prompt).toContain('只聚焦当前复核节点');
+    expect(events.items.at(-1)).toMatchObject({ type: 'run.completed', planVersion: 2 });
+  });
+
+  it('observes a transactionally persisted plan bump even before the control notification arrives', async () => {
+    const flowEvidence = evidence('flow-steer-race', 'WORKSPACE_FLOW');
+    let planVersion = 1;
+    const runtime = new ScriptedRuntime([
+      callbackFailedScript(() => { planVersion = 2; }),
+      routeScript(focusedDecision()),
+      answerScript(answer([flowEvidence])),
+    ]);
+    const result = await createOrchestrator({
+      runtime,
+      loadContext: async (runId) => ({
+        ...executionContext(),
+        runId,
+        planVersion,
+        ...(planVersion === 2 ? { steeringInstruction: '聚焦复核。' } : {}),
+      }),
+      retriever: retrieverFrom({ WORKSPACE_FLOW: [flowEvidence] }),
+    }).execute('public-run-steer-race');
+
+    expect(result.status).toBe('COMPLETED');
+    expect(runtime.requests.map((request) => request.planVersion)).toEqual([1, 2, 2]);
+  });
+
+  it('settles cancel within its bound even when the bridge ignores abort and cancel', async () => {
+    const runtime = new UncooperativeRuntime();
+    const events = new RecordingEventSink();
+    const orchestrator = createOrchestrator({
+      runtime,
+      events,
+      timeouts: { routerMs: 5_000, workerMs: 5_000, reducerMs: 5_000, runMs: 5_000, cancelMs: 20 },
+    });
+    const execution = orchestrator.execute('public-run-bounded-cancel');
+    await runtime.started;
+
+    await expect(orchestrator.cancel('public-run-bounded-cancel')).resolves.toBeUndefined();
+    await expect(execution).resolves.toEqual({ status: 'CANCELLED' });
+    expect(events.items.at(-1)?.type).toBe('run.cancelled');
+  });
+
+  it('keeps the total run deadline bounded through the commit phase', async () => {
+    const flowEvidence = evidence('flow-commit-timeout', 'WORKSPACE_FLOW');
+    const events = new RecordingEventSink();
+    const orchestrator = createOrchestrator({
+      runtime: new ScriptedRuntime([
+        routeScript(focusedDecision()),
+        answerScript(answer([flowEvidence])),
+      ]),
+      events,
+      retriever: retrieverFrom({ WORKSPACE_FLOW: [flowEvidence] }),
+      committer: { commit: async () => new Promise(() => undefined) },
+      timeouts: { routerMs: 500, workerMs: 500, reducerMs: 500, runMs: 30, cancelMs: 10 },
+    });
+
+    const settled = await Promise.race([
+      orchestrator.execute('public-run-commit-timeout'),
+      new Promise<'test-timeout'>((resolve) => setTimeout(() => resolve('test-timeout'), 250)),
+    ]);
+
+    expect(settled).toEqual({ status: 'FAILED' });
+    expect(events.items.at(-1)).toMatchObject({
+      type: 'run.failed', payload: { code: 'RUN_TIMEOUT' },
+    });
+  });
 });
 
 function createOrchestrator(overrides: {
@@ -174,18 +412,21 @@ function createOrchestrator(overrides: {
   retriever?: AgentEvidenceRetriever;
   resolver?: AgentEvidenceResolver;
   committer?: AgentOutputCommitter;
+  loadContext?: (runId: string) => AgentRunExecutionContext | Promise<AgentRunExecutionContext>;
+  timeouts?: { routerMs: number; workerMs: number; reducerMs: number; runMs: number; cancelMs: number };
 } = {}): AgentOrchestrator {
   let id = 0;
   return new AgentOrchestrator({
     runtime: overrides.runtime ?? new ScriptedRuntime([]),
     eventStore: overrides.events ?? new RecordingEventSink(),
-    loadContext: async (runId) => ({ ...executionContext(), runId }),
+    loadContext: overrides.loadContext ?? (async (runId) => ({ ...executionContext(), runId })),
     retriever: overrides.retriever ?? retrieverFrom({}),
     evidenceResolver: overrides.resolver ?? resolver(),
     outputCommitter: overrides.committer ?? recordingCommitter(),
     configuredMaxConcurrency: 3,
     trustedHarness: ['只读回答，不得执行任何写入。'],
     createId: () => `generated-${++id}`,
+    ...(overrides.timeouts ? { timeouts: overrides.timeouts } : {}),
   });
 }
 
@@ -201,6 +442,16 @@ class RecordingEventSink {
       createdAt: new Date(1_752_537_600_000 + this.items.length).toISOString(),
     });
   }
+
+  appendFailure(runId: string, payload: { code: string; message: string; retryable: boolean }): AgentRunEventV1 {
+    return this.append({
+      runId,
+      planVersion: 1,
+      phase: 'COMMITTED',
+      type: 'run.failed',
+      payload,
+    });
+  }
 }
 
 type RuntimeScript = (request: BridgeRunRequestV1) => AsyncGenerator<BridgeEventV1>;
@@ -211,7 +462,7 @@ class ScriptedRuntime implements AgentRuntimeClient {
 
   constructor(private readonly scripts: RuntimeScript[]) {}
 
-  run(request: BridgeRunRequestV1): AsyncIterable<BridgeEventV1> {
+  run(request: BridgeRunRequestV1, _signal?: AbortSignal): AsyncIterable<BridgeEventV1> {
     this.requests.push(request);
     const script = this.scripts.shift();
     if (!script) throw new Error(`missing runtime script for ${request.role}`);
@@ -254,12 +505,76 @@ class BlockingRuntime implements AgentRuntimeClient {
   async steer(): Promise<void> {}
 }
 
+class BlockingFirstRuntime extends ScriptedRuntime {
+  readonly started: Promise<void>;
+  #markStarted!: () => void;
+
+  constructor(scripts: RuntimeScript[]) {
+    super(scripts);
+    this.started = new Promise((resolve) => { this.#markStarted = resolve; });
+  }
+
+  override run(request: BridgeRunRequestV1, signal?: AbortSignal): AsyncIterable<BridgeEventV1> {
+    if (this.requests.length > 0) return super.run(request, signal);
+    this.requests.push(request);
+    this.#markStarted();
+    return (async function* blocked() {
+      await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }));
+      if (signal?.aborted) throw signal.reason;
+    })();
+  }
+}
+
+class UncooperativeRuntime implements AgentRuntimeClient {
+  readonly started: Promise<void>;
+  #markStarted!: () => void;
+
+  constructor() {
+    this.started = new Promise((resolve) => { this.#markStarted = resolve; });
+  }
+
+  run(): AsyncIterable<BridgeEventV1> {
+    this.#markStarted();
+    return (async function* neverEnds() {
+      await new Promise(() => undefined);
+    })();
+  }
+
+  async cancel(): Promise<void> {
+    await new Promise(() => undefined);
+  }
+
+  async steer(): Promise<void> {}
+}
+
 function routeScript(decision: RouteDecisionV1): RuntimeScript {
   return async function* route(request) {
     yield event(request, 1, 'THREAD_BOUND', { threadId: 'thread-1' });
     yield event(request, 2, 'COMMENTARY', { text: 'PRIVATE CHAIN OF THOUGHT' });
     yield event(request, 3, 'ROUTE_DECISION', { decision });
     yield event(request, 4, 'COMPLETED', {});
+  };
+}
+
+function invalidRouteScript(): RuntimeScript {
+  return async function* invalidRoute(request) {
+    yield event(request, 1, 'ROUTE_DECISION', { decision: {} } as never);
+    yield event(request, 2, 'COMPLETED', {});
+  };
+}
+
+function failedScript(code: string): RuntimeScript {
+  return async function* failed(request) {
+    yield event(request, 1, 'FAILED', { code, message: '子任务暂时不可用。', retryable: true });
+  };
+}
+
+function callbackFailedScript(callback: () => void): RuntimeScript {
+  return async function* callbackFailed(request) {
+    callback();
+    yield event(request, 1, 'FAILED', {
+      code: 'PLAN_SUPERSEDED', message: '计划已经更新。', retryable: true,
+    });
   };
 }
 
@@ -300,7 +615,7 @@ function executionContext(): AgentRunExecutionContext {
     text: '请分析当前流程并参考知识库。',
     sources: {
       workspaceFlows: true,
-      workspaceDocuments: true,
+      workspaceDocuments: false,
       sessionAttachments: false,
       santexwell: true,
     },
@@ -325,15 +640,9 @@ function resolver(): AgentEvidenceResolver {
       },
       evidence: value,
     })),
-    resolveFlowFeedback: vi.fn(async (_context, feedback) => ({
+    resolveFlowFeedback: vi.fn(async (_context, _feedback, expectedEvidence) => ({
       reference: { referenceId: 'reference-feedback', href: '/references/reference-feedback' },
-      evidence: {
-        id: 'flow-feedback',
-        source: 'WORKSPACE_FLOW' as const,
-        title: '流程反馈',
-        excerpt: feedback.message,
-        locator: { kind: 'WORKSPACE_FLOW' as const, ...feedback.locator },
-      },
+      evidence: expectedEvidence,
     })),
   };
 }

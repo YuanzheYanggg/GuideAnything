@@ -9,9 +9,11 @@ import {
   ConversationUserMessageV1Schema,
   PublicRoutePlanV1Schema,
   SendConversationMessageRequestV1Schema,
+  SteerAgentRunRequestV1Schema,
   SourceOptionsV1Schema,
   type AgentCommittedAnswerV1,
   type AgentMessageAcceptedV1,
+  type AgentRunStatusV1,
   type AgentRunSnapshotV1,
   type ConversationAssistantMessageV1,
   type ConversationDetailV1,
@@ -61,6 +63,36 @@ export class ConversationNotFoundError extends Error {
   constructor() {
     super('会话不存在');
     this.name = 'ConversationNotFoundError';
+  }
+}
+
+export class AgentRunNotFoundError extends Error {
+  readonly code = 'RUN_NOT_FOUND';
+  readonly statusCode = 404;
+
+  constructor() {
+    super('运行不存在');
+    this.name = 'AgentRunNotFoundError';
+  }
+}
+
+export class AgentRunNotControllableError extends Error {
+  readonly code = 'RUN_NOT_CONTROLLABLE';
+  readonly statusCode = 409;
+
+  constructor() {
+    super('当前运行状态不能执行该控制操作');
+    this.name = 'AgentRunNotControllableError';
+  }
+}
+
+export class SteerIdempotencyConflictError extends Error {
+  readonly code = 'CLIENT_STEER_ID_CONFLICT';
+  readonly statusCode = 409;
+
+  constructor() {
+    super('同一 clientSteerId 已用于不同的调整指令');
+    this.name = 'SteerIdempotencyConflictError';
   }
 }
 
@@ -377,6 +409,82 @@ export function getRunSnapshotForOwner(
   return row ? mapRunSnapshot(row) : null;
 }
 
+export function requireControllableRunForOwner(
+  database: DatabaseSync,
+  runId: string,
+  ownerId: string,
+): AgentRunSnapshotV1 {
+  const run = getRunSnapshotForOwner(database, runId, ownerId);
+  if (!run) throw new AgentRunNotFoundError();
+  if (run.status === 'VALIDATING' || isTerminalRunStatus(run.status)) {
+    throw new AgentRunNotControllableError();
+  }
+  return run;
+}
+
+export function steerAgentRunForOwner(
+  database: DatabaseSync,
+  input: {
+    runId: string;
+    ownerId: string;
+    clientSteerId: string;
+    instruction: string;
+  },
+): { created: boolean; planVersion: number } {
+  const request = SteerAgentRunRequestV1Schema.parse({
+    clientSteerId: input.clientSteerId,
+    instruction: input.instruction,
+  });
+  const existing = getSteerForOwner(database, input.runId, input.ownerId, request.clientSteerId);
+  if (existing) {
+    if (existing.instruction !== request.instruction) throw new SteerIdempotencyConflictError();
+    return { created: false, planVersion: existing.plan_version };
+  }
+
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const run = database.prepare(
+      `SELECT run.plan_version, run.status
+       FROM agent_runs AS run
+       JOIN conversations AS conversation ON conversation.id = run.conversation_id
+       WHERE run.id = ? AND conversation.owner_id = ? AND conversation.status = 'ACTIVE'`,
+    ).get(input.runId, input.ownerId) as { plan_version: number; status: AgentRunStatusV1 } | undefined;
+    if (!run) throw new AgentRunNotFoundError();
+    if (run.status === 'VALIDATING' || isTerminalRunStatus(run.status)) {
+      throw new AgentRunNotControllableError();
+    }
+    const planVersion = run.plan_version + 1;
+    const now = new Date().toISOString();
+    database.prepare(
+      `INSERT INTO agent_run_steers (
+        id, run_id, client_steer_id, plan_version, instruction, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(randomUUID(), input.runId, request.clientSteerId, planVersion, request.instruction, now);
+    database.prepare(
+      `UPDATE agent_run_events
+       SET stale = 1
+       WHERE run_id = ? AND phase = 'PROVISIONAL' AND plan_version < ?`,
+    ).run(input.runId, planVersion);
+    database.prepare(
+      `UPDATE agent_runs
+       SET plan_version = ?, route = NULL, status = 'QUEUED', route_decision_json = NULL,
+           error_code = NULL, error_message = NULL, error_retryable = NULL,
+           cancelled_at = NULL, completed_at = NULL, updated_at = ?
+       WHERE id = ?`,
+    ).run(planVersion, now, input.runId);
+    database.exec('COMMIT');
+    return { created: true, planVersion };
+  } catch (error) {
+    database.exec('ROLLBACK');
+    const raced = getSteerForOwner(database, input.runId, input.ownerId, request.clientSteerId);
+    if (raced) {
+      if (raced.instruction !== request.instruction) throw new SteerIdempotencyConflictError();
+      return { created: false, planVersion: raced.plan_version };
+    }
+    throw error;
+  }
+}
+
 export function mapRunSnapshot(row: RunRow): AgentRunSnapshotV1 {
   const sources = SourceOptionsV1Schema.parse(JSON.parse(row.source_options_json));
   const error = row.error_code === null
@@ -415,6 +523,26 @@ function getAssistantMessageByRun(database: DatabaseSync, runId: string): Stored
      LIMIT 1`,
   ).get(runId) as unknown as StoredMessageRow | undefined;
   return row ?? null;
+}
+
+function getSteerForOwner(
+  database: DatabaseSync,
+  runId: string,
+  ownerId: string,
+  clientSteerId: string,
+): { plan_version: number; instruction: string } | null {
+  const row = database.prepare(
+    `SELECT steer.plan_version, steer.instruction
+     FROM agent_run_steers AS steer
+     JOIN agent_runs AS run ON run.id = steer.run_id
+     JOIN conversations AS conversation ON conversation.id = run.conversation_id
+     WHERE steer.run_id = ? AND steer.client_steer_id = ? AND conversation.owner_id = ?`,
+  ).get(runId, clientSteerId, ownerId) as { plan_version: number; instruction: string } | undefined;
+  return row ?? null;
+}
+
+function isTerminalRunStatus(status: AgentRunStatusV1): boolean {
+  return status === 'COMPLETED' || status === 'FAILED' || status === 'CANCELLED';
 }
 
 function mapAssistantMessage(row: StoredMessageRow): ConversationAssistantMessageV1 {

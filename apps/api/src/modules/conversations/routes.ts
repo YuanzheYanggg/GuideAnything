@@ -1,6 +1,8 @@
 import {
+  CancelAgentRunRequestV1Schema,
   SendConversationMessageRequestV1Schema,
   SendGlobalConversationMessageRequestV1Schema,
+  SteerAgentRunRequestV1Schema,
 } from '@guideanything/contracts';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { once } from 'node:events';
@@ -10,12 +12,18 @@ import { z } from 'zod';
 
 import { httpError } from '../../lib/http-error';
 import { RunEventBroker, streamPersistedRunEvents } from './events';
-import { getRunSnapshotForOwner } from './repository';
+import {
+  getRunSnapshotForOwner,
+  requireControllableRunForOwner,
+  steerAgentRunForOwner,
+} from './repository';
 import { ConversationService } from './service';
 
 export interface ConversationRouteRuntime {
   broker: RunEventBroker;
   scheduleRun: (runId: string) => Promise<void>;
+  cancelRun: (runId: string, reason?: string) => Promise<void>;
+  steerRun: (runId: string, planVersion: number, instruction: string) => Promise<void>;
   onScheduleError?: (runId: string, error: unknown) => void;
 }
 
@@ -126,15 +134,65 @@ export async function registerConversationRoutes(
     const afterSequence = parseLastEventId(request.headers['last-event-id']);
     await sendEventStream(reply, database, runtime.broker, run.id, afterSequence);
   });
+
+  app.post('/api/agent-runs/:runId/cancel', {
+    preHandler: app.authenticateRequest,
+  }, async (request, reply) => {
+    const params = parseOrThrow(RunParamsSchema, request.params);
+    const body = parseOrThrow(CancelAgentRunRequestV1Schema, request.body ?? {});
+    requireControllableRunForOwner(database, params.runId, request.authUser!.id);
+    await runtime.cancelRun(params.runId, body.reason);
+    const run = getRunSnapshotForOwner(database, params.runId, request.authUser!.id);
+    return reply.code(202).send({ run });
+  });
+
+  app.post('/api/agent-runs/:runId/steer', {
+    preHandler: app.authenticateRequest,
+  }, async (request, reply) => {
+    const params = parseOrThrow(RunParamsSchema, request.params);
+    const body = parseOrThrow(SteerAgentRunRequestV1Schema, request.body);
+    const steered = steerAgentRunForOwner(database, {
+      runId: params.runId,
+      ownerId: request.authUser!.id,
+      clientSteerId: body.clientSteerId,
+      instruction: body.instruction,
+    });
+    if (steered.created) {
+      try {
+        await runtime.steerRun(params.runId, steered.planVersion, body.instruction);
+      } catch (error) {
+        reportScheduleError(runtime, params.runId, error);
+      }
+    }
+    scheduleRunSoon(params.runId, runtime);
+    const run = getRunSnapshotForOwner(database, params.runId, request.authUser!.id);
+    return reply.code(202).send({ run });
+  });
 }
 
 function scheduleIfNew(created: boolean, runId: string, runtime: ConversationRouteRuntime): void {
   if (!created) return;
+  scheduleRunSoon(runId, runtime);
+}
+
+function scheduleRunSoon(runId: string, runtime: ConversationRouteRuntime): void {
   queueMicrotask(() => {
     void Promise.resolve()
       .then(() => runtime.scheduleRun(runId))
-      .catch((error) => runtime.onScheduleError?.(runId, error));
+      .catch((error) => reportScheduleError(runtime, runId, error));
   });
+}
+
+function reportScheduleError(
+  runtime: ConversationRouteRuntime,
+  runId: string,
+  error: unknown,
+): void {
+  try {
+    runtime.onScheduleError?.(runId, error);
+  } catch {
+    // Observability callbacks must not make an already persisted run unrecoverable.
+  }
 }
 
 function parseLastEventId(value: string | string[] | undefined): number {

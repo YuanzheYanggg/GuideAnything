@@ -14,6 +14,10 @@ const migrations = [
     version: 3,
     sql: readFileSync(new URL('./migrations/0003_santexwell_agent_runtime.sql', import.meta.url), 'utf8'),
   },
+  {
+    version: 4,
+    sql: readFileSync(new URL('./migrations/0004_agent_run_steers.sql', import.meta.url), 'utf8'),
+  },
 ] as const;
 
 export function migrateDatabase(database: DatabaseSync): void {

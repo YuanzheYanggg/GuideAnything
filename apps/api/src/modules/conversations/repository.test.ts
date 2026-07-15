@@ -12,6 +12,8 @@ import {
   getConversationForOwner,
   IdempotencyConflictError,
   listConversationsForOwner,
+  steerAgentRunForOwner,
+  SteerIdempotencyConflictError,
 } from './repository';
 import {
   AgentRunEventStore,
@@ -316,6 +318,49 @@ describe('conversation persistence', () => {
       },
     });
     expect(database.prepare('SELECT route FROM agent_runs WHERE id = ?').get(runId)).toEqual({ route: 'DIRECT' });
+  });
+
+  it('increments a steered plan transactionally and makes clientSteerId idempotent', () => {
+    const { runId } = seedRun();
+    const store = new AgentRunEventStore(database, new RunEventBroker());
+    store.append({ runId, planVersion: 1, phase: 'PROVISIONAL', type: 'route.started', payload: {} });
+    store.append({
+      runId,
+      planVersion: 1,
+      phase: 'PROVISIONAL',
+      type: 'plan.committed',
+      payload: { plan: focusedPublicPlan() },
+    });
+
+    const first = steerAgentRunForOwner(database, {
+      runId,
+      ownerId: 'owner-1',
+      clientSteerId: 'steer-1',
+      instruction: '只看当前复核节点。',
+    });
+    const replay = steerAgentRunForOwner(database, {
+      runId,
+      ownerId: 'owner-1',
+      clientSteerId: 'steer-1',
+      instruction: '只看当前复核节点。',
+    });
+
+    expect(first).toMatchObject({ created: true, planVersion: 2 });
+    expect(replay).toMatchObject({ created: false, planVersion: 2 });
+    expect(database.prepare(
+      'SELECT plan_version, status, route, route_decision_json FROM agent_runs WHERE id = ?',
+    ).get(runId)).toEqual({
+      plan_version: 2, status: 'QUEUED', route: null, route_decision_json: null,
+    });
+    expect(database.prepare(
+      'SELECT DISTINCT stale FROM agent_run_events WHERE run_id = ? AND plan_version = 1',
+    ).all(runId)).toEqual([{ stale: 1 }]);
+    expect(() => steerAgentRunForOwner(database, {
+      runId,
+      ownerId: 'owner-1',
+      clientSteerId: 'steer-1',
+      instruction: '改成另一个要求。',
+    })).toThrow(SteerIdempotencyConflictError);
   });
 
   it('does not complete a run with an assistant message committed for another run', () => {

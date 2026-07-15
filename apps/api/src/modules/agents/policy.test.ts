@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest';
 
 import { evaluateFastGate } from './fast-gate';
 import { buildPromptHarness } from './prompt-harness';
-import { requiresDeepRouterReview } from './router';
+import {
+  assertDeepReviewTightens,
+  requiresDeepRouterReview,
+  userRequestsComprehensiveResearch,
+} from './router';
 import { enforceSchedulePolicy, SchedulePolicyError } from './scheduler';
 
 describe('agent orchestration policy', () => {
@@ -78,6 +82,47 @@ describe('agent orchestration policy', () => {
     })).toThrow(SchedulePolicyError);
   });
 
+  it('does not let the router turn off an enabled workspace source', () => {
+    const decision = focusedDecision({
+      sources: sources({ santexwell: true }),
+      tasks: [task('vault', 'SANTEXWELL')],
+      budget: {
+        ...focusedDecision().budget,
+        maxWorkspaceCandidates: 0,
+        maxFlowHops: 0,
+        maxVaultClusters: 1,
+        maxVaultDigests: 2,
+      },
+    });
+    expect(() => enforceSchedulePolicy(decision, {
+      allowedSources: sources({ workspaceFlows: true, santexwell: true }),
+      allowRawApproved: false,
+      configuredMaxConcurrency: 3,
+    })).toThrow(/workspaceFlows/u);
+  });
+
+  it('only accepts a deep-router decision that tightens the medium decision', () => {
+    const medium = compositeDecision();
+    const tighter = {
+      ...medium,
+      budget: { ...medium.budget, maxWorkspaceCandidates: 8, maxVaultDigests: 1 },
+      maxConcurrency: 2,
+    };
+    expect(() => assertDeepReviewTightens(medium, tighter)).not.toThrow();
+    expect(() => assertDeepReviewTightens(medium, {
+      ...medium,
+      budget: { ...medium.budget, maxVaultDigests: 3 },
+    })).toThrow(/收紧/u);
+    expect(() => assertDeepReviewTightens(focusedDecision(), {
+      ...focusedDecision(),
+      sources: sources({ workspaceFlows: true, santexwell: true }),
+    })).toThrow(/收紧/u);
+    const extraWorker = compositeDecision();
+    extraWorker.tasks.splice(2, 0, task('flow-extra', 'WORKSPACE_FLOW'));
+    extraWorker.budget.maxWorkers = 3;
+    expect(() => assertDeepReviewTightens(medium, extraWorker)).toThrow(/收紧/u);
+  });
+
   it('forces composite map/reduce topology and bounded parallelism', () => {
     const decision = compositeDecision();
     const scheduled = enforceSchedulePolicy(decision, {
@@ -124,6 +169,15 @@ describe('agent orchestration policy', () => {
     expect(requiresDeepRouterReview(base, { conflictsWithHistory: true })).toBe(true);
     expect(requiresDeepRouterReview(openDecision(), {})).toBe(true);
     expect(requiresDeepRouterReview(compositeDecision(), {})).toBe(true);
+  });
+
+  it('does not treat negated comprehensive phrases as an open-research request', () => {
+    expect(userRequestsComprehensiveResearch('请全面分析这个流程')).toBe(true);
+    expect(userRequestsComprehensiveResearch('不用全面分析，只回答负责人')).toBe(false);
+    expect(userRequestsComprehensiveResearch('不需要完整报告，给我一句话')).toBe(false);
+    expect(userRequestsComprehensiveResearch('无需深入研究，只看当前节点')).toBe(false);
+    expect(userRequestsComprehensiveResearch('不需要做一份全面报告，只列两个结论')).toBe(false);
+    expect(userRequestsComprehensiveResearch('这并非系统性研究，只是单点确认')).toBe(false);
   });
 
   it('keeps safety and trusted harness outside the untrusted JSON envelope', () => {

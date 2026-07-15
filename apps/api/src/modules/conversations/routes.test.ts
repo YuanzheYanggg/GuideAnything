@@ -12,11 +12,15 @@ describe('conversation and run routes', () => {
   let context: TestContext;
   let broker: RunEventBroker;
   const scheduleRun = vi.fn(async () => undefined);
+  const cancelRun = vi.fn(async () => undefined);
+  const steerRun = vi.fn(async () => undefined);
 
   beforeEach(async () => {
     broker = new RunEventBroker();
     scheduleRun.mockClear();
-    context = await createTestContext({ agentRuntime: { broker, scheduleRun } });
+    cancelRun.mockClear();
+    steerRun.mockClear();
+    context = await createTestContext({ agentRuntime: { broker, scheduleRun, cancelRun, steerRun } });
     seedTestWorkspace(context.database, context.userIds.author, {
       id: 'workspace-agent', slug: 'workspace-agent', name: 'Agent 工作区',
     });
@@ -149,6 +153,89 @@ describe('conversation and run routes', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json().code).toBe('INVALID_LAST_EVENT_ID');
+  });
+
+  it('authorizes and forwards an explicit run cancellation', async () => {
+    const conversationId = await createWorkspaceConversation();
+    const accepted = await sendWorkspaceMessage(conversationId);
+    const denied = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/cancel`,
+      headers: authorization(context.tokens.otherAuthor),
+      payload: { reason: '越权取消' },
+    });
+    expect(denied.statusCode).toBe(404);
+
+    const response = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/cancel`,
+      headers: authorization(context.tokens.author),
+      payload: { reason: '用户取消' },
+    });
+    expect(response.statusCode).toBe(202);
+    expect(cancelRun).toHaveBeenCalledWith(accepted.run.id, '用户取消');
+  });
+
+  it('persists an idempotent steer before notifying the active orchestrator', async () => {
+    const conversationId = await createWorkspaceConversation();
+    const accepted = await sendWorkspaceMessage(conversationId);
+    const payload = { clientSteerId: 'client-steer-1', instruction: '只聚焦当前节点。' };
+
+    const denied = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/steer`,
+      headers: authorization(context.tokens.otherAuthor),
+      payload,
+    });
+    expect(denied.statusCode).toBe(404);
+
+    const first = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/steer`,
+      headers: authorization(context.tokens.author),
+      payload,
+    });
+    const replay = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/steer`,
+      headers: authorization(context.tokens.author),
+      payload,
+    });
+
+    expect(first.statusCode).toBe(202);
+    expect(first.json().run.planVersion).toBe(2);
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json().run.planVersion).toBe(2);
+    expect(steerRun).toHaveBeenCalledTimes(1);
+    expect(steerRun).toHaveBeenCalledWith(accepted.run.id, 2, payload.instruction);
+  });
+
+  it('keeps a persisted steer recoverable when the runtime notification fails', async () => {
+    const conversationId = await createWorkspaceConversation();
+    const accepted = await sendWorkspaceMessage(conversationId);
+    await vi.waitFor(() => expect(scheduleRun).toHaveBeenCalled());
+    scheduleRun.mockClear();
+    steerRun.mockRejectedValueOnce(new Error('runtime control unavailable'));
+    const payload = { clientSteerId: 'client-steer-recover', instruction: '改为只看流程。' };
+
+    const first = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/steer`,
+      headers: authorization(context.tokens.author),
+      payload,
+    });
+    const replay = await context.app.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${accepted.run.id}/steer`,
+      headers: authorization(context.tokens.author),
+      payload,
+    });
+
+    expect(first.statusCode).toBe(202);
+    expect(first.json().run).toMatchObject({ planVersion: 2, status: 'QUEUED' });
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json().run.planVersion).toBe(2);
+    await vi.waitFor(() => expect(scheduleRun).toHaveBeenCalledWith(accepted.run.id));
   });
 
   async function createWorkspaceConversation(): Promise<string> {

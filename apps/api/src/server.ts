@@ -4,12 +4,21 @@ import { createDatabase } from './db/client';
 import { migrateDatabase } from './db/migrate';
 import { seedDatabase } from './db/seed';
 import { upgradeWorkspaceV1 } from './db/workspace-upgrade';
+import {
+  createAgentRuntimeAssembly,
+  createUnavailableKnowledgeAdapters,
+} from './modules/agents/assembly';
 
 const config = loadConfig();
 const database = createDatabase(config.databasePath);
 migrateDatabase(database);
 upgradeWorkspaceV1(database);
 if (config.seedDemo) await seedDatabase(database);
+const agentRuntime = createAgentRuntimeAssembly({
+  database,
+  config,
+  knowledgeAdapters: createUnavailableKnowledgeAdapters(),
+});
 
 const app = await buildApp({
   database,
@@ -17,6 +26,7 @@ const app = await buildApp({
   webOrigin: config.webOrigin,
   logger: true,
   uploadDir: config.uploadDir,
+  agentRuntime,
 });
 
 const close = async () => {
