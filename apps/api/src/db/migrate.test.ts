@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { createDatabase } from './client';
 import { migrateDatabase } from './migrate';
+import { permanentlyRemoveItem } from '../modules/personal/repository';
 
 const now = '2026-07-15T00:00:00.000Z';
 const later = '2026-07-22T00:00:00.000Z';
@@ -44,7 +45,7 @@ function insertSource(
   input: {
     id: string;
     scope: 'GLOBAL' | 'WORKSPACE' | 'SESSION';
-    kind: 'SANTEXWELL_VAULT' | 'WORKSPACE_DOCUMENT' | 'SESSION_ATTACHMENT';
+    kind: 'SANTEXWELL_VAULT' | 'WORKSPACE_DOCUMENT' | 'WORKSPACE_FLOW' | 'SESSION_ATTACHMENT';
     workspaceId?: string | null;
     conversationId?: string | null;
     createdBy?: string | null;
@@ -67,13 +68,18 @@ function insertSource(
   );
 }
 
-function insertDocument(database: DatabaseSync, id: string, sourceId: string): void {
+function insertDocument(
+  database: DatabaseSync,
+  id: string,
+  sourceId: string,
+  flowSnapshotId: string | null = null,
+): void {
   database.prepare(
     `INSERT INTO knowledge_documents (
-      id, source_id, relative_locator, title, checksum, revision, parse_status,
+      id, source_id, flow_snapshot_id, relative_locator, title, checksum, revision, parse_status,
       metadata_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'revision-1', 'READY', '{}', ?, ?)`,
-  ).run(id, sourceId, `${id}.md`, `文档 ${id}`, `checksum-${id}`, now, now);
+    ) VALUES (?, ?, ?, ?, ?, ?, 'revision-1', 'READY', '{}', ?, ?)`,
+  ).run(id, sourceId, flowSnapshotId, `${id}.md`, `文档 ${id}`, `checksum-${id}`, now, now);
 }
 
 function insertFragment(
@@ -176,6 +182,11 @@ describe('database migrations', () => {
       'knowledge_fragments_search_delete',
       'flow_knowledge_snapshots_immutable',
       'answer_citations_reference_id_immutable',
+      'knowledge_sources_identity_immutable',
+      'knowledge_documents_flow_integrity_insert',
+      'knowledge_documents_flow_integrity_update',
+      'flow_knowledge_snapshots_workspace_insert',
+      'conversation_attachments_identity_immutable',
     ]));
 
     const strictByTable = new Map(
@@ -237,6 +248,273 @@ describe('database migrations', () => {
     for (const source of invalidSources) {
       expect(() => insertSource(database!, { ...source, createdBy: 'user-one' })).toThrow();
     }
+    expect(() => insertSource(database!, {
+      id: 'workspace-without-creator',
+      scope: 'WORKSPACE',
+      kind: 'WORKSPACE_DOCUMENT',
+      workspaceId: 'workspace-one',
+    })).toThrow();
+
+    database.prepare(
+      `INSERT INTO workspaces (
+        id, slug, name, description, icon_key, color_key, owner_id, status, created_at, updated_at
+      ) VALUES ('workspace-two', 'two', '工作区二', '', 'SquaresFour', 'general',
+        'user-two', 'ACTIVE', ?, ?)`,
+    ).run(now, now);
+    database.prepare(
+      `UPDATE knowledge_sources
+       SET status = 'STALE', revision = 'revision-2', config_json = '{"changed":true}', updated_at = ?
+       WHERE id = 'source-workspace'`,
+    ).run(later);
+    expect(database.prepare(
+      `SELECT status, revision FROM knowledge_sources WHERE id = 'source-workspace'`,
+    ).get()).toEqual({ status: 'STALE', revision: 'revision-2' });
+
+    for (const statement of [
+      `UPDATE knowledge_sources SET id = 'renamed-source' WHERE id = 'source-workspace'`,
+      `UPDATE knowledge_sources
+       SET scope = 'GLOBAL', kind = 'SANTEXWELL_VAULT', workspace_id = NULL
+       WHERE id = 'source-workspace'`,
+      `UPDATE knowledge_sources SET kind = 'WORKSPACE_FLOW' WHERE id = 'source-workspace'`,
+      `UPDATE knowledge_sources SET workspace_id = 'workspace-two' WHERE id = 'source-workspace'`,
+      `UPDATE knowledge_sources SET created_by = 'user-two' WHERE id = 'source-workspace'`,
+      `UPDATE knowledge_sources SET conversation_id = 'workspace-one-conversation'
+       WHERE id = 'source-session'`,
+    ]) {
+      expect(() => database!.exec(statement)).toThrow(/immutable/i);
+    }
+  });
+
+  it('models workspace flow and document sources independently without orphaned flow documents', () => {
+    database = createDatabase(':memory:');
+    migrateDatabase(database);
+    seedPrincipals(database);
+    database.prepare(
+      `INSERT INTO workspaces (
+        id, slug, name, description, icon_key, color_key, owner_id, status, created_at, updated_at
+      ) VALUES ('workspace-two', 'two', '工作区二', '', 'SquaresFour', 'general',
+        'user-two', 'ACTIVE', ?, ?)`,
+    ).run(now, now);
+    const insertGuide = database.prepare(
+      `INSERT INTO guides (
+        id, owner_id, title, summary, tags_json, status, visibility, revision,
+        draft_document, created_at, updated_at
+      ) VALUES (?, ?, ?, '', '[]', 'DRAFT', 'INTERNAL', 1, '{}', ?, ?)`,
+    );
+    insertGuide.run('guide-flow', 'user-one', '流程指南', now, now);
+    insertGuide.run('guide-orphan', 'user-one', '无工作区指南', now, now);
+    database.prepare(
+      `INSERT INTO workspace_items (
+        id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+      ) VALUES ('item-guide-flow', 'workspace-one', 'GUIDE', 'guide-flow', '流程指南', '',
+        'user-one', ?, ?)`,
+    ).run(now, now);
+    const insertSnapshot = database.prepare(
+      `INSERT INTO flow_knowledge_snapshots (
+        id, guide_id, workspace_id, origin_type, revision, version_id, version,
+        document_checksum, snapshot_json, created_at
+      ) VALUES (?, ?, ?, 'DRAFT', 1, NULL, NULL, ?, '{}', ?)`,
+    );
+    insertSnapshot.run('snapshot-flow', 'guide-flow', 'workspace-one', 'flow-checksum', now);
+    expect(() => insertSnapshot.run(
+      'snapshot-orphan', 'guide-orphan', 'workspace-one', 'orphan-checksum', now,
+    )).toThrow();
+    expect(() => insertSnapshot.run(
+      'snapshot-wrong-workspace', 'guide-flow', 'workspace-two', 'wrong-workspace-checksum', now,
+    )).toThrow();
+
+    insertSource(database, {
+      id: 'workspace-document-source', scope: 'WORKSPACE', kind: 'WORKSPACE_DOCUMENT',
+      workspaceId: 'workspace-one', createdBy: 'user-one',
+    });
+    insertSource(database, {
+      id: 'workspace-flow-source', scope: 'WORKSPACE', kind: 'WORKSPACE_FLOW',
+      workspaceId: 'workspace-one', createdBy: 'user-one',
+    });
+    insertSource(database, {
+      id: 'wrong-workspace-flow-source', scope: 'WORKSPACE', kind: 'WORKSPACE_FLOW',
+      workspaceId: 'workspace-two', createdBy: 'user-two',
+    });
+
+    expect(database.prepare(
+      `SELECT id, kind FROM knowledge_sources WHERE scope = 'WORKSPACE' ORDER BY id`,
+    ).all()).toEqual([
+      { id: 'workspace-document-source', kind: 'WORKSPACE_DOCUMENT' },
+      { id: 'workspace-flow-source', kind: 'WORKSPACE_FLOW' },
+      { id: 'wrong-workspace-flow-source', kind: 'WORKSPACE_FLOW' },
+    ]);
+    insertDocument(database, 'workspace-document', 'workspace-document-source');
+    insertDocument(database, 'workspace-flow-document', 'workspace-flow-source', 'snapshot-flow');
+    insertFragment(database, {
+      id: 'workspace-flow-fragment',
+      documentId: 'workspace-flow-document',
+      searchText: 'flowterm',
+    });
+
+    expect(() => insertDocument(
+      database!, 'flow-without-snapshot', 'workspace-flow-source',
+    )).toThrow();
+    expect(() => insertDocument(
+      database!, 'document-with-snapshot', 'workspace-document-source', 'snapshot-flow',
+    )).toThrow();
+    expect(() => insertDocument(
+      database!, 'wrong-workspace-document', 'wrong-workspace-flow-source', 'snapshot-flow',
+    )).toThrow();
+    expect(() => insertDocument(
+      database!, 'orphan-flow-document', 'workspace-flow-source', 'snapshot-orphan',
+    )).toThrow();
+    expect(() => insertDocument(
+      database!, 'duplicate-flow-document', 'workspace-flow-source', 'snapshot-flow',
+    )).toThrow();
+    expect(() => database!.prepare(
+      `UPDATE knowledge_documents SET flow_snapshot_id = NULL
+       WHERE id = 'workspace-flow-document'`,
+    ).run()).toThrow();
+    expect(() => database!.prepare(
+      `UPDATE knowledge_documents SET source_id = 'workspace-document-source'
+       WHERE id = 'workspace-flow-document'`,
+    ).run()).toThrow();
+    expect(() => database!.prepare(
+      `UPDATE knowledge_sources SET workspace_id = 'workspace-two'
+       WHERE id = 'workspace-flow-source'`,
+    ).run()).toThrow(/immutable/i);
+
+    database.prepare(`DELETE FROM workspace_items WHERE id = 'item-guide-flow'`).run();
+    expect(database.prepare(
+      `SELECT workspace_id FROM flow_knowledge_snapshots WHERE id = 'snapshot-flow'`,
+    ).get()).toEqual({ workspace_id: 'workspace-one' });
+    expect(database.prepare(
+      `SELECT id FROM knowledge_documents WHERE id = 'workspace-flow-document'`,
+    ).get()).toEqual({ id: 'workspace-flow-document' });
+
+    database.prepare(`DELETE FROM flow_knowledge_snapshots WHERE id = 'snapshot-flow'`).run();
+    expect(database.prepare(
+      `SELECT COUNT(*) AS count FROM knowledge_documents WHERE id = 'workspace-flow-document'`,
+    ).get()).toEqual({ count: 0 });
+    expect(database.prepare(
+      `SELECT COUNT(*) AS count FROM knowledge_fragments WHERE id = 'workspace-flow-fragment'`,
+    ).get()).toEqual({ count: 0 });
+    expect(database.prepare(
+      `SELECT fragment_id FROM knowledge_fragment_search
+       WHERE knowledge_fragment_search MATCH 'flowterm'`,
+    ).all()).toEqual([]);
+    expect(database.prepare(
+      `SELECT id FROM knowledge_sources WHERE id = 'workspace-flow-source'`,
+    ).get()).toEqual({ id: 'workspace-flow-source' });
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
+  it('preserves published flow history and cascades unpublished flow indexes on permanent guide removal', () => {
+    database = createDatabase(':memory:');
+    migrateDatabase(database);
+    seedPrincipals(database);
+    const insertGuide = database.prepare(
+      `INSERT INTO guides (
+        id, owner_id, title, summary, tags_json, status, visibility, revision,
+        draft_document, published_version_id, created_at, updated_at
+      ) VALUES (?, 'user-one', ?, '', '[]', ?, 'INTERNAL', 1, '{}', ?, ?, ?)`,
+    );
+    insertGuide.run('published-guide', '已发布指南', 'PUBLISHED', 'published-version', now, now);
+    insertGuide.run('draft-guide', '草稿指南', 'DRAFT', null, now, now);
+    database.prepare(
+      `INSERT INTO guide_versions (
+        id, guide_id, version, title, summary, tags_json, document_json,
+        search_text, published_by, published_at
+      ) VALUES ('published-version', 'published-guide', 1, '已发布指南', '', '[]', '{}', '',
+        'user-one', ?)`,
+    ).run(now);
+    const insertItem = database.prepare(
+      `INSERT INTO workspace_items (
+        id, workspace_id, kind, entity_id, title, summary, created_by,
+        deleted_at, deleted_by, created_at, updated_at
+      ) VALUES (?, 'workspace-one', 'GUIDE', ?, ?, '', 'user-one', ?, 'user-one', ?, ?)`,
+    );
+    insertItem.run('published-item', 'published-guide', '已发布指南', now, now, now);
+    insertItem.run('draft-item', 'draft-guide', '草稿指南', now, now, now);
+    const insertSnapshot = database.prepare(
+      `INSERT INTO flow_knowledge_snapshots (
+        id, guide_id, workspace_id, origin_type, revision, version_id, version,
+        document_checksum, snapshot_json, created_at
+      ) VALUES (?, ?, 'workspace-one', ?, ?, ?, ?, ?, '{}', ?)`,
+    );
+    insertSnapshot.run(
+      'published-snapshot', 'published-guide', 'PUBLISHED', null,
+      'published-version', 1, 'published-checksum', now,
+    );
+    insertSnapshot.run(
+      'draft-snapshot', 'draft-guide', 'DRAFT', 1, null, null, 'draft-checksum', now,
+    );
+    insertSource(database, {
+      id: 'published-flow-source', scope: 'WORKSPACE', kind: 'WORKSPACE_FLOW',
+      workspaceId: 'workspace-one', createdBy: 'user-one',
+    });
+    insertSource(database, {
+      id: 'draft-flow-source', scope: 'WORKSPACE', kind: 'WORKSPACE_FLOW',
+      workspaceId: 'workspace-one', createdBy: 'user-one',
+    });
+    insertDocument(database, 'published-flow-document', 'published-flow-source', 'published-snapshot');
+    insertDocument(database, 'draft-flow-document', 'draft-flow-source', 'draft-snapshot');
+    insertFragment(database, {
+      id: 'published-flow-fragment',
+      documentId: 'published-flow-document',
+      searchText: 'publishedflow',
+    });
+    insertFragment(database, {
+      id: 'draft-flow-fragment',
+      documentId: 'draft-flow-document',
+      searchText: 'draftflow',
+    });
+
+    permanentlyRemoveItem(database, {
+      id: 'published-item',
+      workspaceId: 'workspace-one',
+      kind: 'GUIDE',
+      entityId: 'published-guide',
+      createdBy: 'user-one',
+      deletedAt: now,
+      workspacePermission: 'OWNER',
+      guideOwnerId: 'user-one',
+      publishedVersionId: 'published-version',
+    });
+    expect(database.prepare(
+      `SELECT status FROM guides WHERE id = 'published-guide'`,
+    ).get()).toEqual({ status: 'ARCHIVED' });
+    expect(database.prepare(
+      `SELECT workspace_id FROM flow_knowledge_snapshots WHERE id = 'published-snapshot'`,
+    ).get()).toEqual({ workspace_id: 'workspace-one' });
+    expect(database.prepare(
+      `SELECT id FROM knowledge_documents WHERE id = 'published-flow-document'`,
+    ).get()).toEqual({ id: 'published-flow-document' });
+
+    permanentlyRemoveItem(database, {
+      id: 'draft-item',
+      workspaceId: 'workspace-one',
+      kind: 'GUIDE',
+      entityId: 'draft-guide',
+      createdBy: 'user-one',
+      deletedAt: now,
+      workspacePermission: 'OWNER',
+      guideOwnerId: 'user-one',
+      publishedVersionId: null,
+    });
+    expect(database.prepare(
+      `SELECT COUNT(*) AS count FROM guides WHERE id = 'draft-guide'`,
+    ).get()).toEqual({ count: 0 });
+    expect(database.prepare(
+      `SELECT COUNT(*) AS count FROM flow_knowledge_snapshots WHERE id = 'draft-snapshot'`,
+    ).get()).toEqual({ count: 0 });
+    expect(database.prepare(
+      `SELECT COUNT(*) AS count FROM knowledge_documents WHERE id = 'draft-flow-document'`,
+    ).get()).toEqual({ count: 0 });
+    expect(database.prepare(
+      `SELECT fragment_id FROM knowledge_fragment_search
+       WHERE knowledge_fragment_search MATCH 'draftflow'`,
+    ).all()).toEqual([]);
+    expect(database.prepare(
+      `SELECT fragment_id FROM knowledge_fragment_search
+       WHERE knowledge_fragment_search MATCH 'publishedflow'`,
+    ).all()).toEqual([{ fragment_id: 'published-flow-fragment' }]);
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
   it('keeps flow snapshot origins unique, mutually exclusive, and immutable', () => {
@@ -255,12 +533,18 @@ describe('database migrations', () => {
         search_text, published_by, published_at
       ) VALUES ('version-one', 'guide-one', 1, '指南', '', '[]', '{}', '', 'user-one', ?)`,
     ).run(now);
+    database.prepare(
+      `INSERT INTO workspace_items (
+        id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+      ) VALUES ('item-guide-one', 'workspace-one', 'GUIDE', 'guide-one', '指南', '',
+        'user-one', ?, ?)`,
+    ).run(now, now);
 
     const insertSnapshot = database.prepare(
       `INSERT INTO flow_knowledge_snapshots (
-        id, guide_id, origin_type, revision, version_id, version,
+        id, guide_id, workspace_id, origin_type, revision, version_id, version,
         document_checksum, snapshot_json, created_at
-      ) VALUES (?, 'guide-one', ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, 'guide-one', 'workspace-one', ?, ?, ?, ?, ?, ?, ?)`,
     );
     insertSnapshot.run('snapshot-draft', 'DRAFT', 2, null, null, 'draft-checksum', '{"schemaVersion":1}', now);
     insertSnapshot.run('snapshot-published', 'PUBLISHED', null, 'version-one', 1, 'published-checksum', '{"schemaVersion":1}', now);
@@ -351,6 +635,18 @@ describe('database migrations', () => {
       `UPDATE answer_citations SET reference_id = 'reference-two' WHERE reference_id = 'reference-one'`,
     ).run()).toThrow(/immutable/i);
     expect(() => database!.prepare(
+      `UPDATE answer_citations SET internal_locator_json = '{"kind":"WORKSPACE_FLOW"}'
+       WHERE reference_id = 'reference-one'`,
+    ).run()).toThrow(/immutable/i);
+    expect(() => database!.prepare(
+      `UPDATE answer_citations SET revision = 'revision-2'
+       WHERE reference_id = 'reference-one'`,
+    ).run()).toThrow(/immutable/i);
+    expect(() => database!.prepare(
+      `UPDATE answer_citations SET run_id = 'run-two'
+       WHERE reference_id = 'reference-one'`,
+    ).run()).toThrow(/immutable/i);
+    expect(() => database!.prepare(
       `INSERT INTO answer_citations (
         reference_id, run_id, source_kind, internal_locator_json, title, excerpt, revision, created_at
       ) VALUES ('reference-one', 'run-one', 'SANTEXWELL', '{}', '重复', '重复', 'revision-1', ?)`,
@@ -376,6 +672,10 @@ describe('database migrations', () => {
       id: 'attachment-source', scope: 'SESSION', kind: 'SESSION_ATTACHMENT',
       conversationId: 'conversation-one', createdBy: 'user-one',
     });
+    insertSource(database, {
+      id: 'attachment-source-two', scope: 'SESSION', kind: 'SESSION_ATTACHMENT',
+      conversationId: 'conversation-two', createdBy: 'user-two',
+    });
     database.prepare(
       `INSERT INTO conversation_attachments (
         id, conversation_id, owner_id, source_id, original_name, mime_type, size,
@@ -384,6 +684,11 @@ describe('database migrations', () => {
         '资料.md', 'text/markdown', 12, 'conversations/conversation-one/attachment-one',
         'READY', ?, ?, ?)`,
     ).run(later, now, now);
+    expect(() => database!.prepare(
+      `UPDATE conversation_attachments
+       SET conversation_id = 'conversation-two', owner_id = 'user-two', source_id = 'attachment-source-two'
+       WHERE id = 'attachment-one'`,
+    ).run()).toThrow(/immutable/i);
     expect(() => database!.prepare(
       `INSERT INTO conversation_attachments (
         id, conversation_id, owner_id, original_name, mime_type, size,

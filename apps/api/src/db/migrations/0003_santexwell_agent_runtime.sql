@@ -25,7 +25,7 @@ CREATE TABLE knowledge_sources (
   id TEXT PRIMARY KEY,
   scope TEXT NOT NULL CHECK (scope IN ('GLOBAL', 'WORKSPACE', 'SESSION')),
   kind TEXT NOT NULL CHECK (kind IN (
-    'SANTEXWELL_VAULT', 'WORKSPACE_DOCUMENT', 'SESSION_ATTACHMENT'
+    'SANTEXWELL_VAULT', 'WORKSPACE_DOCUMENT', 'WORKSPACE_FLOW', 'SESSION_ATTACHMENT'
   )),
   workspace_id TEXT REFERENCES workspaces(id),
   conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
@@ -45,9 +45,10 @@ CREATE TABLE knowledge_sources (
       AND workspace_id IS NULL
       AND conversation_id IS NULL)
     OR (scope = 'WORKSPACE'
-      AND kind = 'WORKSPACE_DOCUMENT'
+      AND kind IN ('WORKSPACE_DOCUMENT', 'WORKSPACE_FLOW')
       AND workspace_id IS NOT NULL
-      AND conversation_id IS NULL)
+      AND conversation_id IS NULL
+      AND created_by IS NOT NULL)
     OR (scope = 'SESSION'
       AND kind = 'SESSION_ATTACHMENT'
       AND workspace_id IS NULL
@@ -68,9 +69,22 @@ CREATE INDEX knowledge_sources_global_idx
   ON knowledge_sources(kind, status, updated_at DESC)
   WHERE scope = 'GLOBAL';
 
+CREATE TRIGGER knowledge_sources_identity_immutable
+BEFORE UPDATE OF id, scope, kind, workspace_id, conversation_id, created_by ON knowledge_sources
+WHEN NEW.id IS NOT OLD.id
+  OR NEW.scope IS NOT OLD.scope
+  OR NEW.kind IS NOT OLD.kind
+  OR NEW.workspace_id IS NOT OLD.workspace_id
+  OR NEW.conversation_id IS NOT OLD.conversation_id
+  OR NEW.created_by IS NOT OLD.created_by
+BEGIN
+  SELECT RAISE(ABORT, 'knowledge source identity is immutable');
+END;
+
 CREATE TABLE knowledge_documents (
   id TEXT PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES knowledge_sources(id) ON DELETE CASCADE,
+  flow_snapshot_id TEXT REFERENCES flow_knowledge_snapshots(id) ON DELETE CASCADE,
   relative_locator TEXT NOT NULL CHECK (
     length(relative_locator) > 0
     AND substr(relative_locator, 1, 1) != '/'
@@ -91,6 +105,9 @@ CREATE TABLE knowledge_documents (
 
 CREATE INDEX knowledge_documents_source_idx
   ON knowledge_documents(source_id, parse_status, updated_at DESC);
+CREATE UNIQUE INDEX knowledge_documents_flow_snapshot_unique
+  ON knowledge_documents(flow_snapshot_id)
+  WHERE flow_snapshot_id IS NOT NULL;
 
 CREATE TABLE knowledge_fragments (
   id TEXT PRIMARY KEY,
@@ -146,7 +163,8 @@ CREATE UNIQUE INDEX guide_versions_snapshot_origin_unique
 
 CREATE TABLE flow_knowledge_snapshots (
   id TEXT PRIMARY KEY,
-  guide_id TEXT NOT NULL REFERENCES guides(id),
+  guide_id TEXT NOT NULL REFERENCES guides(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
   origin_type TEXT NOT NULL CHECK (origin_type IN ('DRAFT', 'PUBLISHED')),
   revision INTEGER CHECK (revision >= 0),
   version_id TEXT REFERENCES guide_versions(id),
@@ -179,10 +197,76 @@ CREATE UNIQUE INDEX flow_snapshots_published_origin_unique
 CREATE INDEX flow_snapshots_guide_created_idx
   ON flow_knowledge_snapshots(guide_id, created_at DESC);
 
+CREATE TRIGGER flow_knowledge_snapshots_workspace_insert
+BEFORE INSERT ON flow_knowledge_snapshots
+WHEN NOT EXISTS (
+  SELECT 1 FROM workspace_items
+  WHERE kind = 'GUIDE'
+    AND entity_id = NEW.guide_id
+    AND workspace_id = NEW.workspace_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'flow snapshot guide must belong to its immutable workspace');
+END;
+
 CREATE TRIGGER flow_knowledge_snapshots_immutable
 BEFORE UPDATE ON flow_knowledge_snapshots
 BEGIN
   SELECT RAISE(ABORT, 'flow knowledge snapshots are immutable');
+END;
+
+CREATE TRIGGER knowledge_documents_flow_integrity_insert
+BEFORE INSERT ON knowledge_documents
+BEGIN
+  SELECT CASE
+    WHEN EXISTS (
+      SELECT 1 FROM knowledge_sources
+      WHERE id = NEW.source_id AND kind = 'WORKSPACE_FLOW'
+    ) AND NEW.flow_snapshot_id IS NULL
+    THEN RAISE(ABORT, 'workspace flow documents require a flow snapshot')
+    WHEN EXISTS (
+      SELECT 1 FROM knowledge_sources
+      WHERE id = NEW.source_id AND kind != 'WORKSPACE_FLOW'
+    ) AND NEW.flow_snapshot_id IS NOT NULL
+    THEN RAISE(ABORT, 'only workspace flow documents may reference a flow snapshot')
+    WHEN NEW.flow_snapshot_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1
+      FROM knowledge_sources AS source
+      JOIN flow_knowledge_snapshots AS snapshot ON snapshot.id = NEW.flow_snapshot_id
+      WHERE source.id = NEW.source_id
+        AND source.scope = 'WORKSPACE'
+        AND source.kind = 'WORKSPACE_FLOW'
+        AND source.workspace_id = snapshot.workspace_id
+    )
+    THEN RAISE(ABORT, 'flow snapshot guide must belong to the source workspace')
+  END;
+END;
+
+CREATE TRIGGER knowledge_documents_flow_integrity_update
+BEFORE UPDATE OF source_id, flow_snapshot_id ON knowledge_documents
+BEGIN
+  SELECT CASE
+    WHEN EXISTS (
+      SELECT 1 FROM knowledge_sources
+      WHERE id = NEW.source_id AND kind = 'WORKSPACE_FLOW'
+    ) AND NEW.flow_snapshot_id IS NULL
+    THEN RAISE(ABORT, 'workspace flow documents require a flow snapshot')
+    WHEN EXISTS (
+      SELECT 1 FROM knowledge_sources
+      WHERE id = NEW.source_id AND kind != 'WORKSPACE_FLOW'
+    ) AND NEW.flow_snapshot_id IS NOT NULL
+    THEN RAISE(ABORT, 'only workspace flow documents may reference a flow snapshot')
+    WHEN NEW.flow_snapshot_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1
+      FROM knowledge_sources AS source
+      JOIN flow_knowledge_snapshots AS snapshot ON snapshot.id = NEW.flow_snapshot_id
+      WHERE source.id = NEW.source_id
+        AND source.scope = 'WORKSPACE'
+        AND source.kind = 'WORKSPACE_FLOW'
+        AND source.workspace_id = snapshot.workspace_id
+    )
+    THEN RAISE(ABORT, 'flow snapshot guide must belong to the source workspace')
+  END;
 END;
 
 CREATE TABLE conversation_messages (
@@ -300,10 +384,9 @@ CREATE INDEX answer_citations_run_idx
   ON answer_citations(run_id, created_at);
 
 CREATE TRIGGER answer_citations_reference_id_immutable
-BEFORE UPDATE OF reference_id ON answer_citations
-WHEN NEW.reference_id IS NOT OLD.reference_id
+BEFORE UPDATE ON answer_citations
 BEGIN
-  SELECT RAISE(ABORT, 'answer citation reference id is immutable');
+  SELECT RAISE(ABORT, 'answer citation is immutable');
 END;
 
 CREATE TABLE artifacts (
@@ -359,6 +442,15 @@ CREATE INDEX conversation_attachments_owner_idx
   ON conversation_attachments(owner_id, status, expires_at);
 CREATE INDEX conversation_attachments_conversation_idx
   ON conversation_attachments(conversation_id, created_at DESC);
+
+CREATE TRIGGER conversation_attachments_identity_immutable
+BEFORE UPDATE OF id, conversation_id, owner_id ON conversation_attachments
+WHEN NEW.id IS NOT OLD.id
+  OR NEW.conversation_id IS NOT OLD.conversation_id
+  OR NEW.owner_id IS NOT OLD.owner_id
+BEGIN
+  SELECT RAISE(ABORT, 'conversation attachment identity is immutable');
+END;
 
 CREATE TRIGGER conversation_attachments_session_source_insert
 BEFORE INSERT ON conversation_attachments

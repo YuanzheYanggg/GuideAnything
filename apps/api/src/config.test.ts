@@ -70,6 +70,15 @@ describe('parseConfig', () => {
     'https://127.0.0.1:3010/',
     'http://192.168.1.8:3010/',
     'http://[::1]:3010/',
+    'http://2130706433/',
+    'http://127.1/',
+    'http://127.0.1/',
+    'http://localhost:0/',
+    'http://localhost:65536/',
+    'http://localhost/%2e%2e',
+    'http://localhost/%2E%2E/',
+    'http://localhost/a/../',
+    'http://localhost//',
     'http://user:password@localhost:3010/',
     'http://localhost:3010/api',
     'http://localhost:3010/?token=secret',
@@ -77,6 +86,15 @@ describe('parseConfig', () => {
   ])('rejects unsafe bridge URL %s', (bridgeUrl) => {
     expect(() => parseConfig(env({ AGENT_BRIDGE_URL: bridgeUrl }), root))
       .toThrow(/AGENT_BRIDGE_URL/);
+  });
+
+  it.each([
+    ['http://localhost', 'http://localhost/'],
+    ['http://127.0.0.1/', 'http://127.0.0.1/'],
+    ['http://localhost:1', 'http://localhost:1/'],
+    ['http://127.0.0.1:65535/', 'http://127.0.0.1:65535/'],
+  ])('accepts canonical local bridge URL %s', (bridgeUrl, expected) => {
+    expect(parseConfig(env({ AGENT_BRIDGE_URL: bridgeUrl }), root).bridgeUrl).toBe(expected);
   });
 
   it.each([

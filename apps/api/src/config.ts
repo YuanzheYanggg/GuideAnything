@@ -123,22 +123,20 @@ function parseRuntimeMode(value: string | undefined): AppConfig['runtimeMode'] {
 }
 
 function parseBridgeUrl(value: string): string {
+  const lexicalMatch = /^http:\/\/(?:localhost|127\.0\.0\.1)(?::([1-9]\d{0,4}))?\/?$/u.exec(value);
+  if (!lexicalMatch) {
+    throw new Error('AGENT_BRIDGE_URL must use the literal localhost or 127.0.0.1 root URL form');
+  }
+  const port = lexicalMatch[1];
+  if (port !== undefined && Number(port) > 65_535) {
+    throw new Error('AGENT_BRIDGE_URL port must be between 1 and 65535');
+  }
+
   let url: URL;
   try {
     url = new URL(value);
   } catch {
     throw new Error('AGENT_BRIDGE_URL must be a valid localhost HTTP URL');
-  }
-  if (
-    url.protocol !== 'http:'
-    || (url.hostname !== 'localhost' && url.hostname !== '127.0.0.1')
-    || url.username !== ''
-    || url.password !== ''
-    || url.pathname !== '/'
-    || url.search !== ''
-    || url.hash !== ''
-  ) {
-    throw new Error('AGENT_BRIDGE_URL must be a root-path http://localhost or http://127.0.0.1 URL without credentials, query, or fragment');
   }
   return url.toString();
 }
