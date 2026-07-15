@@ -878,6 +878,67 @@ describe('CodexRuntime cancel and steer', () => {
 });
 
 describe('CodexRuntime start reservations', () => {
+  it('does not start a turn when the runtime degrades while thread startup is pending', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const response = deferred<unknown>();
+    rpc.enqueue('thread/start', () => response.promise);
+
+    const pending = runtime.startRun(runRequest());
+    rpc.emitIssue('MALFORMED_LINE');
+    response.resolve(threadResponse('thread-1', runtimeConfig));
+
+    await expect(pending).rejects.toMatchObject({ code: 'RUNTIME_DEGRADED', retryable: true });
+    expect(rpc.requests.filter(({ method }) => method === 'turn/start')).toHaveLength(0);
+    expect(runtime.getHealth()).toMatchObject({
+      status: 'DEGRADED', reasonCodes: ['CODEX_PROTOCOL_VIOLATION'],
+    });
+  });
+
+  it('interrupts a live turn before rejecting startup that crossed a degraded boundary', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const response = deferred<unknown>();
+    rpc.enqueue('thread/start', threadResponse('thread-1', runtimeConfig));
+    rpc.enqueue('turn/start', () => response.promise);
+    rpc.enqueue('turn/interrupt', {});
+
+    const pending = runtime.startRun(runRequest());
+    await vi.waitFor(() => {
+      expect(rpc.requests.filter(({ method }) => method === 'turn/start')).toHaveLength(1);
+    });
+    rpc.emitIssue('MALFORMED_LINE');
+    response.resolve({ turn: { id: 'turn-1', status: 'inProgress', items: [] } });
+
+    await expect(pending).rejects.toMatchObject({ code: 'RUNTIME_DEGRADED', retryable: true });
+    expect(rpc.requests.filter(({ method }) => method === 'turn/interrupt')).toEqual([{
+      method: 'turn/interrupt',
+      params: { threadId: 'thread-1', turnId: 'turn-1' },
+      options: { timeoutMs: runtimeConfig.rpcTimeoutMs },
+    }]);
+  });
+
+  it('latches degradation when a crossed-boundary live turn cannot be interrupted', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const response = deferred<unknown>();
+    rpc.enqueue('thread/start', threadResponse('thread-1', runtimeConfig));
+    rpc.enqueue('turn/start', () => response.promise);
+    rpc.enqueue('turn/interrupt', () => {
+      throw new Error('private startup interruption failure');
+    });
+
+    const pending = runtime.startRun(runRequest());
+    await vi.waitFor(() => {
+      expect(rpc.requests.filter(({ method }) => method === 'turn/start')).toHaveLength(1);
+    });
+    rpc.emitServerRequest('tool/requestUserInput');
+    response.resolve({ turn: { id: 'turn-1', status: 'inProgress', items: [] } });
+
+    await expect(pending).rejects.toMatchObject({ code: 'TURN_INTERRUPT_FAILED', retryable: true });
+    expect(runtime.getHealth()).toMatchObject({
+      status: 'DEGRADED',
+      reasonCodes: ['TURN_INTERRUPT_FAILED', 'UNEXPECTED_SERVER_REQUEST'],
+    });
+  });
+
   it('reserves a run id before awaiting thread startup', async () => {
     const { runtime, rpc, runtimeConfig } = await initializedRuntime();
     const response = deferred<unknown>();

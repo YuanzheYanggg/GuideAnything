@@ -264,6 +264,9 @@ export class CodexRuntime {
         ? await this.#resumeThread(request.resumeThreadId, role)
         : await this.#startThread(role);
       const threadId = this.#validateThreadResponse(thread, role);
+      if (this.getHealth().status !== 'READY') {
+        throw new CodexRuntimeError('RUNTIME_DEGRADED', true);
+      }
       if (request.resumeThreadId && threadId !== request.resumeThreadId) {
         this.#degrade('RESUMED_THREAD_ID_MISMATCH');
         throw new CodexRuntimeError('RESUMED_THREAD_ID_MISMATCH');
@@ -320,6 +323,9 @@ export class CodexRuntime {
         throw new CodexRuntimeError('TURN_START_INVALID', true);
       }
       context.turnId = turn.id;
+      if (context.terminal || this.getHealth().status !== 'READY') {
+        await this.#rejectCrossedStartupBoundary(context);
+      }
       context.timeout = setTimeout(() => {
         void this.#handleTurnTimeout(context);
       }, this.#config.turnTimeoutMs);
@@ -680,6 +686,21 @@ export class CodexRuntime {
       return;
     }
     if (!context.terminal) this.#fail(context, 'TURN_TIMEOUT', true);
+  }
+
+  async #rejectCrossedStartupBoundary(context: RunContext): Promise<never> {
+    try {
+      await this.#interruptOnce(context);
+    } catch {
+      this.#degrade('TURN_INTERRUPT_FAILED');
+      if (!context.terminal) this.#fail(context, 'TURN_INTERRUPT_FAILED', true);
+      throw new CodexRuntimeError('TURN_INTERRUPT_FAILED', true);
+    }
+    if (!context.terminal) this.#fail(context, 'RUNTIME_DEGRADED', true);
+    throw new CodexRuntimeError(
+      this.getHealth().status === 'DEGRADED' ? 'RUNTIME_DEGRADED' : 'RUN_NOT_ACTIVE',
+      true,
+    );
   }
 
   #interruptOnce(context: RunContext): Promise<void> {
