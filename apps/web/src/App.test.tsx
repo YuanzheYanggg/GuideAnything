@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App, safeReturnTo, withReturnTo } from './App';
+import type { KnowledgeApi } from './features/knowledge/types';
 import { ApiClient } from './lib/api';
 import { mockAuthenticatedWorkspaceApi } from './test/workspace-api-mocks';
 
@@ -45,6 +46,28 @@ describe('App routes', () => {
 
     expect(await screen.findByRole('heading', { name: '物料管理' })).toBeVisible();
     expect(window.location.pathname).toBe('/workspaces/workspace-materials');
+  });
+
+  it('restores the global Santexwell portal and exposes it in primary navigation', async () => {
+    window.history.replaceState(null, '', '/knowledge/santexwell');
+    mockAuthenticatedWorkspaceApi({ workspaces: [] });
+    vi.spyOn(ApiClient.prototype, 'knowledgeApi').mockReturnValue(knowledgeApi());
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Santexwell 知识库' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Santexwell' })).toHaveAttribute('aria-current', 'page');
+    expect(window.location.pathname).toBe('/knowledge/santexwell');
+  });
+
+  it('does not register an ontology product route', async () => {
+    window.history.replaceState(null, '', '/workspaces/workspace-materials/ontology');
+    mockAuthenticatedWorkspaceApi({ workspaces: [workspace] });
+
+    render(<App />);
+
+    await waitFor(() => expect(window.location.pathname).toBe('/library'));
+    expect(screen.queryByText('Ontology')).not.toBeInTheDocument();
   });
 
   it('consumes workspace create intent before creating so reload cannot duplicate it', async () => {
@@ -164,4 +187,48 @@ describe('workspace API clients', () => {
     });
     expect(request).toHaveBeenNthCalledWith(10, '/workspace-items/item-guide', { method: 'DELETE' });
   });
+
+  it('keeps knowledge and source requests behind authenticated API facades', async () => {
+    const client = new ApiClient();
+    const health = {
+      status: 'READY' as const, revision: 'revision-1', indexedDocuments: 1, indexedFragments: 2,
+      harnessRevision: 'harness-1', harnessFileCount: 4, reasonCodes: [], indexedAt: '2026-07-15T00:00:00.000Z',
+    };
+    const request = vi.spyOn(client, 'request').mockImplementation(async (path) => {
+      if (path.endsWith('/status')) return { status: health } as never;
+      if (path.endsWith('/overview')) return { mocs: [], clusters: [] } as never;
+      if (path.includes('/search')) return { items: [] } as never;
+      if (path.includes('/documents/')) return { document: { documentId: 'doc-1' } } as never;
+      if (path.endsWith('/flow-snapshots')) return { items: [] } as never;
+      if (path.endsWith('/sources')) return { workspaceId: 'workspace-1', workspacePermission: 'EDIT', capabilities: { canUploadPersistentSource: true }, items: [] } as never;
+      return {} as never;
+    });
+
+    const knowledge = client.knowledgeApi();
+    const sources = client.sourcesApi();
+    await knowledge.status();
+    await knowledge.overview();
+    await knowledge.search('花式纱');
+    await knowledge.readDocument('doc/1');
+    await sources.list('workspace/1');
+    await sources.listFlowSnapshots('workspace/1');
+    await sources.santexwellStatus();
+
+    expect(request).toHaveBeenNthCalledWith(3, '/knowledge/santexwell/search?q=%E8%8A%B1%E5%BC%8F%E7%BA%B1');
+    expect(request).toHaveBeenNthCalledWith(4, '/knowledge/santexwell/documents/doc%2F1');
+    expect(request).toHaveBeenNthCalledWith(5, '/workspaces/workspace%2F1/sources');
+    expect(request).toHaveBeenNthCalledWith(6, '/workspaces/workspace%2F1/flow-snapshots');
+  });
 });
+
+function knowledgeApi(): KnowledgeApi {
+  return {
+    status: vi.fn().mockResolvedValue({
+      status: 'READY', revision: 'revision-1', indexedDocuments: 760, indexedFragments: 13_929,
+      harnessRevision: 'harness-1', harnessFileCount: 4, reasonCodes: [], indexedAt: '2026-07-15T00:00:00.000Z',
+    }),
+    overview: vi.fn().mockResolvedValue({ mocs: [], clusters: [] }),
+    search: vi.fn().mockResolvedValue([]),
+    readDocument: vi.fn(),
+  };
+}

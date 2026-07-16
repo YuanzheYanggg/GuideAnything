@@ -7,6 +7,7 @@ import { buildApp } from '../app';
 import { createDatabase } from '../db/client';
 import { migrateDatabase } from '../db/migrate';
 import { hashPassword } from '../modules/auth/service';
+import type { ConversationRouteRuntime } from '../modules/conversations/routes';
 
 export interface TestContext {
   app: FastifyInstance;
@@ -23,7 +24,10 @@ const users: Array<{ key: keyof TestContext['tokens']; email: string; name: stri
   { key: 'otherAuthor', email: 'other@guide.local', name: '赵作者', role: 'AUTHOR' },
 ];
 
-export async function createTestContext(options: { uploadDir?: string } = {}): Promise<TestContext> {
+export async function createTestContext(options: {
+  uploadDir?: string;
+  agentRuntime?: ConversationRouteRuntime;
+} = {}): Promise<TestContext> {
   const database = createDatabase(':memory:');
   migrateDatabase(database);
   const passwordHash = await hashPassword('Guide123!');
@@ -42,6 +46,7 @@ export async function createTestContext(options: { uploadDir?: string } = {}): P
     database,
     jwtSecret: 'test-secret-that-is-long-enough-1234',
     ...(options.uploadDir ? { uploadDir: options.uploadDir } : {}),
+    ...(options.agentRuntime ? { agentRuntime: options.agentRuntime } : {}),
   });
   const tokens = {} as TestContext['tokens'];
   for (const user of users) {

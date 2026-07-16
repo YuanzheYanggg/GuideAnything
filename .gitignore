@@ -8,6 +8,7 @@ data/*.sqlite
 data/*.sqlite-*
 data/uploads/*
 !data/uploads/.gitkeep
+data/runtime-bridge/
 test-results/
 playwright-report/
 .playwright-cli/

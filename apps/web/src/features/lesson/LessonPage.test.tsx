@@ -85,6 +85,32 @@ describe('LessonPage', () => {
     expect(screen.getByRole('button', { name: '下一步' })).toBeDisabled();
   });
 
+  it('opens a cited lesson node directly when it belongs to an ordered step', async () => {
+    render(<LessonPage versionId="version-lesson" focusNodeId="video" api={{ getVersion: vi.fn().mockResolvedValue(version) }} onBack={vi.fn()} />);
+
+    expect(await screen.findByRole('heading', { name: '观看录入演示' })).toBeVisible();
+    expect(screen.getByText('步骤 2 / 2')).toBeVisible();
+    expect(screen.getByLabelText('当前步骤内容')).toHaveAttribute('data-step-id', 'step-2');
+  });
+
+  it('locates a cited flow node even when it is not a lesson step', async () => {
+    const unsequenced: GuideVersionSnapshot = {
+      ...version,
+      document: {
+        ...version.document,
+        nodes: [
+          ...version.document.nodes,
+          { id: 'review', type: 'process', position: { x: 640, y: 0 }, zIndex: 2, data: { label: '异常复核', description: '复核验货异常。', shape: 'process' } },
+        ],
+      },
+    };
+    render(<LessonPage versionId="version-lesson" focusNodeId="review" api={{ getVersion: vi.fn().mockResolvedValue(unsequenced) }} onBack={vi.fn()} />);
+
+    expect(await screen.findByText('该节点未编排为教学步骤，已在流程图中定位。')).toBeVisible();
+    expect(screen.getByRole('heading', { name: '异常复核' })).toBeVisible();
+    expect(screen.getByText('复核验货异常。')).toBeVisible();
+  });
+
   it('reports versions without lesson steps as an empty teaching path', async () => {
     const api = { getVersion: vi.fn().mockResolvedValue({ ...version, document: { ...version.document, steps: [] } }) };
     render(<LessonPage versionId="empty" api={api} onBack={vi.fn()} />);

@@ -13,6 +13,7 @@
     "db:reset": "pnpm --filter @guideanything/api db:reset",
     "db:seed": "pnpm --filter @guideanything/api db:seed",
     "dev": "pnpm -r --parallel --if-present dev",
+    "dev:fake": "AGENT_RUNTIME_MODE=fake pnpm --parallel --filter @guideanything/api --filter @guideanything/web dev",
     "lint": "pnpm -r --if-present lint",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck"

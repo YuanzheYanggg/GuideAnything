@@ -12,10 +12,14 @@ import {
 
 import { LoginPage, type LoginCredentials } from './features/auth/LoginPage';
 import type { AuthUser } from './features/auth/types';
+import { WorkspaceAgentsPage } from './features/agents/WorkspaceAgentsPage';
+import { WorkspaceArtifactsPage } from './features/artifacts/WorkspaceArtifactsPage';
 import { LibraryPage } from './features/library/LibraryPage';
+import { SantexwellKnowledgePage } from './features/knowledge/SantexwellKnowledgePage';
 import { PersonalResourcePage } from './features/personal/PersonalResourcePage';
+import { ReferencePage } from './features/references/ReferencePage';
+import { WorkspaceSourcesPage } from './features/sources/WorkspaceSourcesPage';
 import { AppearanceProvider } from './features/theme/AppearanceToggle';
-import { ReservedModulePage } from './features/workspace/ReservedModulePage';
 import { WorkspaceDirectoryPage } from './features/workspace/WorkspaceDirectoryPage';
 import { WorkspaceOverviewPage } from './features/workspace/WorkspaceOverviewPage';
 import { WorkspaceShell } from './features/workspace/WorkspaceShell';
@@ -35,6 +39,10 @@ function AppContent() {
   const editorApi = useMemo(() => apiClient.editorApi(), []);
   const workspaceApi = useMemo(() => apiClient.workspaceApi(), []);
   const personalApi = useMemo(() => apiClient.personalApi(), []);
+  const knowledgeApi = useMemo(() => apiClient.knowledgeApi(), []);
+  const sourcesApi = useMemo(() => apiClient.sourcesApi(), []);
+  const agentApi = useMemo(() => apiClient.agentApi(), []);
+  const artifactsApi = useMemo(() => apiClient.artifactsApi(), []);
 
   useEffect(() => {
     if (!apiClient.hasToken) return;
@@ -61,11 +69,16 @@ function AppContent() {
       <Route path="/recent" element={<PersonalResourcePage kind="recent" />} />
       <Route path="/shared" element={<PersonalResourcePage kind="shared" />} />
       <Route path="/trash" element={<PersonalResourcePage kind="trash" />} />
+      <Route path="/knowledge/santexwell" element={<SantexwellKnowledgePage api={knowledgeApi} agentApi={agentApi} />} />
+      <Route path="/knowledge/santexwell/documents/:documentId" element={<SantexwellKnowledgePage api={knowledgeApi} agentApi={agentApi} />} />
       <Route path="/workspaces" element={<WorkspaceDirectoryPage />} />
       <Route path="/workspaces/:workspaceId" element={<WorkspaceOverviewPage workspaceApi={workspaceApi} />} />
       <Route path="/workspaces/:workspaceId/guides" element={<LibraryRoute user={user} />} />
-      <Route path="/workspaces/:workspaceId/:module" element={<ReservedModulePage />} />
+      <Route path="/workspaces/:workspaceId/sources" element={<WorkspaceSourcesPage api={sourcesApi} />} />
+      <Route path="/workspaces/:workspaceId/agents" element={<WorkspaceAgentsPage api={agentApi} />} />
+      <Route path="/workspaces/:workspaceId/artifacts" element={<WorkspaceArtifactsPage api={artifactsApi} />} />
     </Route>
+    <Route path="/references/:referenceId" element={<ReferencePage api={artifactsApi} />} />
     <Route path="/guides/:guideId/edit" element={<GuideEditorRoute />} />
     <Route path="/versions/:versionId/learn" element={<LessonRoute />} />
     <Route path="*" element={<Navigate to="/library" replace />} />
@@ -96,9 +109,16 @@ function AppContent() {
     const navigate = useNavigate();
     const { guideId } = useParams();
     const [searchParams] = useSearchParams();
+    const focusNodeId = searchParams.get('nodeId');
     if (!guideId) return <Navigate to="/library" replace />;
     return <Suspense fallback={<LoadingState label="正在载入画布编辑器…" />}>
-      <GuideEditor guideId={guideId} api={editorApi} personalApi={personalApi} onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))} />
+      <GuideEditor
+        guideId={guideId}
+        api={editorApi}
+        personalApi={personalApi}
+        {...(focusNodeId ? { focusNodeId } : {})}
+        onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))}
+      />
     </Suspense>;
   }
 
@@ -106,9 +126,16 @@ function AppContent() {
     const navigate = useNavigate();
     const { versionId } = useParams();
     const [searchParams] = useSearchParams();
+    const focusNodeId = searchParams.get('nodeId');
     if (!versionId) return <Navigate to="/library" replace />;
     return <Suspense fallback={<LoadingState label="正在载入教学模式…" />}>
-      <LessonPage versionId={versionId} api={{ getVersion: editorApi.getVersion }} personalApi={personalApi} onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))} />
+      <LessonPage
+        versionId={versionId}
+        api={{ getVersion: editorApi.getVersion }}
+        personalApi={personalApi}
+        {...(focusNodeId ? { focusNodeId } : {})}
+        onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))}
+      />
     </Suspense>;
   }
 }

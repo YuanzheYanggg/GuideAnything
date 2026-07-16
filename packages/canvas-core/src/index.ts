@@ -1,4 +1,5 @@
 export * from './clipboard';
+export * from './flow-knowledge';
 export * from './history';
 export * from './hierarchy';
 export * from './image-annotations';

@@ -101,7 +101,7 @@ export function toLessonFlowEdges(document: CanvasDocument): Edge[] {
   });
 }
 
-export function LessonPage({ versionId, api, personalApi, onBack }: { versionId: string; api: LessonApi; personalApi?: PersonalApi; onBack: () => void }) {
+export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }: { versionId: string; api: LessonApi; personalApi?: PersonalApi; focusNodeId?: string; onBack: () => void }) {
   const [versionHistory, setVersionHistory] = useState<GuideVersionSnapshot[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [instance, setInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
@@ -133,12 +133,26 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
       stage: resolveStepStage(version.document, step.nodeId),
       lane: resolveStepLane(version.document, step.nodeId),
     })) : [], [version]);
+  const focusedStepIndex = useMemo(() => focusNodeId
+    ? lessonSteps.findIndex(({ step }) => step.nodeId === focusNodeId)
+    : -1, [focusNodeId, lessonSteps]);
+  useEffect(() => {
+    if (focusedStepIndex >= 0) setCurrentIndex(focusedStepIndex);
+  }, [focusedStepIndex, version?.id]);
   const currentStep = lessonSteps[currentIndex]?.step;
   const currentLane = lessonSteps[currentIndex]?.lane;
   const currentNode = version?.document.nodes.find((node) => node.id === currentStep?.nodeId);
+  const focusedUnsequencedNode = useMemo(() => version && focusNodeId && focusedStepIndex < 0
+    ? version.document.nodes.find((node) => node.id === focusNodeId) ?? null
+    : null, [focusNodeId, focusedStepIndex, version]);
+  const displayedNode = focusedUnsequencedNode ?? currentNode;
+  const displayedStep = focusedUnsequencedNode ? undefined : currentStep;
+  const displayedLane = focusedUnsequencedNode && version
+    ? resolveStepLane(version.document, focusedUnsequencedNode.id)
+    : currentLane;
   const currentResources = useMemo(
-    () => version && currentNode ? resourcesForStep(version.document, currentNode.id) : [],
-    [currentNode, version],
+    () => version && displayedNode ? resourcesForStep(version.document, displayedNode.id) : [],
+    [displayedNode, version],
   );
   const currentPreview = previewStack[previewStack.length - 1] ?? null;
   const openPreview = useCallback((node: CanvasNode) => {
@@ -199,14 +213,14 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
     },
     ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
     zIndex: node.zIndex,
-    selected: node.id === currentStep?.nodeId,
-  })) : [], [currentStep?.nodeId, openSubguide, version]);
+    selected: node.id === displayedNode?.id,
+  })) : [], [displayedNode?.id, openSubguide, version]);
   const flowEdges = useMemo<Edge[]>(() => version ? toLessonFlowEdges(version.document) : [], [version]);
 
   useEffect(() => {
-    if (!instance || !currentStep) return;
-    void instance.fitView({ nodes: [{ id: currentStep.nodeId }], duration: 280, padding: 1.2, minZoom: 0.45, maxZoom: 1.25 });
-  }, [currentStep, instance]);
+    if (!instance || !displayedNode) return;
+    void instance.fitView({ nodes: [{ id: displayedNode.id }], duration: 280, padding: 1.2, minZoom: 0.45, maxZoom: 1.25 });
+  }, [displayedNode, instance]);
 
   useEffect(() => {
     setPreviewStack([]);
@@ -218,14 +232,16 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
     <header className="lesson-header">
       <button className="icon-button" type="button" onClick={handleBack} aria-label={versionHistory.length > 1 ? '返回上一级指南' : '返回资料库'}>←</button>
       <div><span className="eyebrow">LEARNING MODE · v{version.version}</span><h1>{version.title}</h1></div>
-      <div className="lesson-header-actions"><AppearanceToggle /><div className="lesson-progress"><span>{lessonSteps.length ? `步骤 ${currentIndex + 1} / ${lessonSteps.length}` : '尚未编排步骤'}</span><div><i style={{ width: `${lessonSteps.length ? ((currentIndex + 1) / lessonSteps.length) * 100 : 0}%` }} /></div></div></div>
+      <div className="lesson-header-actions"><AppearanceToggle /><div className="lesson-progress"><span>{focusedUnsequencedNode ? '流程节点定位' : lessonSteps.length ? `步骤 ${currentIndex + 1} / ${lessonSteps.length}` : '尚未编排步骤'}</span><div><i style={{ width: `${focusedUnsequencedNode ? 0 : lessonSteps.length ? ((currentIndex + 1) / lessonSteps.length) * 100 : 0}%` }} /></div></div></div>
     </header>
-    {lessonSteps.length === 0 ? <section className="lesson-empty"><strong>这个发布版本还没有编排教学步骤</strong><p>仍可在画布中查看流程结构；请联系作者补充学习路径。</p><button className="secondary-button" onClick={handleBack}>{versionHistory.length > 1 ? '返回上一级指南' : '返回资料库'}</button></section> : <div className="lesson-layout">
+    {focusedUnsequencedNode ? <div className="lesson-focus-notice" role="status">该节点未编排为教学步骤，已在流程图中定位。</div> : null}
+    {lessonSteps.length === 0 && !focusedUnsequencedNode ? <section className="lesson-empty"><strong>这个发布版本还没有编排教学步骤</strong><p>仍可在画布中查看流程结构；请联系作者补充学习路径。</p><button className="secondary-button" onClick={handleBack}>{versionHistory.length > 1 ? '返回上一级指南' : '返回资料库'}</button></section> : <div className="lesson-layout">
       <aside className="lesson-steps" aria-label="教学步骤">
         <span className="eyebrow">STEP BY STEP</span>
+        {lessonSteps.length === 0 ? <p className="lesson-unsequenced-note">这个版本尚未编排教学步骤。</p> : null}
         {lessonSteps.map(({ step, stage }, index) => <div key={step.id}>
           {stage && stage.id !== lessonSteps[index - 1]?.stage?.id ? <div className="lesson-stage-heading" role="heading" aria-level={2}>{stage.title}</div> : null}
-          <button type="button" className={index === currentIndex ? 'active' : ''} onClick={() => setCurrentIndex(index)}><span>{index + 1}</span><p>{step.title}</p></button>
+          <button type="button" className={!focusedUnsequencedNode && index === currentIndex ? 'active' : ''} onClick={() => setCurrentIndex(index)}><span>{index + 1}</span><p>{step.title}</p></button>
         </div>)}
       </aside>
       <section className="lesson-canvas" aria-label="只读流程画布">
@@ -254,18 +270,18 @@ export function LessonPage({ versionId, api, personalApi, onBack }: { versionId:
           <Controls showInteractive={false} />
         </ReactFlow>
       </section>
-      <aside key={currentStep?.id} className="lesson-content" aria-label="当前步骤内容" aria-live="polite" data-step-id={currentStep?.id}>
+      <aside key={displayedStep?.id ?? focusedUnsequencedNode?.id} className="lesson-content" aria-label="当前步骤内容" aria-live="polite" data-step-id={displayedStep?.id}>
         {subguideLoading ? <p className="status-line">正在打开子指南…</p> : null}
-        <div className="lesson-step-meta"><span>步骤 {currentIndex + 1}</span><span className="lesson-step-context"><small>{typeLabel(currentNode?.type)}</small>{currentLane ? <small className="lesson-responsibility-badge">{currentLane.kind === 'ROLE' ? '责任' : '系统'} · {currentLane.title}</small> : null}</span></div>
-        <h2>{currentStep?.title}</h2>
-        {currentStep?.body ? <p className="lesson-body">{currentStep.body}</p> : null}
-        {currentNode ? <CurrentNodeContent node={currentNode} onOpenPreview={openPreview} /> : <p className="error-message">关联节点不存在</p>}
+        <div className="lesson-step-meta"><span>{displayedStep ? `步骤 ${currentIndex + 1}` : '流程定位'}</span><span className="lesson-step-context"><small>{typeLabel(displayedNode?.type)}</small>{displayedLane ? <small className="lesson-responsibility-badge">{displayedLane.kind === 'ROLE' ? '责任' : '系统'} · {displayedLane.title}</small> : null}</span></div>
+        <h2>{displayedStep?.title ?? (displayedNode ? nodeSummary(displayedNode.type, displayedNode.data as unknown as Record<string, unknown>) : '未找到节点')}</h2>
+        {displayedStep?.body ? <p className="lesson-body">{displayedStep.body}</p> : null}
+        {displayedNode ? <CurrentNodeContent node={displayedNode} onOpenPreview={openPreview} /> : <p className="error-message">关联节点不存在</p>}
         {currentResources.length > 0 ? <section className="lesson-resources" aria-labelledby="lesson-resources-title">
           <span className="eyebrow">STEP RESOURCES</span>
           <h3 id="lesson-resources-title">本步骤资料</h3>
           {currentResources.map((node) => <CurrentNodeContent key={node.id} node={node} onOpenPreview={openPreview} />)}
         </section> : null}
-        <div className="lesson-navigation"><button className="secondary-button" type="button" disabled={currentIndex === 0} onClick={() => setCurrentIndex((index) => Math.max(0, index - 1))}>上一步</button><button className="primary-button" type="button" disabled={currentIndex === lessonSteps.length - 1} onClick={() => setCurrentIndex((index) => Math.min(lessonSteps.length - 1, index + 1))}>下一步</button></div>
+        {lessonSteps.length > 0 && !focusedUnsequencedNode ? <div className="lesson-navigation"><button className="secondary-button" type="button" disabled={currentIndex === 0} onClick={() => setCurrentIndex((index) => Math.max(0, index - 1))}>上一步</button><button className="primary-button" type="button" disabled={currentIndex === lessonSteps.length - 1} onClick={() => setCurrentIndex((index) => Math.min(lessonSteps.length - 1, index + 1))}>下一步</button></div> : null}
       </aside>
     </div>}
     {currentPreview ? <MediaLightbox

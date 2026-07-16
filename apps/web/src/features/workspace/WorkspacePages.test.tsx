@@ -181,6 +181,7 @@ describe('workspace pages', () => {
     expect(await screen.findByRole('link', { name: '新建指南' })).toHaveAttribute(
       'href', '/workspaces/workspace-materials/guides?create=1',
     );
+    expect(screen.queryByRole('link', { name: 'Ontology' })).not.toBeInTheDocument();
   });
 
   it('does not offer VIEW users a create action', async () => {

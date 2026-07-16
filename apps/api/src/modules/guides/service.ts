@@ -4,6 +4,12 @@ import type { DatabaseSync } from 'node:sqlite';
 import { httpError } from '../../lib/http-error';
 import { getWorkspacePermission } from '../workspaces/repository';
 import {
+  recordFlowIndexFailure,
+  syncGuideFlowSnapshot,
+  FlowIndexError,
+  type GuideFlowContext,
+} from '../knowledge/flow-indexer';
+import {
   addCollaborator,
   canSeeGuideMetadata,
   createGuide,
@@ -49,7 +55,19 @@ export class GuideService {
     input: { title?: string; summary?: string; tags?: string[]; document?: CanvasDocument },
   ) {
     this.requireEditAccess(user, guideId);
-    return updateGuide(this.database, guideId, user.id, revision, input);
+    const guide = updateGuide(this.database, guideId, user.id, revision, input);
+    this.bestEffortFlowSync({
+      workspaceId: guide.workspaceId,
+      workspaceItemId: guide.workspaceItemId,
+      guideId: guide.id,
+      ownerId: guide.ownerId,
+      title: guide.title,
+      summary: guide.summary,
+      tags: guide.tags,
+      origin: { kind: 'DRAFT', revision: guide.revision },
+      document: guide.document,
+    });
+    return guide;
   }
 
   publish(user: { id: string; role: string }, guideId: string) {
@@ -57,7 +75,20 @@ export class GuideService {
       if (!canSeeGuideMetadata(this.database, guideId, user)) throw httpError(404, 'GUIDE_NOT_FOUND', '指南不存在');
       throw httpError(403, 'FORBIDDEN', '只有指南作者可以发布');
     }
-    return publishGuide(this.database, guideId, user.id);
+    const guide = getGuide(this.database, guideId)!;
+    const version = publishGuide(this.database, guideId, user.id);
+    this.bestEffortFlowSync({
+      workspaceId: guide.workspaceId,
+      workspaceItemId: guide.workspaceItemId,
+      guideId: guide.id,
+      ownerId: guide.ownerId,
+      title: version.title,
+      summary: version.summary,
+      tags: version.tags,
+      origin: { kind: 'PUBLISHED', versionId: version.id, version: version.version },
+      document: version.document,
+    });
+    return version;
   }
 
   invite(user: { id: string; role: string }, guideId: string, collaboratorId: string) {
@@ -79,6 +110,24 @@ export class GuideService {
     if (!access) {
       if (!canSeeGuideMetadata(this.database, guideId, user)) throw httpError(404, 'GUIDE_NOT_FOUND', '指南不存在');
       throw httpError(403, 'FORBIDDEN', '没有查看或编辑此草稿的权限');
+    }
+  }
+
+  private bestEffortFlowSync(context: GuideFlowContext): void {
+    try {
+      syncGuideFlowSnapshot(this.database, context);
+    } catch (error) {
+      try {
+        recordFlowIndexFailure(
+          this.database,
+          context,
+          error instanceof FlowIndexError
+            ? error.code
+            : 'FLOW_INDEX_FAILED',
+        );
+      } catch {
+        // The guide mutation is authoritative; indexing is repaired by reconcile.
+      }
     }
   }
 }
