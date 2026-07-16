@@ -82,6 +82,26 @@ describe('agent orchestration policy', () => {
     expect(scheduled.tasks[0]?.kind).toBe('WORKSPACE_FLOW');
   });
 
+  it('allocates one vault digest when a focused plan schedules a Santexwell task', () => {
+    const scheduled = enforceSchedulePolicy(focusedDecision({
+      sources: sources({ santexwell: true }),
+      tasks: [task('vault', 'SANTEXWELL')],
+      budget: {
+        ...focusedDecision().budget,
+        maxWorkspaceCandidates: 0,
+        maxFlowHops: 0,
+        maxVaultClusters: 1,
+        maxVaultDigests: 0,
+      },
+    }), {
+      allowedSources: sources({ santexwell: true }),
+      allowRawApproved: false,
+      configuredMaxConcurrency: 3,
+    });
+
+    expect(scheduled.budget.maxVaultDigests).toBe(1);
+  });
+
   it('rejects model attempts to use a disabled source', () => {
     const decision = focusedDecision({
       sources: sources({ santexwell: true }),

@@ -90,11 +90,14 @@ export function createDatabaseAgentKnowledgeAdapters(
         );
         for (const internalHit of hits) {
           abortIfNeeded(request.signal);
-          const record = loadEvidenceRecord(options.database, internalHit.hit.fragmentId);
+          const matchedRecord = loadEvidenceRecord(options.database, internalHit.hit.fragmentId);
+          const record = matchedRecord && request.task.kind === 'SANTEXWELL'
+            ? preferSantexwellEvidenceRecord(options.database, matchedRecord)
+            : matchedRecord;
           if (!record || record.document_id !== internalHit.hit.documentId) {
             throw new Error('知识搜索结果与当前索引记录不一致');
           }
-          appendRecord(record, internalHit.locator);
+          appendRecord(record, record.locator);
           if (request.task.kind === 'WORKSPACE_FLOW') {
             expandFlowEvidence(options.database, request, evidence, seen, appendRecord);
           }
@@ -277,13 +280,29 @@ function searchScope(request: AgentRetrievalRequest, limit: number): KnowledgeSe
   return { sourceKinds, limit };
 }
 
-function retrievalQuery(request: AgentRetrievalRequest): string {
-  // Preserve the user's discriminating terms before the bounded search-token
-  // compiler sees generic task wording such as "检索工作区流程".
-  return [request.context.text, request.context.steeringInstruction, request.task.objective]
+export function retrievalQuery(request: AgentRetrievalRequest): string {
+  // A Vault task's objective is router-generated and often contains broad
+  // words such as "evidence" or "standard". Let the user's actual question
+  // drive retrieval so those generic terms cannot outrank its discriminators.
+  const vaultSubject = request.task.kind === 'SANTEXWELL'
+    ? leadingVaultSubject(request.context.text)
+    : null;
+  const queryParts = vaultSubject
+    ? [vaultSubject]
+    : [request.context.text, request.context.steeringInstruction, request.task.objective];
+  return queryParts
     .filter((value): value is string => Boolean(value?.trim()))
     .join('\n')
     .slice(0, 20_000);
+}
+
+function leadingVaultSubject(value: string): string | null {
+  const question = value.normalize('NFKC').trim()
+    .replace(/^(?:请问|请|麻烦|帮我|想了解|关于)\s*/u, '');
+  if (!question) return null;
+  const boundary = question.search(/(?:有|是|怎么|如何|哪些|什么|为什么|能否|是否|请|[?？。，,])/u);
+  const subject = (boundary >= 0 ? question.slice(0, boundary) : question).trim();
+  return subject.length >= 2 ? subject : question;
 }
 
 function expandFlowEvidence(
@@ -614,6 +633,29 @@ function loadEvidenceRecord(database: DatabaseSync, fragmentId: string): Evidenc
   ).get(fragmentId) as unknown as EvidenceDatabaseRow | undefined;
   if (!row) return null;
   return { ...row, locator: parseLocator(row.internal_locator_json) };
+}
+
+function preferSantexwellEvidenceRecord(
+  database: DatabaseSync,
+  matched: EvidenceRecord,
+): EvidenceRecord {
+  // A title-only fragment is useful for navigation but cannot support a QA
+  // answer. Keep retrieval bounded to the matched document and prefer its
+  // curated evidence/summary sections when the match itself has no substance.
+  if (matched.content.trim().length >= 120) return matched;
+  const row = database.prepare(
+    `SELECT id FROM knowledge_fragments
+     WHERE document_id = ?
+     ORDER BY CASE heading
+       WHEN '关键事实' THEN 0
+       WHEN '证据摘录' THEN 1
+       WHEN 'Retrieval Chunks' THEN 2
+       WHEN '摘要' THEN 3
+       ELSE 4
+     END, length(content) DESC, ordinal ASC
+     LIMIT 1`,
+  ).get(matched.document_id) as { id: string } | undefined;
+  return row ? loadEvidenceRecord(database, row.id) ?? matched : matched;
 }
 
 function loadSelectedFlowRecord(

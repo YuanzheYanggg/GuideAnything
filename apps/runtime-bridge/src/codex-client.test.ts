@@ -346,6 +346,11 @@ describe('CodexRuntime initialization and model resolution', () => {
 
     expect(rpc.requests.map(({ method }) => method)).toEqual(['initialize', 'model/list', 'model/list']);
     expect(rpc.notifications).toEqual([{ method: 'initialized' }]);
+    expect(rpc.requests[0]?.params).toMatchObject({
+      capabilities: {
+        optOutNotificationMethods: ['mcpServer/startupStatus/updated'],
+      },
+    });
     expect(rpc.requests[1]?.params).toMatchObject({ cursor: null, includeHidden: false });
     expect(rpc.requests[2]?.params).toMatchObject({ cursor: 'next-page' });
     expect(runtime.getHealth()).toMatchObject({
@@ -693,23 +698,33 @@ describe('CodexRuntime event projection and fail-closed behavior', () => {
     });
   });
 
-  it('never forwards command/file/tool/MCP/reasoning payloads and latches degraded health', async () => {
+  it('drops internal reasoning items without forwarding their payload or degrading the runtime', async () => {
     const { runtime, rpc, runtimeConfig } = await initializedRuntime();
     const handle = await startHandle(runtime, rpc, runtimeConfig);
     rpc.emit('item/started', {
       threadId: 'thread-1', turnId: 'turn-1',
       item: { id: 'reasoning', type: 'reasoning', content: ['hidden-secret-chain'], summary: [] },
     });
+    rpc.emit('item/completed', {
+      threadId: 'thread-1', turnId: 'turn-1',
+      item: { id: 'reasoning', type: 'reasoning', content: ['hidden-secret-chain'], summary: [] },
+    });
+    emitFinal(rpc, 'thread-1', 'turn-1');
+    rpc.emit('turn/completed', {
+      threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] },
+    });
 
     const events = await collectEvents(handle);
-    expect(events.at(-1)).toMatchObject({
-      type: 'FAILED', payload: { code: 'UNEXPECTED_CAPABILITY_OUTPUT' },
-    });
+    expect(events.map(({ type }) => type)).toEqual([
+      'THREAD_BOUND', 'STRUCTURED_OUTPUT_DELTA', 'FINAL_ANSWER', 'COMPLETED',
+    ]);
     expect(JSON.stringify(events)).not.toContain('hidden-secret-chain');
     expect(runtime.getHealth()).toMatchObject({
-      status: 'DEGRADED', counters: { unexpectedCapabilities: 1 },
+      status: 'READY', counters: { unexpectedCapabilities: 0 },
     });
+  });
 
+  it('fails closed when a disallowed MCP notification reaches the bridge', async () => {
     const global = await initializedRuntime();
     global.rpc.emit('mcpServer/startupStatus/updated', { name: 'personal', status: 'ready' });
     expect(global.runtime.getHealth()).toMatchObject({

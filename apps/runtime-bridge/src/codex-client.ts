@@ -172,6 +172,10 @@ export class CodexRuntime {
         experimentalApi: true,
         requestAttestation: false,
         mcpServerOpenaiFormElicitation: false,
+        // The app server may emit this status even when no MCP tool is exposed.
+        // Suppress it at the protocol source so the read-only runtime does not
+        // mistake startup bookkeeping for a capability invocation.
+        optOutNotificationMethods: ['mcpServer/startupStatus/updated'],
       },
     }, { timeoutMs: this.#config.rpcTimeoutMs });
 
@@ -555,6 +559,10 @@ export class CodexRuntime {
       return;
     }
     if (value.type === 'userMessage') return;
+    // Codex emits its internal reasoning as a normal item even when summaries
+    // are disabled. It is neither a tool invocation nor user-visible output;
+    // discard it without retaining or forwarding its payload.
+    if (value.type === 'reasoning') return;
     if (value.type !== 'agentMessage') {
       this.#unexpectedCapability(context);
       return;

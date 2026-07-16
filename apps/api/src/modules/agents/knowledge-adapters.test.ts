@@ -13,7 +13,7 @@ import { createConversation, enqueueConversationRun } from '../conversations/rep
 import { syncGuideFlowSnapshot } from '../knowledge/flow-indexer';
 import { insertWorkspaceDocument } from '../knowledge/repository';
 import { loadAgentRunExecutionContext } from './execution-context';
-import { createDatabaseAgentKnowledgeAdapters } from './knowledge-adapters';
+import { createDatabaseAgentKnowledgeAdapters, retrievalQuery } from './knowledge-adapters';
 import type {
   AgentRetrievalRequest,
   AgentRetrievalTask,
@@ -112,7 +112,7 @@ describe('database-backed Agent knowledge adapters', () => {
     const enabled = seedRun({
       database,
       sources: sources({ santexwell: true }),
-      text: '花式纱有什么分类？',
+      text: '花式纱分类',
     });
     const decision = focusedDecision('SANTEXWELL', enabled.sources, '查找花式纱分类');
     const evidence = await adapters().retriever.retrieve(request(enabled, decision, 1));
@@ -128,6 +128,76 @@ describe('database-backed Agent knowledge adapters', () => {
         revision: 'vault-document-revision',
         heading: '分类',
       },
+    })]);
+  });
+
+  it('uses the leading subject instead of generic question wording for Santexwell retrieval', () => {
+    const context = seedRun({
+      database,
+      sources: sources({ santexwell: true }),
+      text: '花式纱有哪些分类？',
+    });
+    const decision = focusedDecision(
+      'SANTEXWELL',
+      context.sources,
+      '检索并提取已验证知识库证据与性能标准。',
+    );
+
+    expect(retrievalQuery(request(context, decision, 1))).toBe('花式纱');
+  });
+
+  it('upgrades a title-only Vault hit to the document evidence excerpt', async () => {
+    seedSantexwell(database, {
+      documentId: 'vault-rich-document',
+      fragmentId: 'vault-title-fragment',
+      relativePath: 'wiki_v2/concepts/fancy-yarn.md',
+      title: '花式纱线综合分类',
+      content: '花式纱线综合分类',
+    });
+    database.prepare(
+      `INSERT INTO knowledge_fragments (
+        id, document_id, ordinal, title, heading, content, search_text,
+        internal_locator_json, created_at, updated_at
+      ) VALUES (?, 'vault-rich-document', 1, '花式纱线综合分类', '证据摘录', ?, ?, ?, ?, ?)`,
+    ).run(
+      'vault-evidence-fragment',
+      '结子纱、螺旋纱与圈圈纱属于典型花式纱类型。',
+      '证据摘录 结子纱 螺旋纱 圈圈纱',
+      JSON.stringify({
+        kind: 'SANTEXWELL', documentId: 'vault-rich-document', revision: 'vault-document-revision',
+        fragmentId: 'vault-evidence-fragment', heading: '证据摘录',
+      }),
+      CREATED_AT,
+      CREATED_AT,
+    );
+    database.prepare(
+      `INSERT INTO knowledge_fragments (
+        id, document_id, ordinal, title, heading, content, search_text,
+        internal_locator_json, created_at, updated_at
+      ) VALUES (?, 'vault-rich-document', 2, '花式纱线综合分类', '关键事实', ?, ?, ?, ?, ?)`,
+    ).run(
+      'vault-key-facts-fragment',
+      '典型花式纱包括结子纱、螺旋纱、圈圈纱与雪尼尔纱。',
+      '关键事实 结子纱 螺旋纱 圈圈纱 雪尼尔纱',
+      JSON.stringify({
+        kind: 'SANTEXWELL', documentId: 'vault-rich-document', revision: 'vault-document-revision',
+        fragmentId: 'vault-key-facts-fragment', heading: '关键事实',
+      }),
+      CREATED_AT,
+      CREATED_AT,
+    );
+    const context = seedRun({
+      database,
+      sources: sources({ santexwell: true }),
+      text: '花式纱线综合分类',
+    });
+    const decision = focusedDecision('SANTEXWELL', context.sources, '检索花式纱分类');
+
+    const evidence = await adapters().retriever.retrieve(request(context, decision, 1));
+
+    expect(evidence).toEqual([expect.objectContaining({
+      id: 'vault-key-facts-fragment',
+      excerpt: expect.stringContaining('结子纱'),
     })]);
   });
 

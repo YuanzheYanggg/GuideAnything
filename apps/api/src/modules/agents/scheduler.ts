@@ -72,6 +72,7 @@ export function enforceSchedulePolicy(
     || decision.sources.workspaceDocuments
     || decision.sources.sessionAttachments;
   const usesVault = decision.sources.santexwell;
+  const hasVaultTask = workers.some((task) => task.kind === 'SANTEXWELL');
   const maxConcurrency = decision.route === 'DIRECT' || decision.route === 'FOCUSED'
     ? 1
     : Math.min(3, options.configuredMaxConcurrency, workers.length);
@@ -88,7 +89,9 @@ export function enforceSchedulePolicy(
       ? Math.min(decision.budget.maxVaultClusters, hard.maxVaultClusters)
       : 0,
     maxVaultDigests: usesVault
-      ? Math.min(decision.budget.maxVaultDigests, hard.maxVaultDigests)
+      ? hasVaultTask && hard.maxVaultDigests > 0
+        ? Math.max(1, Math.min(decision.budget.maxVaultDigests, hard.maxVaultDigests))
+        : Math.min(decision.budget.maxVaultDigests, hard.maxVaultDigests)
       : 0,
     allowRaw: decision.route === 'OPEN_RESEARCH'
       && decision.budget.allowRaw
