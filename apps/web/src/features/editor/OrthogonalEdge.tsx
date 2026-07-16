@@ -7,14 +7,14 @@ interface OrthogonalEdgeData extends Record<string, unknown> {
 }
 
 export const OrthogonalEdge = memo(function OrthogonalEdge({
-  id, data, sourceX, sourceY, targetX, targetY, markerEnd, style, label,
+  id, data, sourceX, sourceY, targetX, targetY, markerStart, markerEnd, style, label,
 }: EdgeProps) {
   const route = (data as OrthogonalEdgeData | undefined)?.route;
   const points = route?.points ?? fallbackPoints(sourceX, sourceY, targetX, targetY);
   const path = orthogonalPath(points);
   const labelPoint = routeLabelPoint(points);
   return <>
-    <BaseEdge id={id} path={path} {...(markerEnd ? { markerEnd } : {})} {...(style ? { style } : {})} />
+    <BaseEdge id={id} path={path} {...(markerStart ? { markerStart } : {})} {...(markerEnd ? { markerEnd } : {})} {...(style ? { style } : {})} />
     {label ? <EdgeLabelRenderer><div
       className={`orthogonal-edge-label${route?.kind === 'BACK' ? ' is-back-edge' : ''}`}
       style={{ transform: `translate(-50%, -50%) translate(${labelPoint.x}px, ${labelPoint.y}px)` }}

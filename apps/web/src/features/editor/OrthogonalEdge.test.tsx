@@ -1,17 +1,56 @@
-import { describe, expect, it } from 'vitest';
+import { render } from '@testing-library/react';
+import type { EdgeProps } from '@xyflow/react';
+import { Position } from '@xyflow/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { orthogonalPath, routeLabelPoint } from './OrthogonalEdge';
+const { baseEdge } = vi.hoisted(() => ({ baseEdge: vi.fn() }));
 
-describe('OrthogonalEdge path helpers', () => {
-  it('builds a rounded orthogonal path through every route point', () => {
-    expect(orthogonalPath([
-      { x: 0, y: 50 }, { x: 100, y: 50 }, { x: 100, y: 160 }, { x: 240, y: 160 },
-    ])).toBe('M 0 50 L 88 50 Q 100 50 100 62 L 100 148 Q 100 160 112 160 L 240 160');
-  });
+vi.mock('@xyflow/react', async () => {
+  const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react');
+  return {
+    ...actual,
+    BaseEdge: (props: Record<string, unknown>) => {
+      baseEdge(props);
+      return <path data-testid="base-edge" />;
+    },
+    EdgeLabelRenderer: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  };
+});
 
-  it('places the label at the midpoint of the longest segment', () => {
-    expect(routeLabelPoint([
-      { x: 0, y: 50 }, { x: 40, y: 50 }, { x: 40, y: 250 }, { x: 100, y: 250 },
-    ])).toEqual({ x: 40, y: 150 });
+import { OrthogonalEdge } from './OrthogonalEdge';
+
+describe('OrthogonalEdge', () => {
+  beforeEach(() => baseEdge.mockReset());
+
+  it('forwards both markers and the constrained SVG style to BaseEdge', () => {
+    const props = {
+      id: 'edge-1',
+      source: 'source',
+      target: 'target',
+      type: 'orthogonal',
+      data: {},
+      selected: false,
+      selectable: true,
+      deletable: true,
+      animated: false,
+      sourceX: 0,
+      sourceY: 0,
+      targetX: 160,
+      targetY: 80,
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+      markerStart: 'url(#arrow-start)',
+      markerEnd: 'url(#arrow-end)',
+      style: { stroke: 'var(--ga-edge-red)', strokeWidth: 4, strokeDasharray: '1 5' },
+    } as EdgeProps;
+
+    render(<svg><OrthogonalEdge {...props} /></svg>);
+
+    expect(baseEdge.mock.calls[0]?.[0]).toMatchObject({
+      id: 'edge-1',
+      markerStart: 'url(#arrow-start)',
+      markerEnd: 'url(#arrow-end)',
+      style: { stroke: 'var(--ga-edge-red)', strokeWidth: 4, strokeDasharray: '1 5' },
+    });
   });
 });

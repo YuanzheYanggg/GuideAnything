@@ -54,6 +54,40 @@ describe('LessonPage', () => {
       id: 'e1', sourceHandle: 'out', targetHandle: 'in', type: 'orthogonal', data: expect.objectContaining({ route: expect.objectContaining({ edgeId: 'e1' }) }),
     }));
   });
+
+  it('reuses persisted edge presentation without exposing editor controls', () => {
+    const edges = toLessonFlowEdges({
+      ...version.document,
+      edges: [{
+        id: 'e1',
+        source: 'intro',
+        target: 'video',
+        presentation: {
+          color: 'purple',
+          width: 4,
+          pattern: 'dotted',
+          arrows: 'both',
+          sourceAnchor: { side: 'BOTTOM', offset: 0.25 },
+          targetAnchor: { side: 'TOP', offset: 0.75 },
+        },
+      }],
+    });
+
+    expect(edges).toContainEqual(expect.objectContaining({
+      id: 'e1',
+      markerStart: { type: 'arrowclosed' },
+      markerEnd: { type: 'arrowclosed' },
+      style: { stroke: 'var(--ga-edge-purple)', strokeWidth: 4, strokeDasharray: '1 5', strokeLinecap: 'round' },
+      data: expect.objectContaining({
+        route: expect.objectContaining({
+          points: expect.arrayContaining([
+            { x: 75, y: 180 },
+            { x: 560, y: 0 },
+          ]),
+        }),
+      }),
+    }));
+  });
   it('records the root version as recent after a successful load', async () => {
     const personalApi = createPersonalApiMock();
     render(<LessonPage versionId="version-lesson" api={{ getVersion: vi.fn().mockResolvedValue(version) }} personalApi={personalApi} onBack={vi.fn()} />);

@@ -23,6 +23,7 @@ import { VideoNodeView } from '../nodes/VideoNode';
 import { useMediaSource } from '../nodes/useMediaSource';
 import { AppearanceToggle } from '../theme/AppearanceToggle';
 import { OrthogonalEdge } from '../editor/OrthogonalEdge';
+import { resolveEdgeVisuals } from '../editor/edge-presentation';
 import type { PersonalApi } from '../workspace/types';
 import { MediaLightbox, type MediaPreview } from './MediaLightbox';
 
@@ -91,11 +92,13 @@ export function toLessonFlowEdges(document: CanvasDocument): Edge[] {
   return document.edges.map((edge) => {
     const route = routing.routesByEdgeId.get(edge.id);
     const source = document.nodes.find((node) => node.id === edge.source);
+    const visuals = resolveEdgeVisuals(edge.presentation);
     return {
       ...edge,
       sourceHandle: edge.sourceHandle ?? (source?.type === 'decision' ? 'yes' : 'out'),
       targetHandle: edge.targetHandle ?? 'in',
       type: route ? 'orthogonal' : 'smoothstep',
+      ...visuals,
       ...(route ? { data: { route } } : {}),
     } as Edge;
   });
