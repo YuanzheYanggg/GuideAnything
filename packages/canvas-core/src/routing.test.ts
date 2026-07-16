@@ -100,6 +100,43 @@ describe('orthogonal edge routing', () => {
     )).routesByEdgeId).toEqual(result.routesByEdgeId);
   });
 
+  it('uses persisted exact edge anchors as route endpoints', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 100, 80), process('target', 500, 300)],
+      [edge('anchored', 'source', 'target', {
+        presentation: {
+          sourceAnchor: { side: 'BOTTOM', offset: 0.25 },
+          targetAnchor: { side: 'LEFT', offset: 0.6 },
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('anchored')!;
+
+    expect(route.sourceSide).toBe('BOTTOM');
+    expect(route.targetSide).toBe('LEFT');
+    expect(route.points[0]).toEqual({ x: 150, y: 180 });
+    expect(route.points.at(-1)).toEqual({ x: 500, y: 360 });
+    expectOrthogonal(route.points);
+  });
+
+  it('keeps a backward edge classified as BACK when endpoints are anchored', () => {
+    const result = routeCanvasEdges(document(
+      [process('first', 0, 0), process('last', 640, 0)],
+      [edge('feedback', 'last', 'first', {
+        presentation: {
+          sourceAnchor: { side: 'TOP', offset: 0.75 },
+          targetAnchor: { side: 'BOTTOM', offset: 0.2 },
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('feedback')!;
+
+    expect(route.kind).toBe('BACK');
+    expect(route.points[0]).toEqual({ x: 790, y: 0 });
+    expect(route.points.at(-1)).toEqual({ x: 40, y: 100 });
+    expectOrthogonal(route.points);
+  });
+
   it('avoids a node blocking the direct channel and excludes hidden or derived edges', () => {
     const nodes = [process('source', 0, 0), process('blocker', 280, 0), process('target', 560, 0)];
     const result = routeCanvasEdges(document(nodes, [
