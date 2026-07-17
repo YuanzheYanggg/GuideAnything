@@ -165,10 +165,17 @@ describe('database migrations', () => {
       'artifacts',
       'conversation_attachments',
       'agent_run_steers',
+      'workspace_question_clusters',
+      'workspace_question_cluster_examples',
+      'workspace_knowledge_cards',
+      'workspace_knowledge_card_evidence',
+      'workspace_flow_proposals',
+      'workspace_flow_proposal_operations',
+      'workspace_editorial_audit_events',
     ]));
     expect(database.prepare(
       'SELECT version FROM schema_migrations ORDER BY version',
-    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
+    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
 
     const indexesAndTriggers = database.prepare(
       "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_%'",
@@ -188,6 +195,10 @@ describe('database migrations', () => {
       'knowledge_documents_flow_integrity_update',
       'flow_knowledge_snapshots_workspace_insert',
       'conversation_attachments_identity_immutable',
+      'workspace_question_example_scope_insert',
+      'workspace_knowledge_card_scope_insert',
+      'workspace_card_evidence_scope_insert',
+      'workspace_flow_proposal_scope_insert',
     ]));
 
     const strictByTable = new Map(
@@ -200,6 +211,10 @@ describe('database migrations', () => {
       'agent_runs', 'agent_run_events', 'answer_citations', 'artifacts',
       'conversation_attachments',
       'agent_run_steers',
+      'workspace_question_clusters', 'workspace_question_cluster_examples',
+      'workspace_knowledge_cards', 'workspace_knowledge_card_evidence',
+      'workspace_flow_proposals', 'workspace_flow_proposal_operations',
+      'workspace_editorial_audit_events',
     ]) {
       expect(strictByTable.get(table), `${table} should be STRICT`).toBe(1);
     }
