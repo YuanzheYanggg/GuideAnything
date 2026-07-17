@@ -1,6 +1,6 @@
-import { Handle, NodeResizer, Position, type HandleType } from '@xyflow/react';
+import { Handle, NodeResizer, Position, useUpdateNodeInternals, type HandleType } from '@xyflow/react';
 import { Trash } from '@phosphor-icons/react';
-import { createContext, useContext, type CSSProperties, type ReactNode } from 'react';
+import { createContext, useContext, useLayoutEffect, type CSSProperties, type ReactNode } from 'react';
 
 type NodeActionContextValue = {
   enabled: boolean;
@@ -71,8 +71,18 @@ function anchorHandleStyle(handle: NodeAnchorHandle): CSSProperties {
 export function NodeChrome({ nodeId, selected, tone, children, width, height, expanded = false }: { nodeId?: string; selected?: boolean; tone: string; children: ReactNode; width?: number | undefined; height?: number | undefined; expanded?: boolean }) {
   const actions = useContext(NodeActionContext);
   const anchorPresentation = useContext(NodeAnchorPresentationContext);
+  const updateNodeInternals = useUpdateNodeInternals();
   const canDelete = Boolean(nodeId && actions?.enabled && actions.onDeleteNode);
   const anchorHandles = [...continuousAnchorHandles(), ...(nodeId ? anchorPresentation.handlesByNodeId.get(nodeId) ?? [] : [])];
+  const anchorSignature = anchorHandles
+    .map((handle) => `${handle.id}:${handle.type}:${handle.side}:${handle.offset ?? 0.5}:${handle.continuous ? 1 : 0}`)
+    .sort()
+    .join('|');
+
+  useLayoutEffect(() => {
+    if (nodeId) updateNodeInternals(nodeId);
+  }, [anchorSignature, expanded, height, nodeId, updateNodeInternals, width]);
+
   return <div className={`canvas-node canvas-node-${tone}${expanded ? ' is-detail-expanded' : ''}`} style={nodeChromeStyle(width, height, expanded)}>
     <NodeResizer minWidth={180} minHeight={90} isVisible={false} />
     <Handle type="target" position={Position.Left} id="in" aria-label="输入端口" />

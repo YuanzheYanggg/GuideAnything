@@ -1,6 +1,6 @@
 import type { OrthogonalRoute, Point } from '@guideanything/canvas-core';
 import { BaseEdge, EdgeLabelRenderer, type EdgeProps } from '@xyflow/react';
-import { memo } from 'react';
+import { memo, useLayoutEffect } from 'react';
 
 interface OrthogonalEdgeData extends Record<string, unknown> {
   route?: OrthogonalRoute;
@@ -13,6 +13,9 @@ export const OrthogonalEdge = memo(function OrthogonalEdge({
   const points = route?.points ?? fallbackPoints(sourceX, sourceY, targetX, targetY);
   const path = orthogonalPath(points);
   const labelPoint = routeLabelPoint(points);
+  useLayoutEffect(() => {
+    if (route) syncEdgeUpdaterCoordinates(id, points);
+  }, [id, points, route, sourceX, sourceY, targetX, targetY]);
   return <>
     <BaseEdge id={id} path={path} {...(markerStart ? { markerStart } : {})} {...(markerEnd ? { markerEnd } : {})} {...(style ? { style } : {})} />
     {label ? <EdgeLabelRenderer><div
@@ -21,6 +24,21 @@ export const OrthogonalEdge = memo(function OrthogonalEdge({
     >{label}</div></EdgeLabelRenderer> : null}
   </>;
 });
+
+export function syncEdgeUpdaterCoordinates(edgeId: string, points: Point[], root: ParentNode = document) {
+  const source = points[0];
+  const target = points.at(-1);
+  if (!source || !target) return;
+  const escapedId = edgeId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const edge = root.querySelector(`.react-flow__edge[data-id="${escapedId}"]`);
+  const update = (selector: string, point: Point) => {
+    const updater = edge?.querySelector<SVGCircleElement>(selector);
+    updater?.setAttribute('cx', String(point.x));
+    updater?.setAttribute('cy', String(point.y));
+  };
+  update('.react-flow__edgeupdater-source', source);
+  update('.react-flow__edgeupdater-target', target);
+}
 
 export function orthogonalPath(points: Point[], radius = 12): string {
   if (points.length === 0) return '';
