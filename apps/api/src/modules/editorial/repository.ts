@@ -87,6 +87,14 @@ export interface LoadedFlowProposal {
   operations: FlowProposalOperationV1[];
 }
 
+export interface RecordQuestionClusterInput {
+  workspaceId: string;
+  clusterKey: string;
+  summary: string;
+  messageId: string;
+  ownerId: string;
+}
+
 export function listQuestionClusters(database: DatabaseSync, workspaceId: string): WorkspaceQuestionClusterV1[] {
   const rows = database.prepare(
     `SELECT id, workspace_id, status, summary, occurrence_count, owner_visible_example_count, created_at, updated_at
@@ -95,6 +103,46 @@ export function listQuestionClusters(database: DatabaseSync, workspaceId: string
      ORDER BY updated_at DESC, id ASC`,
   ).all(workspaceId) as unknown as ClusterRow[];
   return rows.map(mapCluster);
+}
+
+/**
+ * Upserts one owner-visible question sample. The caller must already be inside
+ * the same transaction that commits the Agent answer so a replay cannot
+ * double-count the originating user message.
+ */
+export function recordQuestionClusterOccurrence(
+  database: DatabaseSync,
+  input: RecordQuestionClusterInput,
+): WorkspaceQuestionClusterV1 {
+  const existing = database.prepare(
+    `SELECT id FROM workspace_question_clusters
+     WHERE workspace_id = ? AND cluster_key = ?`,
+  ).get(input.workspaceId, input.clusterKey) as { id: string } | undefined;
+  const now = new Date().toISOString();
+  const clusterId = existing?.id ?? randomUUID();
+  if (!existing) {
+    database.prepare(
+      `INSERT INTO workspace_question_clusters (
+        id, workspace_id, cluster_key, summary, status, occurrence_count,
+        owner_visible_example_count, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'OPEN', 1, 1, ?, ?)`,
+    ).run(clusterId, input.workspaceId, input.clusterKey, input.summary, now, now);
+  }
+  const example = database.prepare(
+    `INSERT OR IGNORE INTO workspace_question_cluster_examples (
+      id, cluster_id, workspace_id, message_id, owner_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(randomUUID(), clusterId, input.workspaceId, input.messageId, input.ownerId, now);
+  if (existing && example.changes > 0) {
+    database.prepare(
+      `UPDATE workspace_question_clusters
+       SET occurrence_count = occurrence_count + 1,
+           owner_visible_example_count = owner_visible_example_count + 1,
+           updated_at = ?
+       WHERE id = ?`,
+    ).run(now, clusterId);
+  }
+  return listQuestionClusters(database, input.workspaceId).find((cluster) => cluster.id === clusterId)!;
 }
 
 export function listOwnerQuestionExamples(

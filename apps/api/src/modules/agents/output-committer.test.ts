@@ -72,6 +72,28 @@ describe('DatabaseAgentOutputCommitter', () => {
       references: [resolvedReference()],
     })).rejects.toThrow(/VALIDATING/u);
   });
+
+  it('records an evidence-gap workspace answer once for the editorial queue', async () => {
+    const context = seedValidatingRun(database);
+    const answer = { ...committedAnswer(context.runId), evidenceStatus: 'PARTIAL' as const };
+    const committer = new DatabaseAgentOutputCommitter(database, {
+      createId: () => 'assistant-message-gap',
+    });
+
+    await committer.commit({ context, answer, references: [resolvedReference()] });
+    await committer.commit({ context, answer, references: [resolvedReference()] });
+
+    expect(database.prepare(
+      `SELECT occurrence_count, owner_visible_example_count, summary
+       FROM workspace_question_clusters`,
+    ).all()).toEqual([{
+      occurrence_count: 1,
+      owner_visible_example_count: 1,
+      summary: '工作区问答存在待补充的内部证据覆盖。',
+    }]);
+    expect(database.prepare('SELECT COUNT(*) AS count FROM workspace_question_cluster_examples').get())
+      .toEqual({ count: 1 });
+  });
 });
 
 function seedValidatingRun(database: DatabaseSync): AgentRunExecutionContext {

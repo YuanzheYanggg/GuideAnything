@@ -11,6 +11,7 @@ import type {
   CommitAgentOutputInput,
   ResolvedAgentReference,
 } from './orchestrator';
+import { recordWorkspaceQuestionGap } from './editorial-question-recorder';
 
 interface DatabaseAgentOutputCommitterOptions {
   createId?: () => string;
@@ -75,6 +76,7 @@ export class DatabaseAgentOutputCommitter implements AgentOutputCommitter {
           ) VALUES (?, ?, 'ASSISTANT', NULL, ?, NULL, NULL, '[]', 1, ?)`,
         ).run(messageId, run.conversation_id, expectedContent, now);
       }
+      recordWorkspaceQuestionGap(this.database, { context: untrustedInput.context, answer });
       this.database.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?')
         .run(now, run.conversation_id);
       this.database.exec('COMMIT');
