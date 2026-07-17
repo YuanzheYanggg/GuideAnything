@@ -169,7 +169,7 @@ describe('LessonPage', () => {
     render(<LessonPage versionId="image-version" api={{ getVersion: vi.fn().mockResolvedValue(imageVersion) }} onBack={vi.fn()} />);
 
     expect(await screen.findByRole('heading', { name: '查看界面' })).toBeVisible();
-    fireEvent.click(screen.getByRole('img', { name: 'ERP 页面' }));
+    await user.click(screen.getByRole('button', { name: '放大查看 ERP 页面' }));
     expect(await screen.findByRole('dialog', { name: '图片预览' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: '关闭媒体预览' }));
     expect(screen.queryByRole('dialog', { name: '图片预览' })).not.toBeInTheDocument();
