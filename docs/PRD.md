@@ -81,6 +81,15 @@ GuideAnything 是面向流程培训与企业知识访问的多用户、多模态
 - 知识检索必须在 SQL 候选 `LIMIT` 前应用 scope、owner、membership 和流程可见性过滤；引用权限失效为 `FORBIDDEN` 时只显示通用文案，不回显历史受保护 title/excerpt。
 - Ontology 不在 0.2.0 页面、导航、数据生产和运行时范围内。
 
+### 4.6 工作区知识演进（编辑专属）
+
+- `CanvasDocument` 与发布版 `GuideVersion` 是工作区流程事实源；`FlowKnowledgeSnapshotV1` 只是可定位、可检索的派生索引。知识卡、问题聚类和流程提案不属于普通索引，不能被 Agent 或普通用户当成流程事实读取。
+- 工作区运行在内部来源已启用且最终证据状态为 `PARTIAL / INSUFFICIENT / CONFLICTING` 时，可在答案提交事务内记录一个脱敏问题聚类。聚类列表只展示摘要和计数；问题原文仅工作区 `OWNER` 可见，`EDIT` 只能看聚合信息。
+- 只有工作区 `OWNER / EDIT` 可以进入“知识演进”工作台，创建/审核知识卡、审核流程提案。`VIEW` 无入口且直接 API 访问返回 `403`。
+- 流程提案必须包含目标指南、基准草稿 revision、可验证证据和严格 Canvas 操作。编辑者先接受，再显式“应用到草稿”；服务端先验证操作拓扑和 revision。revision 已变化时提案标记为 `STALE`，不得覆盖新草稿。
+- 应用提案会留下编辑审计并触发新的草稿流程快照。发布仍使用现有作者发布流程；Agent 只可提出建议、产物或聚类信号，绝不自动修改流程、工作区资料或 Vault。
+- 工作区流程/资料/附件 worker 使用版本化 `guideanything-workspace-query` bundle，以选中上下文优先、服务端预算限跳和证据 locator 约束来避免小问题扩大检索范围；它与外部 Vault Harness 独立。
+
 ## 5. 非功能要求
 
 - 本地开发：Node.js 24+、pnpm 10+；`pnpm dev` 启动 Web/API/Bridge，`pnpm dev:fake` 提供不调用 Codex 的确定性纵向验证；SQLite、上传、Vault 和 Runtime home 均可配置。

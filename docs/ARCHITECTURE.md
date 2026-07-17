@@ -43,6 +43,15 @@ Vault 在 API 开始监听后执行首次后台扫描，之后每 5 分钟刷新
 
 工作区上传和会话附件在事务中创建 source/document/fragments；解析失败会留下安全的失败状态而不是半成品 `READY` 记录。附件默认 7 天到期，不登记为工作区永久资源。
 
+### 3.1 编辑知识演进域
+
+`CanvasDocument` 与不可变 `GuideVersion` 仍是唯一的流程事实源；`FlowKnowledgeSnapshotV1` 只是从它们编译出的不可编辑语义索引。编辑知识演进是完全隔离的工作区域，使用 `workspace_question_clusters`、`workspace_knowledge_cards`、`workspace_flow_proposals`、操作、证据与审计表，**从不**写入 `knowledge_sources / knowledge_documents / knowledge_fragments`，因此不会被普通 Agent 检索。
+
+- 仅 `OWNER` 与工作区 `EDIT` 成员能读取或改变聚类、知识卡和流程提案；`VIEW` 直接访问也返回 `403`。原始用户问题仅 `OWNER` 能按需读取，编辑者只见脱敏聚类摘要与计数。
+- Agent 提交的工作区答案只有在内部来源已启用且 `evidenceStatus` 为 `PARTIAL / INSUFFICIENT / CONFLICTING` 时才产生聚类信号。聚类 key 来自工作区、已授权流程锚点与规范化问题的哈希；不保存模型推理，也不把问题文本放入编辑者列表。
+- 知识卡和流程提案都是编辑草稿。提案使用严格的 `ADD/UPDATE/REMOVE` Canvas operation 协议、目标 `guideId` 与 `baseRevision`；`canvas-core` 在变更前验证节点、连线、步骤和入口出口的拓扑完整性。
+- 编辑者明确接受并应用提案时，草稿 revision、提案状态和审计事件在同一事务更新。revision 不匹配时提案被标记为 `STALE`，不修改流程。应用成功后才生成新的 draft Flow snapshot；发布仍走原有作者专属生命周期。Agent 永远不自动写回流程。
+
 ## 4. 流程图如何变成 Agent 证据
 
 `compileFlowKnowledgeSnapshotV1` 把编辑器画布编译成不可变语义快照：
@@ -88,6 +97,7 @@ flowchart LR
 - 工作区来源按流程、资料、附件优先；若当前路线的工作区证据已充分，可跳过 Vault worker。
 - Reducer 只接收 task findings，不能再次检索或新增 evidence/locator。
 - Router 和 Reducer 不注入完整 Santexwell skill bundle；只有实际读取 Santexwell 的 worker 使用索引器已验证的 last-good Prompt Harness。
+- 流程、工作区资料或会话附件 worker 使用版本化 `guideanything-workspace-query` bundle：选中上下文优先、按服务端预算限跳、仅引用已授权 evidence/locator，并禁止把工作区流程事实与外部资料混同。bundle 的内容哈希版本记录在公开计划的结构化 metadata 中，但不公开其完整提示内容。
 
 模型输出不直接成为引用。worker 只能回传服务端提供的 evidence ID；API canonicalize 后再次解析 locator、权限、revision/checksum，最后才写入答案。
 
@@ -134,6 +144,7 @@ API 启动会按时间顺序恢复持久化的 `QUEUED` 运行；上个进程遗
 - `/workspaces/:workspaceId/sources`：持久工作区资料与流程快照。
 - `/workspaces/:workspaceId/agents`：来源开关、会话附件、流式问答和 steer/cancel。
 - `/workspaces/:workspaceId/artifacts`：当前用户的持久产物。
+- `/workspaces/:workspaceId/knowledge-evolution`：`OWNER / EDIT` 专属的脱敏问题聚类、知识卡、流程提案审阅和显式草稿应用；不是普通知识检索入口。
 - `/references/:referenceId`：API 重新授权后跳转到真实目标。
 
 当前没有 Ontology 页面、导航项、构建任务或运行时 provider。
