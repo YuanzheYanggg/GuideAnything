@@ -5,7 +5,7 @@ import { NodeActionProvider, NodeAnchorPresentationProvider, NodeChrome, nodeChr
 
 vi.mock('@xyflow/react', () => ({
   Handle: ({ id, className, style, 'aria-label': label, 'aria-hidden': hidden }: { id?: string; className?: string; style?: React.CSSProperties; 'aria-label'?: string; 'aria-hidden'?: boolean | 'true' | 'false' }) => <span data-handle-id={id} className={className} style={style} aria-label={label} aria-hidden={hidden} />,
-  NodeResizer: () => null,
+  NodeResizer: ({ isVisible }: { isVisible?: boolean }) => <span data-testid="node-resizer" data-visible={String(isVisible)} />,
   Position: { Left: 'left', Right: 'right', Bottom: 'bottom' },
 }));
 
@@ -32,6 +32,12 @@ describe('nodeHandleConfig', () => {
 });
 
 describe('NodeChrome delete action', () => {
+  it('keeps the default resize chrome hidden for a selected node', () => {
+    render(<NodeChrome nodeId="process-1" selected tone="process"><strong>节点</strong></NodeChrome>);
+
+    expect(screen.getByTestId('node-resizer')).toHaveAttribute('data-visible', 'false');
+  });
+
   it('exposes continuous source and target connection surfaces on every node edge', () => {
     render(<NodeChrome nodeId="process-1" tone="process"><strong>节点</strong></NodeChrome>);
 

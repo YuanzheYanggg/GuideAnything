@@ -3,7 +3,6 @@ import { MarkerType } from '@xyflow/react';
 import type { CSSProperties } from 'react';
 
 const primaryFlowTypes = new Set(['start', 'end', 'process', 'decision', 'data', 'subguide']);
-
 const colorByName = {
   default: 'var(--ga-accent)',
   blue: 'var(--ga-edge-blue)',
@@ -21,7 +20,7 @@ export function resolveEdgeVisuals(presentation: EdgePresentation | undefined): 
   const arrows = presentation?.arrows ?? 'forward';
   return {
     style: {
-      stroke: colorByName[presentation?.color ?? 'default'],
+      stroke: edgeStrokeColor(presentation?.color),
       strokeWidth: presentation?.width ?? 2,
       ...(presentation?.pattern === 'dashed' ? { strokeDasharray: '8 5' }
         : presentation?.pattern === 'dotted' ? { strokeDasharray: '1 5', strokeLinecap: 'round' }
@@ -30,6 +29,11 @@ export function resolveEdgeVisuals(presentation: EdgePresentation | undefined): 
     ...(arrows === 'reverse' || arrows === 'both' ? { markerStart: { type: MarkerType.ArrowClosed } } : {}),
     ...(arrows === 'forward' || arrows === 'both' ? { markerEnd: { type: MarkerType.ArrowClosed } } : {}),
   };
+}
+
+function edgeStrokeColor(color: EdgePresentation['color']): string {
+  if (color && /^#[0-9a-f]{6}$/i.test(color)) return color;
+  return colorByName[color as keyof typeof colorByName] ?? colorByName.default;
 }
 
 export function edgeAnchorFromClientPoint(

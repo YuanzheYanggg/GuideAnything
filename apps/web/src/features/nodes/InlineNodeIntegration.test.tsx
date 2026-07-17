@@ -38,7 +38,9 @@ describe('inline node text integration', () => {
     await user.keyboard('{Escape}');
     await user.dblClick(screen.getByRole('button', { name: '编辑收到订单 · 节点明细' }));
     expect(onOpenEditor).toHaveBeenCalledWith('process-1', expect.any(HTMLButtonElement));
-    await user.click(screen.getByRole('button', { name: '详情' }));
+    const detailToggle = screen.getByRole('button', { name: '详情' });
+    expect(detailToggle).toHaveClass('flow-detail-toggle-compact');
+    await user.click(detailToggle);
     expect(onToggleExpanded).toHaveBeenCalledWith('process-1');
   });
 

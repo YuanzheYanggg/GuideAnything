@@ -1,6 +1,6 @@
 import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgePresentation, FlowLane, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
-import { duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, reconcileSubguideEdges, routeCanvasEdges, setSubguideExpanded, type HierarchyLayoutResult, type OrthogonalRoute } from '@guideanything/canvas-core';
+import { duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, reconcileSubguideEdges, routeCanvasEdges, setSubguideExpanded, snapNodeForStraightRoute, type HierarchyLayoutResult, type NodeAlignmentSnap, type OrthogonalRoute } from '@guideanything/canvas-core';
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -136,6 +136,8 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const [annotationEditorNodeId, setAnnotationEditorNodeId] = useState<string | null>(null);
   const [overlayViewport, setOverlayViewport] = useState<CanvasDocument['viewport']>({ x: 0, y: 0, zoom: 1 });
   const [hierarchyOpen, setHierarchyOpen] = useState(false);
+  const [dragPreviewDocument, setDragPreviewDocument] = useState<CanvasDocument | null>(null);
+  const [alignmentGuide, setAlignmentGuide] = useState<NodeAlignmentSnap | null>(null);
   const historyRef = useRef<HistoryStack<CanvasDocument> | null>(null);
   const clipboardRef = useRef<string[]>([]);
   const connectSourceRef = useRef<PendingConnection | null>(null);
@@ -193,12 +195,14 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     const validated = reconcileSubguideEdges(CanvasDocumentSchema.parse(next));
     historyRef.current?.push(validated);
     setLayoutPreview(null);
+    setDragPreviewDocument(null);
+    setAlignmentGuide(null);
     setDocument(validated);
     setFlowNodes(toFlowNodes(validated.nodes, selectedIds, validated.lanes, expandedDetailNodeIds));
     setSaveState('未保存');
   }, [expandedDetailNodeIds, selectedIds]);
 
-  const renderedDocument = layoutPreview?.document ?? document;
+  const renderedDocument = layoutPreview?.document ?? dragPreviewDocument ?? document;
   const routing = useMemo(() => renderedDocument ? routeCanvasEdges(renderedDocument) : null, [renderedDocument]);
   const flowEdges = useMemo(() => renderedDocument ? [
     ...renderedDocument.edges.map((edge) => {
@@ -207,7 +211,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     }),
     ...hierarchyPresentationEdges(renderedDocument),
   ] : [], [renderedDocument, routing]);
-  const nodeAnchorHandles = useMemo(() => renderedDocument ? anchorHandlesByNodeId(renderedDocument) : new Map<string, NodeAnchorHandle[]>(), [renderedDocument]);
+  const nodeAnchorHandles = useMemo(() => renderedDocument && routing ? anchorHandlesByNodeId(renderedDocument, routing) : new Map<string, NodeAnchorHandle[]>(), [renderedDocument, routing]);
   const renderedFlowNodes = useMemo(() => layoutPreview ? toFlowNodes(layoutPreview.document.nodes, selectedIds, layoutPreview.document.lanes, expandedDetailNodeIds) : flowNodes, [expandedDetailNodeIds, flowNodes, layoutPreview, selectedIds]);
   const stageBounds = useMemo(() => renderedDocument ? getStageBounds(renderedDocument) : [], [renderedDocument]);
   const selectedBusinessEdge = selectedEdgeId && document ? document.edges.find((edge) => edge.id === selectedEdgeId) ?? null : null;
@@ -259,9 +263,27 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
 
   const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
     if (layoutPreview) return;
-    const displayChanges = changes.filter((change) => change.type !== 'dimensions' || !expandedDetailNodeIds.has(change.id));
+    const snappedChanges = document ? changes.map((change) => {
+      if (change.type !== 'position' || !change.position) return change;
+      const snap = snapNodeForStraightRoute(document, change.id, change.position);
+      return snap ? { ...change, position: snap.position } : change;
+    }) : changes;
+    const snapping = document ? snappedChanges.flatMap((change) => {
+      if (change.type !== 'position' || !change.position) return [];
+      const snap = snapNodeForStraightRoute(document, change.id, change.position);
+      return snap ? [snap] : [];
+    })[0] ?? null : null;
+    const displayChanges = snappedChanges.filter((change) => change.type !== 'dimensions' || !expandedDetailNodeIds.has(change.id));
     setFlowNodes((current) => applyNodeChanges(displayChanges, current));
-    const persistedChanges = persistableNodeChanges(changes, expandedDetailNodeIds);
+    const dragging = snappedChanges.some((change) => change.type === 'position' && change.dragging === true);
+    if (dragging && document) {
+      setDragPreviewDocument((current) => documentWithPositionChanges(current ?? document, snappedChanges));
+      setAlignmentGuide(snapping);
+    } else {
+      setDragPreviewDocument(null);
+      setAlignmentGuide(null);
+    }
+    const persistedChanges = persistableNodeChanges(snappedChanges, expandedDetailNodeIds);
     if (persistedChanges.length === 0) return;
     setLayoutPreview(null);
     setSaveState('未保存');
@@ -272,7 +294,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       historyRef.current?.push(next);
       return next;
     });
-  }, [expandedDetailNodeIds, layoutPreview, selectedIds]);
+  }, [document, expandedDetailNodeIds, layoutPreview, selectedIds]);
 
   const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
     if (layoutPreview) return;
@@ -821,6 +843,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
         </NodeDetailPresentationProvider>
         </NodeAnchorPresentationProvider>
         <div className="canvas-screen-overlay">
+          {alignmentGuide ? <AlignmentGuide guide={alignmentGuide} viewport={overlayViewport} /> : null}
           {creationMenu ? <CanvasCreationMenu position={canvasPointToScreen(creationMenu.position, overlayViewport)} allowResources onCreate={createFromConnection} onCancel={() => setCreationMenu(null)} /> : null}
           {edgeLabelEditor ? <EdgeLabelEditor position={canvasPointToScreen(edgeLabelEditor.position, overlayViewport)} {...(edgeLabelEditor.label !== undefined ? { label: edgeLabelEditor.label } : {})} onSave={saveEdgeLabel} onCancel={() => setEdgeLabelEditor(null)} /> : null}
           {!layoutPreview && selectedBusinessEdge && selectedEdgeRoute ? <EdgeToolbarAtRoute route={selectedEdgeRoute} viewport={overlayViewport} presentation={selectedBusinessEdge.presentation} onChange={updateSelectedEdgePresentation} onClose={() => setSelectedEdgeId(null)} /> : null}
@@ -1022,6 +1045,18 @@ function canvasPointToScreen(point: { x: number; y: number }, viewport: CanvasDo
   return { x: point.x * viewport.zoom + viewport.x, y: point.y * viewport.zoom + viewport.y };
 }
 
+function AlignmentGuide({ guide, viewport }: { guide: NodeAlignmentSnap; viewport: CanvasDocument['viewport'] }) {
+  const position = canvasPointToScreen(
+    guide.axis === 'y' ? { x: 0, y: guide.coordinate } : { x: guide.coordinate, y: 0 },
+    viewport,
+  );
+  return <div
+    aria-hidden="true"
+    className={`canvas-alignment-guide is-${guide.axis}`}
+    style={guide.axis === 'y' ? { top: position.y } : { left: position.x }}
+  />;
+}
+
 function sameViewport(left: CanvasDocument['viewport'], right: CanvasDocument['viewport']) {
   return left.x === right.x && left.y === right.y && left.zoom === right.zoom;
 }
@@ -1034,15 +1069,15 @@ function renderEdge(document: CanvasDocument, edge: CanvasEdge, route: Orthogona
     source: edge.source,
     target: edge.target,
     label: edge.label,
-    sourceHandle: edge.presentation?.sourceAnchor ? physicalHandleId(edge.id, 'source') : edge.sourceHandle ?? (source?.type === 'decision' ? 'yes' : 'out'),
-    targetHandle: edge.presentation?.targetAnchor ? physicalHandleId(edge.id, 'target') : edge.targetHandle ?? 'in',
+    sourceHandle: route ? physicalHandleId(edge.id, 'source') : edge.sourceHandle ?? (source?.type === 'decision' ? 'yes' : 'out'),
+    targetHandle: route ? physicalHandleId(edge.id, 'target') : edge.targetHandle ?? 'in',
     type: route ? 'orthogonal' : 'smoothstep',
     ...visuals,
     data: { ...(route ? { route } : {}), canvasEdge: edge },
   };
 }
 
-function anchorHandlesByNodeId(document: CanvasDocument): Map<string, NodeAnchorHandle[]> {
+function anchorHandlesByNodeId(document: CanvasDocument, routing: ReturnType<typeof routeCanvasEdges>): Map<string, NodeAnchorHandle[]> {
   const handlesByNodeId = new Map<string, NodeAnchorHandle[]>();
   const add = (nodeId: string, handle: NodeAnchorHandle) => {
     const handles = handlesByNodeId.get(nodeId);
@@ -1051,8 +1086,10 @@ function anchorHandlesByNodeId(document: CanvasDocument): Map<string, NodeAnchor
   };
   document.edges.forEach((edge) => {
     if (!isEditableBusinessEdge(document, edge)) return;
-    if (edge.presentation?.sourceAnchor) add(edge.source, { id: physicalHandleId(edge.id, 'source'), type: 'source', side: edge.presentation.sourceAnchor.side, offset: edge.presentation.sourceAnchor.offset });
-    if (edge.presentation?.targetAnchor) add(edge.target, { id: physicalHandleId(edge.id, 'target'), type: 'target', side: edge.presentation.targetAnchor.side, offset: edge.presentation.targetAnchor.offset });
+    const route = routing.routesByEdgeId.get(edge.id);
+    if (!route) return;
+    add(edge.source, { id: physicalHandleId(edge.id, 'source'), type: 'source', side: route.sourceAnchor.side, offset: route.sourceAnchor.offset });
+    add(edge.target, { id: physicalHandleId(edge.id, 'target'), type: 'target', side: route.targetAnchor.side, offset: route.targetAnchor.offset });
   });
   return handlesByNodeId;
 }
@@ -1149,6 +1186,20 @@ function fromFlowNodes(document: CanvasDocument, nodes: Node[]): CanvasDocument 
         ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
         ...(width && height ? { size: { width, height } } : {}),
       } as CanvasNode;
+    }),
+  };
+}
+
+function documentWithPositionChanges(document: CanvasDocument, changes: NodeChange<Node>[]): CanvasDocument {
+  const positions = new Map(changes.flatMap((change) => change.type === 'position' && change.position
+    ? [[change.id, change.position] as const]
+    : []));
+  if (positions.size === 0) return document;
+  return {
+    ...document,
+    nodes: document.nodes.map((node) => {
+      const position = positions.get(node.id);
+      return position ? { ...node, position } : node;
     }),
   };
 }
