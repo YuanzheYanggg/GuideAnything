@@ -30,7 +30,7 @@ export const FlowNode = memo(function FlowNode({ data, selected, type, width, he
       ? <p className={expanded ? 'flow-description flow-description-expanded' : 'flow-description'} data-testid={`flow-description-${id}`}>{expanded ? description : description.split('\n')[0]}</p>
       : selected ? <span className="inline-node-text-placeholder">双击添加节点明细</span> : null}
     </button>
-    {description ? <button className="flow-detail-toggle nodrag nopan nowheel" type="button" onClick={(event) => { event.stopPropagation(); detailPresentation.onToggleExpanded(id); }}>{expanded ? '收起' : '详情'}</button> : null}
+    {description ? <button className="flow-detail-toggle flow-detail-toggle-compact nodrag nopan nowheel" type="button" onClick={(event) => { event.stopPropagation(); detailPresentation.onToggleExpanded(id); }}>{expanded ? '收起' : '详情'}</button> : null}
     {value.responsibility ? <span className={`node-responsibility node-responsibility-${value.responsibility.kind.toLowerCase()}`}>{value.responsibility.title}<em>{value.responsibility.kind === 'ROLE' ? '角色' : '系统'}</em></span> : null}
   </NodeChrome>;
 });

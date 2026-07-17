@@ -1,7 +1,7 @@
 import type { CanvasDocument, CanvasEdge, CanvasNode } from '@guideanything/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { routeCanvasEdges, type OrthogonalRoute, type Point } from './routing';
+import { routeCanvasEdges, snapNodeForStraightRoute, type OrthogonalRoute, type Point } from './routing';
 
 const process = (id: string, x: number, y: number, stageId?: string): CanvasNode => ({
   id, type: 'process', position: { x, y }, size: { width: 200, height: 100 }, zIndex: 0,
@@ -21,7 +21,7 @@ describe('orthogonal edge routing', () => {
   });
 
   it('routes a downward decision branch from the bottom', () => {
-    const result = routeCanvasEdges(document([process('decision', 0, 0), process('no', 320, 260)], [edge('no-edge', 'decision', 'no', { sourceHandle: 'no' })]));
+    const result = routeCanvasEdges(document([process('decision', 0, 0), process('no', 320, 260)], [edge('no-edge', 'decision', 'no', { sourceHandle: 'no', presentation: { routing: 'elbow' } })]));
     const route = result.routesByEdgeId.get('no-edge')!;
 
     expect(route.kind).toBe('BRANCH');
@@ -54,7 +54,7 @@ describe('orthogonal edge routing', () => {
   it('uses the gap between rows when a forward flow wraps back to the left', () => {
     const result = routeCanvasEdges(document(
       [process('row-end', 1_200, 0), process('next-row', 0, 320)],
-      [edge('wrapped', 'row-end', 'next-row')],
+      [edge('wrapped', 'row-end', 'next-row', { presentation: { routing: 'elbow' } })],
     ));
     const route = result.routesByEdgeId.get('wrapped')!;
 
@@ -105,6 +105,7 @@ describe('orthogonal edge routing', () => {
       [process('source', 100, 80), process('target', 500, 300)],
       [edge('anchored', 'source', 'target', {
         presentation: {
+          routing: 'elbow',
           sourceAnchor: { side: 'BOTTOM', offset: 0.25 },
           targetAnchor: { side: 'LEFT', offset: 0.6 },
         },
@@ -119,11 +120,114 @@ describe('orthogonal edge routing', () => {
     expectOrthogonal(route.points);
   });
 
+  it('uses a single direct segment for an explicit straight route even when its anchored endpoints do not align', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 400, 0)],
+      [edge('straight', 'source', 'target', {
+        presentation: {
+          routing: 'straight',
+          sourceAnchor: { side: 'RIGHT', offset: 0.2 },
+          targetAnchor: { side: 'LEFT', offset: 0.75 },
+        },
+      })],
+    ));
+
+    expect(result.routesByEdgeId.get('straight')!.points).toEqual([{ x: 200, y: 20 }, { x: 400, y: 75 }]);
+  });
+
+  it('uses a direct path in smart mode when the endpoints have a clear line of sight', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 400, 0)],
+      [edge('legacy', 'source', 'target', {
+        presentation: {
+          routing: 'smart',
+          sourceAnchor: { side: 'RIGHT', offset: 0.2 },
+          targetAnchor: { side: 'LEFT', offset: 0.75 },
+        },
+      })],
+    ));
+
+    expect(result.routesByEdgeId.get('legacy')!.points).toEqual([{ x: 200, y: 20 }, { x: 400, y: 75 }]);
+  });
+
+  it('uses elbow routing by default while collapsing aligned opposing ports to a straight segment', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 400, 0)],
+      [edge('default-elbow', 'source', 'target')],
+    ));
+    const route = result.routesByEdgeId.get('default-elbow')!;
+
+    expect(route.routing).toBe('elbow');
+    expect(route.points).toEqual([{ x: 200, y: 50 }, { x: 400, y: 50 }]);
+  });
+
+  it('fans out shared forward endpoints so the routes and their drag targets stay distinct', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('first', 400, 220), process('second', 400, 440)],
+      [
+        edge('first-edge', 'source', 'first'),
+        edge('second-edge', 'source', 'second'),
+      ],
+    ));
+    const first = result.routesByEdgeId.get('first-edge')!;
+    const second = result.routesByEdgeId.get('second-edge')!;
+
+    expect(first.sourceAnchor).not.toEqual(second.sourceAnchor);
+    expect(first.points[0]).not.toEqual(second.points[0]);
+    expect(first.points[1]).not.toEqual(second.points[1]);
+  });
+
+  it('snaps a moved node to a clear, opposing horizontal connection when it is close to alignment', () => {
+    const result = snapNodeForStraightRoute(
+      document([process('source', 0, 0), process('target', 400, 0)], [edge('aligned', 'source', 'target')]),
+      'target',
+      { x: 400, y: 9 },
+    );
+
+    expect(result).toEqual({
+      edgeId: 'aligned',
+      axis: 'y',
+      coordinate: 50,
+      position: { x: 400, y: 0 },
+    });
+  });
+
+  it('does not snap a moved node when another node blocks the direct corridor', () => {
+    const result = snapNodeForStraightRoute(
+      document(
+        [process('source', 0, 0), process('blocker', 280, 0), process('target', 560, 0)],
+        [edge('blocked', 'source', 'target')],
+      ),
+      'target',
+      { x: 560, y: 8 },
+    );
+
+    expect(result).toBeUndefined();
+  });
+
+  it('keeps an explicit elbow route orthogonal for authors who need a channel', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 400, 0)],
+      [edge('elbow', 'source', 'target', {
+        presentation: {
+          routing: 'elbow',
+          sourceAnchor: { side: 'RIGHT', offset: 0.2 },
+          targetAnchor: { side: 'LEFT', offset: 0.75 },
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('elbow')!;
+
+    expect(route.points.length).toBeGreaterThan(2);
+    expectOrthogonal(route.points);
+  });
+
   it('keeps a backward edge classified as BACK when endpoints are anchored', () => {
     const result = routeCanvasEdges(document(
       [process('first', 0, 0), process('last', 640, 0)],
       [edge('feedback', 'last', 'first', {
         presentation: {
+          routing: 'elbow',
           sourceAnchor: { side: 'TOP', offset: 0.75 },
           targetAnchor: { side: 'BOTTOM', offset: 0.2 },
         },

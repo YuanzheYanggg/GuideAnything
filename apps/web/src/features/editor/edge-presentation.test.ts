@@ -12,6 +12,12 @@ describe('edge presentation helpers', () => {
     });
   });
 
+  it('passes a custom palette hex through to the SVG stroke', () => {
+    expect(resolveEdgeVisuals({ color: '#1020ff' })).toMatchObject({
+      style: { stroke: '#1020ff', strokeWidth: 2 },
+    });
+  });
+
   it('finds the nearest node edge with an exact relative offset', () => {
     const rect = { left: 100, top: 200, width: 240, height: 120 };
 

@@ -247,15 +247,16 @@ describe('CanvasDocumentSchema', () => {
     expect(result.success).toBe(true);
   });
 
-  it('accepts legacy edges and preserves constrained edge presentation', () => {
+  it('accepts legacy edges and preserves custom edge presentation colors', () => {
     const legacy = hierarchyDocument({
       edges: [{ id: 'legacy', source: 'start', target: 'start' }],
     });
     const presentation = {
-      color: 'purple',
-      width: 4,
+      color: '#1020ff',
+      width: 7,
       pattern: 'dotted',
       arrows: 'both',
+      routing: 'straight',
       sourceAnchor: { side: 'BOTTOM', offset: 0.2 },
       targetAnchor: { side: 'LEFT', offset: 0.8 },
     };
@@ -287,7 +288,7 @@ describe('CanvasDocumentSchema', () => {
         id: 'bad-style',
         source: 'start',
         target: 'start',
-        presentation: { color: 'url(javascript:alert(1))', width: 5 },
+        presentation: { color: 'url(javascript:alert(1))', width: 25, routing: 'curved' },
       }],
     });
 

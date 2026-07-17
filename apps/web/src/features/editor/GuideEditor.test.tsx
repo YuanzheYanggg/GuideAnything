@@ -689,8 +689,31 @@ describe('GuideEditor', () => {
 
     expect(reactFlowCallbacks.edgeTypes).toEqual(expect.objectContaining({ orthogonal: expect.anything() }));
     expect(reactFlowCallbacks.edges).toContainEqual(expect.objectContaining({
-      id: 'flow-edge', sourceHandle: 'out', targetHandle: 'in', type: 'orthogonal', label: '继续', data: expect.objectContaining({ route: expect.objectContaining({ kind: 'FORWARD' }) }),
+      id: 'flow-edge', sourceHandle: 'edge:flow-edge:source', targetHandle: 'edge:flow-edge:target', type: 'orthogonal', label: '继续', data: expect.objectContaining({ route: expect.objectContaining({ kind: 'FORWARD' }) }),
     }));
+  });
+
+  it('snaps a close node drop onto a clear opposing route before persisting the move', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'source', type: 'start', position: { x: 0, y: 0 }, size: { width: 200, height: 100 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'target', type: 'process', position: { x: 400, y: 0 }, size: { width: 200, height: 100 }, zIndex: 1, data: { label: '处理', shape: 'process' } },
+      ],
+      edges: [{ id: 'aligned', source: 'source', target: 'target' }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'source', exitNodeIds: ['target'],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    act(() => reactFlowCallbacks.onNodesChange?.([{ id: 'target', type: 'position', position: { x: 400, y: 9 }, dragging: false }]));
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
+    expect(saved.nodes.find((node) => node.id === 'target')!.position).toEqual({ x: 400, y: 0 });
   });
 
   it('persists toolbar changes only for a selected business edge', async () => {
@@ -709,12 +732,15 @@ describe('GuideEditor', () => {
     await screen.findByDisplayValue('订单教学');
 
     act(() => reactFlowCallbacks.onEdgeClick?.({} as MouseEvent, reactFlowCallbacks.edges[0]!));
-    await user.click(screen.getByRole('button', { name: '选择连线颜色' }));
-    await user.click(screen.getByRole('button', { name: '紫色连线' }));
+    fireEvent.change(screen.getByLabelText('选择连线颜色'), { target: { value: '#1020ff' } });
     await user.click(screen.getByRole('button', { name: '选择连线粗细' }));
-    await user.click(screen.getByRole('button', { name: '4 像素' }));
+    const widthInput = screen.getByRole('spinbutton', { name: '连线粗细数值' });
+    await user.clear(widthInput);
+    await user.type(widthInput, '4');
     await user.click(screen.getByRole('button', { name: '选择线型' }));
     await user.click(screen.getByRole('button', { name: '点线' }));
+    await user.click(screen.getByRole('button', { name: '选择连线路由' }));
+    await user.click(screen.getByRole('button', { name: '直线' }));
     await user.click(screen.getByRole('button', { name: '选择箭头' }));
     await user.click(screen.getByRole('button', { name: '双向箭头' }));
     await user.click(screen.getByRole('button', { name: '保存草稿' }));
@@ -722,7 +748,7 @@ describe('GuideEditor', () => {
     await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
     expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
       document: expect.objectContaining({ edges: [expect.objectContaining({
-        id: 'business', presentation: { color: 'purple', width: 4, pattern: 'dotted', arrows: 'both' },
+        id: 'business', presentation: { color: '#1020ff', width: 4, pattern: 'dotted', routing: 'straight', arrows: 'both' },
       })] }),
     }));
   });

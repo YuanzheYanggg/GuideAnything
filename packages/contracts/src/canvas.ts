@@ -87,16 +87,20 @@ const EdgeAnchorSchema = z.object({
   offset: z.number().min(0).max(1),
 });
 
+const EdgeRoutingSchema = z.enum(['straight', 'elbow', 'smart']);
+
 const EdgePresentationSchema = z.object({
-  color: z.enum(['default', 'blue', 'green', 'yellow', 'red', 'purple']).optional(),
-  width: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional(),
+  color: z.union([z.enum(['default', 'blue', 'green', 'yellow', 'red', 'purple']), z.string().regex(/^#[0-9a-f]{6}$/i)]).optional(),
+  width: z.number().int().min(1).max(24).optional(),
   pattern: z.enum(['solid', 'dashed', 'dotted']).optional(),
   arrows: z.enum(['none', 'forward', 'reverse', 'both']).optional(),
+  routing: EdgeRoutingSchema.optional(),
   sourceAnchor: EdgeAnchorSchema.optional(),
   targetAnchor: EdgeAnchorSchema.optional(),
 });
 
 export type EdgeAnchor = z.infer<typeof EdgeAnchorSchema>;
+export type EdgeRouting = z.infer<typeof EdgeRoutingSchema>;
 export type EdgePresentation = z.infer<typeof EdgePresentationSchema>;
 
 export const FlowStageSchema = z.object({

@@ -74,7 +74,7 @@ export function NodeChrome({ nodeId, selected, tone, children, width, height, ex
   const canDelete = Boolean(nodeId && actions?.enabled && actions.onDeleteNode);
   const anchorHandles = [...continuousAnchorHandles(), ...(nodeId ? anchorPresentation.handlesByNodeId.get(nodeId) ?? [] : [])];
   return <div className={`canvas-node canvas-node-${tone}${expanded ? ' is-detail-expanded' : ''}`} style={nodeChromeStyle(width, height, expanded)}>
-    <NodeResizer minWidth={180} minHeight={90} isVisible={Boolean(selected && !expanded)} />
+    <NodeResizer minWidth={180} minHeight={90} isVisible={false} />
     <Handle type="target" position={Position.Left} id="in" aria-label="输入端口" />
     {anchorHandles.map((handle) => <Handle
       key={handle.id}
