@@ -1,10 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { Edge, NodeChange } from '@xyflow/react';
+import type { Connection, Edge, NodeChange } from '@xyflow/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { CanvasDocument, CanvasEdge, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
 
-import { GuideEditor, persistableNodeChanges, toCanvasEdge, toFlowNodes, updateInlineNodeText, type EditorApi, type GuideDraftDetail } from './GuideEditor';
+import { GuideEditor, persistableNodeChanges, removeHierarchyItem, removeNodesFromDocument, toCanvasEdge, toFlowNodes, updateInlineNodeText, type EditorApi, type GuideDraftDetail } from './GuideEditor';
 import { createPersonalApiMock } from '../../test/workspace-api-mocks';
 
 const { fitView, screenToFlowPosition, reactFlowCallbacks } = vi.hoisted(() => ({
@@ -12,10 +12,17 @@ const { fitView, screenToFlowPosition, reactFlowCallbacks } = vi.hoisted(() => (
   screenToFlowPosition: vi.fn(({ x, y }: { x: number; y: number }) => ({ x, y })),
   reactFlowCallbacks: {
     onNodesChange: undefined as undefined | ((changes: NodeChange[]) => void),
+    onMove: undefined as undefined | ((event: unknown, viewport: { x: number; y: number; zoom: number }) => void),
     onMoveEnd: undefined as undefined | ((event: unknown, viewport: { x: number; y: number; zoom: number }) => void),
+    onConnect: undefined as undefined | ((connection: Connection) => void),
     onConnectStart: undefined as undefined | ((event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void),
-    onConnectEnd: undefined as undefined | ((event: unknown) => void),
+    onConnectEnd: undefined as undefined | ((event: unknown, connectionState?: unknown) => void),
+    onNodeDoubleClick: undefined as undefined | ((event: { target: EventTarget | null; currentTarget: EventTarget | null }, node: { id: string }) => void),
+    onEdgeClick: undefined as undefined | ((event: unknown, edge: Edge) => void),
     onEdgeDoubleClick: undefined as undefined | ((event: unknown, edge: Edge) => void),
+    onReconnect: undefined as undefined | ((oldEdge: Edge, connection: { source: string | null; sourceHandle?: string | null; target: string | null; targetHandle?: string | null }) => void),
+    onReconnectStart: undefined as undefined | ((event: unknown, edge: Edge, handleType: 'source' | 'target') => void),
+    onReconnectEnd: undefined as undefined | ((event: unknown, edge: Edge, handleType: 'source' | 'target', connectionState: { toNode?: { id: string } | null }) => void),
     edges: [] as Edge[],
     edgeTypes: undefined as unknown,
     inlineEditing: undefined as undefined | { enabled: boolean; updateText: (nodeId: string, field: 'label' | 'description' | 'markdown' | 'imageCaption' | 'videoCaption', value: string) => void },
@@ -28,19 +35,26 @@ vi.mock('@xyflow/react', async () => {
   const { useInlineNodeEditing } = await import('../nodes/InlineNodeTextEditor');
   return {
     ...actual,
-    ReactFlow: ({ children, nodes = [], edges = [], edgeTypes, onInit, onNodesChange, onMoveEnd, onConnectStart, onConnectEnd, onEdgeDoubleClick, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string; data?: { description?: string } }>; edges?: Edge[]; edgeTypes?: unknown; onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void; onNodesChange?: (changes: NodeChange[]) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onConnectStart?: (event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void; onConnectEnd?: (event: unknown) => void; onEdgeDoubleClick?: (event: unknown, edge: Edge) => void; nodesDraggable?: boolean }) => {
+    ReactFlow: ({ children, nodes = [], edges = [], edgeTypes, onInit, onNodesChange, onMove, onMoveEnd, onConnect, onConnectStart, onConnectEnd, onNodeDoubleClick, onEdgeClick, onEdgeDoubleClick, onReconnect, onReconnectStart, onReconnectEnd, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string; data?: { description?: string } }>; edges?: Edge[]; edgeTypes?: unknown; onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void; onNodesChange?: (changes: NodeChange[]) => void; onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onConnect?: (connection: Connection) => void; onConnectStart?: (event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void; onConnectEnd?: (event: unknown, connectionState?: unknown) => void; onNodeDoubleClick?: (event: { target: EventTarget | null; currentTarget: EventTarget | null }, node: { id: string }) => void; onEdgeClick?: (event: unknown, edge: Edge) => void; onEdgeDoubleClick?: (event: unknown, edge: Edge) => void; onReconnect?: (oldEdge: Edge, connection: { source: string | null; sourceHandle?: string | null; target: string | null; targetHandle?: string | null }) => void; onReconnectStart?: (event: unknown, edge: Edge, handleType: 'source' | 'target') => void; onReconnectEnd?: (event: unknown, edge: Edge, handleType: 'source' | 'target', connectionState: { toNode?: { id: string } | null }) => void; nodesDraggable?: boolean }) => {
       reactFlowCallbacks.inlineEditing = useInlineNodeEditing();
       reactFlowCallbacks.onNodesChange = onNodesChange;
+      reactFlowCallbacks.onMove = onMove;
       reactFlowCallbacks.onMoveEnd = onMoveEnd;
+      reactFlowCallbacks.onConnect = onConnect;
       reactFlowCallbacks.onConnectStart = onConnectStart;
       reactFlowCallbacks.onConnectEnd = onConnectEnd;
+      reactFlowCallbacks.onNodeDoubleClick = onNodeDoubleClick;
+      reactFlowCallbacks.onEdgeClick = onEdgeClick;
       reactFlowCallbacks.onEdgeDoubleClick = onEdgeDoubleClick;
+      reactFlowCallbacks.onReconnect = onReconnect;
+      reactFlowCallbacks.onReconnectStart = onReconnectStart;
+      reactFlowCallbacks.onReconnectEnd = onReconnectEnd;
       reactFlowCallbacks.edges = edges;
       reactFlowCallbacks.edgeTypes = edgeTypes;
       React.useEffect(() => { onInit?.({ fitView, screenToFlowPosition }); }, [onInit]);
       return <div className="react-flow"><div className="react-flow__pane" data-testid="flow-pane" />{nodes.map((node) => <div className={`react-flow__node${nodesDraggable ? ' draggable' : ''}`} data-id={node.id} key={node.id}>{node.data?.description ? <p className="flow-description" data-testid={`flow-description-${node.id}`}>{node.data.description}</p> : null}</div>)}{children}</div>;
     },
-    ViewportPortal: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+    ViewportPortal: ({ children }: { children?: React.ReactNode }) => <div data-testid="viewport-portal">{children}</div>,
     Background: () => null,
     MiniMap: () => null,
     Controls: () => null,
@@ -66,6 +80,10 @@ const otherSearchItem = {
   versionId: 'version-other', guideId: 'guide-other', workspaceId: 'workspace-stock', workspaceItemId: 'item-guide-other', workspaceName: '库存管理', favorite: false, canManageLifecycle: false, title: '库存盘点流程', summary: '盘点前的准备工作', tags: ['库存'], version: 1, authorName: '李作者',
 };
 
+function openHierarchyPanel() {
+  fireEvent.click(screen.getByRole('button', { name: '展开业务流程' }));
+}
+
 describe('GuideEditor', () => {
   it('records the guide as recent only after a successful load', async () => {
     const personalApi = createPersonalApiMock();
@@ -83,6 +101,57 @@ describe('GuideEditor', () => {
     const dimensions: NodeChange = { id: 'sales-start', type: 'dimensions', dimensions: { width: 240, height: 104 }, resizing: false };
 
     expect(persistableNodeChanges([dragging, selection, finished, dimensions])).toEqual([finished, dimensions]);
+  });
+
+  it('removes a node while cleaning edges, steps, exits, and attached content references', () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'process', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '处理', shape: 'process' } },
+        { id: 'markdown', type: 'markdown', contentParentId: 'process', position: { x: 320, y: 0 }, zIndex: 1, data: { markdown: '说明' } },
+      ],
+      edges: [{ id: 'edge', source: 'process', target: 'process' }],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      steps: [{ id: 'step', order: 0, title: '处理', nodeId: 'process' }],
+      entryNodeId: 'process',
+      exitNodeIds: ['process'],
+    };
+
+    const next = removeNodesFromDocument(document, ['process']);
+
+    expect(next.nodes).toEqual([expect.objectContaining({ id: 'markdown', contentParentId: undefined })]);
+    expect(next.edges).toEqual([]);
+    expect(next.steps).toEqual([]);
+    expect(next.entryNodeId).toBeUndefined();
+    expect(next.exitNodeIds).toEqual([]);
+  });
+
+  it('removes a hierarchy item while preserving nodes, edges, and lesson steps', () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      stages: [{ id: 'prepare', title: '准备', order: 0 }, { id: 'review', title: '复核', order: 1 }],
+      lanes: [{ id: 'sales', title: '销售', kind: 'ROLE', order: 0 }, { id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 1 }],
+      nodes: [
+        { id: 'process-a', type: 'process', stageId: 'prepare', laneId: 'sales', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '创建订单', shape: 'process' } },
+        { id: 'process-b', type: 'process', stageId: 'review', laneId: 'erp', position: { x: 320, y: 0 }, zIndex: 1, data: { label: '复核订单', shape: 'process' } },
+      ],
+      edges: [{ id: 'a-to-b', source: 'process-a', target: 'process-b' }],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      steps: [{ id: 'step-a', order: 0, title: '创建订单', nodeId: 'process-a' }],
+      entryNodeId: 'process-a',
+      exitNodeIds: ['process-b'],
+    };
+
+    const withoutStage = removeHierarchyItem(document, 'stage', 'prepare');
+    const withoutLane = removeHierarchyItem(withoutStage, 'lane', 'sales');
+
+    expect(withoutStage.stages).toEqual([{ id: 'review', title: '复核', order: 0 }]);
+    expect(withoutStage.nodes).toHaveLength(document.nodes.length);
+    expect(withoutStage.nodes.find((node) => node.id === 'process-a')).not.toHaveProperty('stageId');
+    expect(withoutStage.edges).toEqual(document.edges);
+    expect(withoutStage.steps).toEqual(document.steps);
+    expect(withoutLane.lanes).toEqual([{ id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 0 }]);
+    expect(withoutLane.nodes.find((node) => node.id === 'process-a')).not.toHaveProperty('laneId');
   });
 
   it('passes persisted node measurements back to React Flow after a controlled update', () => {
@@ -103,6 +172,28 @@ describe('GuideEditor', () => {
 
     expect(imageNode!.style).toEqual({ width: 320, height: 260 });
     expect(processNode!.style).toEqual({ width: 240, height: 104 });
+  });
+
+  it('does not persist temporary dimensions while a flow detail is expanded', () => {
+    const expanded = new Set(['process']);
+    const [node] = toFlowNodes([
+      { id: 'process', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, size: { width: 260, height: 120 }, data: { label: '处理', description: '第一行\n第二行', shape: 'process' } },
+    ], [], [], expanded);
+    const dimensions: NodeChange = { id: 'process', type: 'dimensions', dimensions: { width: 260, height: 360 }, resizing: false };
+
+    expect(node!.style).toEqual({ width: 260 });
+    expect(node!.data).toMatchObject({ detailExpanded: true });
+    expect(persistableNodeChanges([dimensions], expanded)).toEqual([]);
+  });
+
+  it('explicitly clears the detail-expanded flag when a flow node is collapsed', () => {
+    const node = { id: 'process', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '处理', description: '第一行\n第二行', shape: 'process' } } as CanvasNode;
+
+    const [expanded] = toFlowNodes([node], [], [], new Set(['process']));
+    const [collapsed] = toFlowNodes([node], [], [], new Set());
+
+    expect(expanded!.data).toMatchObject({ detailExpanded: true });
+    expect(collapsed!.data).toMatchObject({ detailExpanded: false });
   });
 
   it('updates only type-compatible inline text fields without mutating the source document', () => {
@@ -294,6 +385,7 @@ describe('GuideEditor', () => {
     const api = createApi();
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
 
     fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
     fireEvent.click(screen.getByRole('button', { name: '添加阶段' }));
@@ -334,6 +426,7 @@ describe('GuideEditor', () => {
     const api = createApi({ document });
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
 
     await user.click(screen.getByRole('button', { name: '预览自动整理' }));
     expect(screen.getByText('主流程 2')).toBeVisible();
@@ -353,6 +446,31 @@ describe('GuideEditor', () => {
     expect(fitView).toHaveBeenCalledWith(expect.objectContaining({ nodes: [{ id: 'offscreen' }] }));
   });
 
+  it('lets stage and lane names be cleared before entering a replacement', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      stages: [{ id: 'entry', title: '订单录入', order: 0 }],
+      lanes: [{ id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 0 }],
+      nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
+
+    const stageInput = screen.getByRole('textbox', { name: '业务阶段 订单录入' });
+    const laneInput = screen.getByRole('textbox', { name: '责任泳道 ERP' });
+    fireEvent.change(stageInput, { target: { value: '' } });
+    fireEvent.change(laneInput, { target: { value: '' } });
+    expect(stageInput).toHaveValue('');
+    expect(laneInput).toHaveValue('');
+
+    fireEvent.change(stageInput, { target: { value: '订单处理' } });
+    fireEvent.change(laneInput, { target: { value: 'ERP系统' } });
+    expect(screen.getByRole('textbox', { name: '业务阶段 订单处理' })).toHaveValue('订单处理');
+    expect(screen.getByRole('textbox', { name: '责任泳道 ERP系统' })).toHaveValue('ERP系统');
+  });
+
   it('persists named stages and responsibility lanes without leaking presentation data', async () => {
     const document: CanvasDocument = {
       schemaVersion: 1,
@@ -366,6 +484,7 @@ describe('GuideEditor', () => {
     const api = createApi({ document });
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
 
     fireEvent.change(screen.getByRole('textbox', { name: '业务阶段 订单录入' }), { target: { value: '订单处理' } });
     fireEvent.click(screen.getByRole('button', { name: '添加系统泳道' }));
@@ -404,6 +523,7 @@ describe('GuideEditor', () => {
     const api = createApi({ document });
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
 
     await user.click(screen.getByRole('button', { name: '预览自动整理' }));
     expect(screen.getByLabelText('指南标题')).toBeDisabled();
@@ -427,6 +547,7 @@ describe('GuideEditor', () => {
     const api = createApi();
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
 
     fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
     fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
@@ -455,6 +576,7 @@ describe('GuideEditor', () => {
     const api = createApi();
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
 
     fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
     fireEvent.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
@@ -484,7 +606,14 @@ describe('GuideEditor', () => {
     act(() => reactFlowCallbacks.onConnectStart?.({} as MouseEvent, { nodeId: 'start', handleId: 'out', handleType: 'source' }));
     act(() => reactFlowCallbacks.onConnectEnd?.({ target: screen.getByTestId('flow-pane'), clientX: 480, clientY: 240 } as unknown as MouseEvent));
 
-    expect(await screen.findByRole('menu', { name: '创建下一项' })).toBeVisible();
+    const creationMenu = await screen.findByRole('menu', { name: '创建下一项' });
+    expect(creationMenu.parentElement).toHaveClass('canvas-screen-overlay');
+    expect(within(screen.getByTestId('viewport-portal')).queryByRole('menu', { name: '创建下一项' })).not.toBeInTheDocument();
+    const beforeMove = creationMenu.getAttribute('style');
+    act(() => reactFlowCallbacks.onMove?.(null, { x: 96, y: 72, zoom: 0.5 }));
+    expect(creationMenu.getAttribute('style')).not.toBe(beforeMove);
+    expect(creationMenu.style.transform).not.toContain('scale');
+
     await user.click(screen.getByRole('menuitem', { name: '创建流程节点' }));
     await user.click(screen.getByRole('button', { name: '保存草稿' }));
 
@@ -564,6 +693,157 @@ describe('GuideEditor', () => {
     }));
   });
 
+  it('persists toolbar changes only for a selected business edge', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'process-a', type: 'process', position: { x: 360, y: 0 }, zIndex: 1, data: { label: '处理', shape: 'process' } },
+      ],
+      edges: [{ id: 'business', source: 'start', target: 'process-a' }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: ['process-a'],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    act(() => reactFlowCallbacks.onEdgeClick?.({} as MouseEvent, reactFlowCallbacks.edges[0]!));
+    await user.click(screen.getByRole('button', { name: '选择连线颜色' }));
+    await user.click(screen.getByRole('button', { name: '紫色连线' }));
+    await user.click(screen.getByRole('button', { name: '选择连线粗细' }));
+    await user.click(screen.getByRole('button', { name: '4 像素' }));
+    await user.click(screen.getByRole('button', { name: '选择线型' }));
+    await user.click(screen.getByRole('button', { name: '点线' }));
+    await user.click(screen.getByRole('button', { name: '选择箭头' }));
+    await user.click(screen.getByRole('button', { name: '双向箭头' }));
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ edges: [expect.objectContaining({
+        id: 'business', presentation: { color: 'purple', width: 4, pattern: 'dotted', arrows: 'both' },
+      })] }),
+    }));
+  });
+
+  it('keeps selected-edge controls in a screen-sized overlay while the viewport moves', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'process-a', type: 'process', position: { x: 360, y: 0 }, zIndex: 1, data: { label: '处理', shape: 'process' } },
+      ],
+      edges: [{ id: 'business', source: 'start', target: 'process-a' }],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      steps: [],
+      entryNodeId: 'start',
+      exitNodeIds: ['process-a'],
+    };
+    render(<GuideEditor guideId="guide-host" api={createApi({ document })} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    act(() => reactFlowCallbacks.onEdgeClick?.({} as MouseEvent, reactFlowCallbacks.edges[0]!));
+    const toolbar = screen.getByRole('toolbar', { name: '连线样式' });
+    expect(toolbar).toHaveAttribute('data-size', 'screen');
+    expect(within(screen.getByTestId('viewport-portal')).queryByRole('toolbar', { name: '连线样式' })).not.toBeInTheDocument();
+
+    const overlay = toolbar.parentElement!;
+    const beforeMove = overlay.getAttribute('style');
+    act(() => reactFlowCallbacks.onMove?.(null, { x: 120, y: 80, zoom: 0.6 }));
+    expect(overlay.getAttribute('style')).not.toBe(beforeMove);
+    expect(overlay.style.transform).not.toContain('scale');
+  });
+
+  it('starts the business-flow panel collapsed and expands it from the canvas edge', async () => {
+    const user = userEvent.setup();
+    render(<GuideEditor guideId="guide-host" api={createApi()} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    expect(screen.queryByRole('tree', { name: '流程结构' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '展开业务流程' }));
+    expect(screen.getByRole('tree', { name: '流程结构' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '收起业务流程' }));
+    expect(screen.queryByRole('tree', { name: '流程结构' })).not.toBeInTheDocument();
+  });
+
+  it('reconnects a business edge with semantic handles and anchored endpoints', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'decision-b', type: 'decision', position: { x: 360, y: 0 }, zIndex: 1, data: { label: '是否通过？', shape: 'decision', branchLabels: ['是', '否'] } },
+        { id: 'process-c', type: 'process', position: { x: 720, y: 0 }, zIndex: 2, data: { label: '后续处理', shape: 'process' } },
+      ],
+      edges: [{ id: 'business', source: 'start', target: 'process-c' }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: ['process-c'],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    act(() => reactFlowCallbacks.onReconnect?.(reactFlowCallbacks.edges[0]!, {
+      source: 'decision-b', sourceHandle: 'anchor-source-RIGHT', target: 'process-c', targetHandle: 'anchor-target-LEFT',
+    }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ edges: [expect.objectContaining({
+        id: 'business', source: 'decision-b', sourceHandle: 'yes', target: 'process-c', targetHandle: 'in',
+        presentation: { sourceAnchor: { side: 'RIGHT', offset: 0.5 }, targetAnchor: { side: 'LEFT', offset: 0.5 } },
+      })] }),
+    }));
+  });
+
+  it('persists the target on the exact right-side drop point after reconnecting', async () => {
+    const edgeDocument: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'process-c', type: 'process', position: { x: 720, y: 0 }, zIndex: 1, data: { label: '后续处理', shape: 'process' } },
+      ],
+      edges: [{ id: 'business', source: 'start', target: 'process-c' }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: ['process-c'],
+    };
+    const api = createApi({ document: edgeDocument });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+    const target = globalThis.document.querySelector<HTMLElement>('.react-flow__node[data-id="process-c"]')!;
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ left: 720, top: 0, width: 240, height: 104 } as DOMRect);
+
+    act(() => reactFlowCallbacks.onReconnectStart?.({} as MouseEvent, reactFlowCallbacks.edges[0]!, 'source'));
+    act(() => reactFlowCallbacks.onConnectStart?.({ clientX: 0, clientY: 0 } as MouseEvent, { nodeId: 'start', handleId: 'out', handleType: 'source' }));
+    act(() => reactFlowCallbacks.onConnect?.({ source: 'start', sourceHandle: 'out', target: 'process-c', targetHandle: 'anchor-target-RIGHT' }));
+    act(() => reactFlowCallbacks.onConnectEnd?.({ clientX: 960, clientY: 52 } as MouseEvent, { toNode: { id: 'process-c' } }));
+    act(() => reactFlowCallbacks.onReconnectEnd?.({ clientX: 960, clientY: 52 } as MouseEvent, reactFlowCallbacks.edges[0]!, 'source', { toNode: { id: 'process-c' } }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ edges: [expect.objectContaining({
+        id: 'business', presentation: expect.objectContaining({ targetAnchor: { side: 'RIGHT', offset: 0.5 } }),
+      })] }),
+    }));
+  });
+
+  it('does not expose edge controls for a content attachment edge', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'process', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '处理', shape: 'process' } },
+        { id: 'note', type: 'markdown', contentParentId: 'process', position: { x: 360, y: 0 }, zIndex: 1, data: { markdown: '资料' } },
+      ],
+      edges: [{ id: 'attachment', source: 'process', target: 'note' }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    render(<GuideEditor guideId="guide-host" api={createApi({ document })} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    act(() => reactFlowCallbacks.onEdgeClick?.({} as MouseEvent, reactFlowCallbacks.edges[0]!));
+    expect(screen.queryByRole('toolbar', { name: '连线样式' })).not.toBeInTheDocument();
+  });
+
   it('opens the image annotation editor and records annotation edits in undo history', async () => {
     const user = userEvent.setup();
     const document: CanvasDocument = {
@@ -574,6 +854,7 @@ describe('GuideEditor', () => {
     const api = createApi({ document });
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
 
     await user.click(screen.getByRole('button', { name: '选择资料 ERP 页面' }));
     await user.click(screen.getByRole('button', { name: '编辑图片标注' }));
@@ -603,12 +884,29 @@ describe('GuideEditor', () => {
     const api = createApi({ document });
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
 
     await user.click(screen.getByRole('button', { name: '选择流程节点 操作步骤' }));
     await user.type(screen.getByRole('textbox', { name: '节点明细' }), '填写售达方、物料和交货日期。');
     expect(await screen.findByTestId('flow-description-process-a')).toHaveClass('flow-description');
     await user.click(screen.getByRole('button', { name: '保存草稿' }));
     expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({ document: expect.objectContaining({ nodes: [expect.objectContaining({ id: 'process-a', data: expect.objectContaining({ description: '填写售达方、物料和交货日期。' }) })] }) }));
+  });
+
+  it('opens the solid detail dialog from React Flow node double-click events', async () => {
+    const canvasDocument: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: 'process-a', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '操作步骤', description: '第一行\n第二行', shape: 'process' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    render(<GuideEditor guideId="guide-host" api={createApi({ document: canvasDocument })} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    const trigger = document.createElement('button');
+    act(() => reactFlowCallbacks.onNodeDoubleClick?.({ target: trigger, currentTarget: trigger }, { id: 'process-a' }));
+
+    expect(screen.getByRole('dialog', { name: '编辑节点明细' })).toBeVisible();
+    expect(screen.getByRole('textbox', { name: '操作步骤 · 节点明细' })).toHaveValue('第一行\n第二行');
   });
 
   it('inserts a pinned subguide and expands its immutable snapshot', async () => {

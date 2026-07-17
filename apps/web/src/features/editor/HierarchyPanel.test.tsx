@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { CanvasDocument } from '@guideanything/contracts';
 
@@ -27,6 +27,8 @@ const managerCallbacks = {
   onAddLane: vi.fn(),
   onUpdateLane: vi.fn(),
   onMoveLane: vi.fn(),
+  onRequestDeleteStage: vi.fn(),
+  onRequestDeleteLane: vi.fn(),
 };
 
 describe('HierarchyPanel', () => {
@@ -66,5 +68,20 @@ describe('HierarchyPanel', () => {
     expect(screen.getByRole('button', { name: '添加系统泳道' })).toBeVisible();
     expect(screen.getByRole('textbox', { name: '责任泳道 ERP' })).toHaveValue('ERP');
     expect(screen.getByText('系统')).toBeVisible();
+  });
+
+  it('requests deletion for stages and lanes while respecting the edit lock', () => {
+    managerCallbacks.onRequestDeleteStage.mockClear();
+    managerCallbacks.onRequestDeleteLane.mockClear();
+    const { rerender } = render(<HierarchyPanel document={hierarchyDocument} selectedIds={[]} onSelect={vi.fn()} onAddStage={vi.fn()} {...managerCallbacks} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '删除阶段 订单录入' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除泳道 ERP' }));
+    expect(managerCallbacks.onRequestDeleteStage).toHaveBeenCalledWith('entry');
+    expect(managerCallbacks.onRequestDeleteLane).toHaveBeenCalledWith('erp');
+
+    rerender(<HierarchyPanel document={hierarchyDocument} selectedIds={[]} onSelect={vi.fn()} onAddStage={vi.fn()} {...managerCallbacks} editingLocked />);
+    expect(screen.getByRole('button', { name: '删除阶段 订单录入' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '删除泳道 ERP' })).toBeDisabled();
   });
 });

@@ -1,19 +1,36 @@
 import type { NodeProps } from '@xyflow/react';
-import { memo } from 'react';
+import { memo, type MouseEvent as ReactMouseEvent } from 'react';
 
 import { NodeChrome } from './NodeChrome';
 import { InlineNodeTextEditor } from './InlineNodeTextEditor';
+import { useNodeDetailPresentation } from './NodeDetailPresentation';
 
 export const FlowNode = memo(function FlowNode({ data, selected, type, width, height, id }: NodeProps) {
-  const value = data as { label?: string; description?: string; responsibility?: { title: string; kind: 'ROLE' | 'SYSTEM' } };
-  return <NodeChrome selected={selected} tone={type ?? 'process'} width={width} height={height}>
+  const value = data as { label?: string; description?: string; detailExpanded?: boolean; responsibility?: { title: string; kind: 'ROLE' | 'SYSTEM' } };
+  const detailPresentation = useNodeDetailPresentation();
+  const label = value.label ?? '未命名流程';
+  const description = value.description ?? '';
+  const expanded = detailPresentation.expandedNodeIds.has(id);
+  const openDetailEditor = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    detailPresentation.onOpenEditor(id, event.currentTarget);
+  };
+  return <NodeChrome nodeId={id} selected={selected} tone={type ?? 'process'} width={width} height={height} expanded={expanded}>
     <span className="node-kicker">{flowLabel(type)}</span>
-    <InlineNodeTextEditor nodeId={id} field="label" value={value.label ?? ''} label={`${value.label ?? '未命名流程'} · 节点标题`} required>
-      <strong>{value.label ?? '未命名流程'}</strong>
+    <InlineNodeTextEditor nodeId={id} field="label" value={value.label ?? ''} label={`${label} · 节点标题`} required>
+      <strong>{label}</strong>
     </InlineNodeTextEditor>
-    <InlineNodeTextEditor nodeId={id} field="description" value={value.description ?? ''} label={`${value.label ?? '未命名流程'} · 节点明细`} multiline placeholder="双击添加节点明细" showPlaceholder={Boolean(selected)}>
-      {value.description ? <p className="flow-description" data-testid={`flow-description-${id}`}>{value.description}</p> : null}
-    </InlineNodeTextEditor>
+    <button
+      type="button"
+      className="flow-detail-trigger nodrag nopan nowheel"
+      aria-label={`编辑${label} · 节点明细`}
+      onClick={openDetailEditor}
+      onDoubleClick={openDetailEditor}
+    >{description
+      ? <p className={expanded ? 'flow-description flow-description-expanded' : 'flow-description'} data-testid={`flow-description-${id}`}>{expanded ? description : description.split('\n')[0]}</p>
+      : selected ? <span className="inline-node-text-placeholder">双击添加节点明细</span> : null}
+    </button>
+    {description ? <button className="flow-detail-toggle nodrag nopan nowheel" type="button" onClick={(event) => { event.stopPropagation(); detailPresentation.onToggleExpanded(id); }}>{expanded ? '收起' : '详情'}</button> : null}
     {value.responsibility ? <span className={`node-responsibility node-responsibility-${value.responsibility.kind.toLowerCase()}`}>{value.responsibility.title}<em>{value.responsibility.kind === 'ROLE' ? '角色' : '系统'}</em></span> : null}
   </NodeChrome>;
 });

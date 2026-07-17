@@ -14,5 +14,5 @@ export function MarkdownNodeView({ data }: { data: CanvasNode<'markdown'>['data'
 
 export const MarkdownNode = memo(function MarkdownNode({ id, data, selected, width, height }: NodeProps) {
   const value = data as CanvasNode<'markdown'>['data'];
-  return <NodeChrome selected={selected} tone="markdown" width={width} height={height}><span className="node-kicker">MARKDOWN</span><InlineNodeTextEditor nodeId={id} field="markdown" value={value.markdown} label="Markdown 内容" multiline><MarkdownNodeView data={value} /></InlineNodeTextEditor></NodeChrome>;
+  return <NodeChrome nodeId={id} selected={selected} tone="markdown" width={width} height={height}><span className="node-kicker">MARKDOWN</span><InlineNodeTextEditor nodeId={id} field="markdown" value={value.markdown} label="Markdown 内容" multiline><MarkdownNodeView data={value} /></InlineNodeTextEditor></NodeChrome>;
 });

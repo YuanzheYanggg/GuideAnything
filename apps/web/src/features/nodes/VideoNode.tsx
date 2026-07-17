@@ -30,7 +30,7 @@ export function VideoNodeView({ data, onKeypoint, captionContent, onOpenPreview,
 export const VideoNode = memo(function VideoNode({ id, data, selected, width, height }: NodeProps) {
   const value = data as CanvasNode<'video'>['data'];
   const label = value.caption || '教学视频';
-  return <NodeChrome selected={selected} tone="video" width={width} height={height}><span className="node-kicker">VIDEO</span><VideoNodeView data={value} captionContent={<InlineNodeTextEditor nodeId={id} field="videoCaption" value={value.caption ?? ''} label={`${label} · 视频说明`} multiline placeholder="双击添加视频说明" showPlaceholder={Boolean(selected)}>{value.caption ? <p>{value.caption}</p> : null}</InlineNodeTextEditor>} /></NodeChrome>;
+  return <NodeChrome nodeId={id} selected={selected} tone="video" width={width} height={height}><span className="node-kicker">VIDEO</span><VideoNodeView data={value} captionContent={<InlineNodeTextEditor nodeId={id} field="videoCaption" value={value.caption ?? ''} label={`${label} · 视频说明`} multiline placeholder="双击添加视频说明" showPlaceholder={Boolean(selected)}>{value.caption ? <p>{value.caption}</p> : null}</InlineNodeTextEditor>} /></NodeChrome>;
 });
 
 function formatTime(seconds: number): string {

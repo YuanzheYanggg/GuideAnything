@@ -116,6 +116,13 @@ describe('LessonPage', () => {
     const video = screen.getByLabelText('VA01 操作演示') as HTMLVideoElement;
     await user.click(screen.getByRole('button', { name: '跳转到 00:15' }));
     expect(video.currentTime).toBe(15);
+    fireEvent.click(video);
+    const dialog = await screen.findByRole('dialog', { name: '视频预览' });
+    const previewVideo = within(dialog).getByLabelText('VA01 操作演示') as HTMLVideoElement;
+    await user.click(within(dialog).getByRole('button', { name: '跳转到 00:15' }));
+    expect(previewVideo.currentTime).toBe(15);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: '视频预览' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '下一步' })).toBeDisabled();
   });
 
@@ -143,6 +150,58 @@ describe('LessonPage', () => {
     expect(await screen.findByText('该节点未编排为教学步骤，已在流程图中定位。')).toBeVisible();
     expect(screen.getByRole('heading', { name: '异常复核' })).toBeVisible();
     expect(screen.getByText('复核验货异常。')).toBeVisible();
+  });
+
+  it('opens an image resource in a large preview and closes it without changing the step', async () => {
+    const user = userEvent.setup();
+    const imageVersion: GuideVersionSnapshot = {
+      ...version,
+      title: 'ERP 页面查看',
+      document: {
+        ...version.document,
+        nodes: [{ id: 'image', type: 'image', position: { x: 0, y: 0 }, zIndex: 0, data: { url: 'https://example.com/erp.png', alt: 'ERP 页面', caption: '字段位置' } }],
+        edges: [],
+        steps: [{ id: 'step-image', order: 0, title: '查看界面', nodeId: 'image' }],
+        entryNodeId: 'image',
+        exitNodeIds: ['image'],
+      },
+    };
+    render(<LessonPage versionId="image-version" api={{ getVersion: vi.fn().mockResolvedValue(imageVersion) }} onBack={vi.fn()} />);
+
+    expect(await screen.findByRole('heading', { name: '查看界面' })).toBeVisible();
+    fireEvent.click(screen.getByRole('img', { name: 'ERP 页面' }));
+    expect(await screen.findByRole('dialog', { name: '图片预览' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '关闭媒体预览' }));
+    expect(screen.queryByRole('dialog', { name: '图片预览' })).not.toBeInTheDocument();
+    expect(screen.getByText('步骤 1 / 1')).toBeVisible();
+  });
+
+  it('renders connection handles for published flow edges and decision branches', async () => {
+    const branchedVersion: GuideVersionSnapshot = {
+      ...version,
+      document: {
+        ...version.document,
+        nodes: [
+          { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+          { id: 'decision', type: 'decision', position: { x: 320, y: 0 }, zIndex: 1, data: { label: '是否通过？', shape: 'decision' } },
+          { id: 'end', type: 'end', position: { x: 640, y: 0 }, zIndex: 2, data: { label: '结束', shape: 'end' } },
+        ],
+        edges: [
+          { id: 'start-to-decision', source: 'start', target: 'decision' },
+          { id: 'decision-to-end', source: 'decision', sourceHandle: 'yes', target: 'end' },
+        ],
+        steps: [{ id: 'step-1', order: 0, title: '确认流程', nodeId: 'start' }],
+      },
+    };
+    render(<LessonPage versionId="branched" api={{ getVersion: vi.fn().mockResolvedValue(branchedVersion) }} onBack={vi.fn()} />);
+
+    const canvas = await screen.findByLabelText('只读流程画布');
+    expect(canvas.querySelectorAll('[aria-label="输入端口"]')).toHaveLength(3);
+    expect(canvas.querySelectorAll('[aria-label="输出端口"]')).toHaveLength(3);
+    expect(canvas.querySelectorAll('[data-handleid="in"]')).toHaveLength(3);
+    expect(canvas.querySelectorAll('[data-handleid="out"]')).toHaveLength(3);
+    expect(canvas.querySelectorAll('[aria-label="是分支端口"]')).toHaveLength(1);
+    expect(canvas.querySelectorAll('[aria-label="否分支端口"]')).toHaveLength(1);
   });
 
   it('reports versions without lesson steps as an empty teaching path', async () => {
