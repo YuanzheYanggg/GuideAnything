@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CanvasDocumentSchema } from './canvas';
+import { CanvasDocumentSchema, EdgePresentationSchema } from './canvas';
 
 describe('CanvasDocumentSchema', () => {
   function hierarchyDocument(overrides: Record<string, unknown> = {}) {
@@ -294,6 +294,19 @@ describe('CanvasDocumentSchema', () => {
 
     expect(CanvasDocumentSchema.safeParse(invalidOffset).success).toBe(false);
     expect(CanvasDocumentSchema.safeParse(invalidStyle).success).toBe(false);
+  });
+
+  it('accepts backward-compatible automatic edges and manual waypoints', () => {
+    expect(EdgePresentationSchema.parse({ routing: 'elbow' })).toEqual({ routing: 'elbow' });
+    expect(EdgePresentationSchema.parse({ routeMode: 'manual', waypoints: [{ x: 120, y: 240 }] })).toEqual({
+      routeMode: 'manual',
+      waypoints: [{ x: 120, y: 240 }],
+    });
+  });
+
+  it('rejects invalid manual waypoint data', () => {
+    expect(() => EdgePresentationSchema.parse({ routeMode: 'manual', waypoints: [{ x: Number.NaN, y: 0 }] })).toThrow();
+    expect(() => EdgePresentationSchema.parse({ routeMode: 'manual', waypoints: Array.from({ length: 33 }, (_, index) => ({ x: index, y: index })) })).toThrow();
   });
 
   it('accepts legacy images and normalized point and rectangle annotations', () => {

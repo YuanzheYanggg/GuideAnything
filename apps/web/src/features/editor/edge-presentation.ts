@@ -2,7 +2,6 @@ import type { CanvasDocument, CanvasEdge, EdgeAnchor, EdgePresentation } from '@
 import { MarkerType } from '@xyflow/react';
 import type { CSSProperties } from 'react';
 
-const primaryFlowTypes = new Set(['start', 'end', 'process', 'decision', 'data', 'subguide']);
 const colorByName = {
   default: 'var(--ga-accent)',
   blue: 'var(--ga-edge-blue)',
@@ -51,7 +50,5 @@ export function isEditableBusinessEdge(document: CanvasDocument, edge: CanvasEdg
   if (edge.hidden || edge.sourceTrace) return false;
   const source = document.nodes.find((node) => node.id === edge.source);
   const target = document.nodes.find((node) => node.id === edge.target);
-  return Boolean(source && target && !source.source && !target.source
-    && !source.contentParentId && !target.contentParentId
-    && primaryFlowTypes.has(source.type) && primaryFlowTypes.has(target.type));
+  return Boolean(source && target && !source.source && !target.source);
 }

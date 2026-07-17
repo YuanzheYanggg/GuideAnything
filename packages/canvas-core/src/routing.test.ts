@@ -20,6 +20,15 @@ describe('orthogonal edge routing', () => {
     expectOrthogonal(route.points);
   });
 
+  it('keeps a nearly aligned forward edge on the main row', () => {
+    const result = routeCanvasEdges(document([process('source', 0, 0), process('target', 400, -4)], [edge('aligned', 'source', 'target')]));
+    const route = result.routesByEdgeId.get('aligned')!;
+
+    expect(route.kind).toBe('FORWARD');
+    expect(route.sourceSide).toBe('RIGHT');
+    expect(route.targetSide).toBe('LEFT');
+  });
+
   it('routes a downward decision branch from the bottom', () => {
     const result = routeCanvasEdges(document([process('decision', 0, 0), process('no', 320, 260)], [edge('no-edge', 'decision', 'no', { sourceHandle: 'no', presentation: { routing: 'elbow' } })]));
     const route = result.routesByEdgeId.get('no-edge')!;
@@ -118,6 +127,73 @@ describe('orthogonal edge routing', () => {
     expect(route.points[0]).toEqual({ x: 150, y: 180 });
     expect(route.points.at(-1)).toEqual({ x: 500, y: 360 });
     expectOrthogonal(route.points);
+  });
+
+  it('routes around a target node when persisted side anchors cross its interior', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 0, 240)],
+      [edge('blocked-anchor', 'source', 'target', {
+        presentation: {
+          sourceAnchor: { side: 'RIGHT', offset: 0.45 },
+          targetAnchor: { side: 'LEFT', offset: 0.5 },
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('blocked-anchor')!;
+
+    expect(result.report.avoidedEdgeIds).toEqual(['blocked-anchor']);
+    expect(result.report.collisionEdgeIds).toEqual([]);
+    expect(Math.min(...route.points.map((point) => point.y))).toBeLessThan(0);
+  });
+
+  it('uses manual waypoints while preserving the persisted endpoint ports', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 500, 0), process('blocker', 240, -100)],
+      [edge('manual', 'source', 'target', {
+        presentation: {
+          routeMode: 'manual',
+          sourceAnchor: { side: 'RIGHT', offset: 0.25 },
+          targetAnchor: { side: 'LEFT', offset: 0.75 },
+          waypoints: [{ x: 224, y: 25 }, { x: 224, y: 160 }, { x: 476, y: 160 }, { x: 476, y: 75 }],
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('manual')!;
+
+    expect(route.points[0]).toEqual({ x: 200, y: 25 });
+    expect(route.points.at(-1)).toEqual({ x: 500, y: 75 });
+    expect(route.points).toContainEqual({ x: 224, y: 160 });
+    expect(result.report.manualConflictEdgeIds).toEqual([]);
+    expect(route.collision).toBe(false);
+  });
+
+  it('falls back to a safe automatic route and reports a manual conflict', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 500, 0), { ...process('blocker', 240, 80), size: { width: 240, height: 220 } }],
+      [edge('conflict', 'source', 'target', {
+        presentation: { routeMode: 'manual', waypoints: [{ x: 224, y: 130 }, { x: 476, y: 130 }] },
+      })],
+    ));
+
+    expect(result.report.manualConflictEdgeIds).toEqual(['conflict']);
+    expect(result.report.collisionEdgeIds).toEqual([]);
+    expect(result.routesByEdgeId.get('conflict')!.collision).toBe(false);
+  });
+
+  it('prefers the shortest clear route when a backward edge has facing anchors', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 100), process('target', 400, 0)],
+      [edge('short-back', 'source', 'target', {
+        presentation: {
+          sourceAnchor: { side: 'RIGHT', offset: 0.45 },
+          targetAnchor: { side: 'LEFT', offset: 0.5 },
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('short-back')!;
+
+    expect(route.kind).toBe('BACK');
+    expect(Math.max(...route.points.map((point) => point.x))).toBeLessThan(500);
   });
 
   it('uses a single direct segment for an explicit straight route even when its anchored endpoints do not align', () => {

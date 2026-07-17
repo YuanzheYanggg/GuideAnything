@@ -27,7 +27,7 @@ export function CanvasCreationMenu({ position, allowResources, onCreate, onCance
   return <div className="canvas-creation-menu" role="menu" aria-label="创建下一项" style={{ left: position.x, top: position.y }}>
     <span className="canvas-overlay-title">从这里创建</span>
     {primaryChoices.map((choice) => <button type="button" role="menuitem" key={choice.kind} onClick={() => onCreate(choice.kind)}>{choice.label}</button>)}
-    {allowResources ? <><span className="canvas-overlay-divider" /><span className="canvas-overlay-title">挂靠资料</span>{resourceChoices.map((choice) => <button type="button" role="menuitem" key={choice.kind} onClick={() => onCreate(choice.kind)}>{choice.label}</button>)}</> : null}
+    {allowResources ? <><span className="canvas-overlay-divider" /><span className="canvas-overlay-title">引用资料</span>{resourceChoices.map((choice) => <button type="button" role="menuitem" key={choice.kind} onClick={() => onCreate(choice.kind)}>{choice.label}</button>)}</> : null}
     <button type="button" role="menuitem" className="canvas-menu-cancel" onClick={onCancel}>取消</button>
   </div>;
 }

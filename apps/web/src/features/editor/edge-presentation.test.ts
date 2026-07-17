@@ -26,13 +26,13 @@ describe('edge presentation helpers', () => {
     expect(edgeAnchorFromClientPoint(rect, { x: 100, y: 296 })).toEqual({ side: 'LEFT', offset: 0.8 });
   });
 
-  it('limits edge editing to source-free primary flow nodes', () => {
+  it('allows edge editing between any persisted local nodes', () => {
     const document: CanvasDocument = {
       schemaVersion: 1,
       nodes: [
         { id: 'process', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '处理', shape: 'process' } },
         { id: 'decision', type: 'decision', position: { x: 320, y: 0 }, zIndex: 1, data: { label: '判断', shape: 'decision' } },
-        { id: 'note', type: 'markdown', position: { x: 0, y: 160 }, zIndex: 2, contentParentId: 'process', data: { markdown: '资料' } },
+        { id: 'note', type: 'markdown', position: { x: 0, y: 160 }, zIndex: 2, data: { markdown: '资料' } },
       ],
       edges: [],
       viewport: { x: 0, y: 0, zoom: 1 },
@@ -41,7 +41,7 @@ describe('edge presentation helpers', () => {
     };
 
     expect(isEditableBusinessEdge(document, { id: 'business', source: 'process', target: 'decision' })).toBe(true);
-    expect(isEditableBusinessEdge(document, { id: 'attachment', source: 'process', target: 'note' })).toBe(false);
+    expect(isEditableBusinessEdge(document, { id: 'reference', source: 'process', target: 'note' })).toBe(true);
     expect(isEditableBusinessEdge(document, {
       id: 'derived',
       source: 'process',

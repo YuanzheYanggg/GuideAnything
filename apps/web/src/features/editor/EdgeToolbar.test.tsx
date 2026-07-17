@@ -104,4 +104,50 @@ describe('EdgeToolbar', () => {
     expect(onChange).toHaveBeenLastCalledWith({ routing: 'straight' });
     expect(screen.queryByRole('menu', { name: '连线路由' })).not.toBeInTheDocument();
   });
+
+  it('starts manual route editing and exposes save, cancel, and reset actions', async () => {
+    const user = userEvent.setup();
+    const onStartRouteEdit = vi.fn();
+    const onSaveRouteEdit = vi.fn();
+    const onCancelRouteEdit = vi.fn();
+    const onResetRoute = vi.fn();
+    const props = {
+      presentation: { routeMode: 'manual' as const },
+      onChange: vi.fn(),
+      onClose: vi.fn(),
+      onStartRouteEdit,
+      onSaveRouteEdit,
+      onCancelRouteEdit,
+      onResetRoute,
+    };
+
+    const { rerender } = render(<EdgeToolbar {...props} />);
+
+    await user.click(screen.getByRole('button', { name: '编辑走向' }));
+    expect(onStartRouteEdit).toHaveBeenCalledTimes(1);
+
+    rerender(<EdgeToolbar {...props} routeEditing />);
+    await user.click(screen.getByRole('button', { name: '保存走向' }));
+    await user.click(screen.getByRole('button', { name: '取消编辑' }));
+    await user.click(screen.getByRole('button', { name: '恢复智能路线' }));
+
+    expect(onSaveRouteEdit).toHaveBeenCalledTimes(1);
+    expect(onCancelRouteEdit).toHaveBeenCalledTimes(1);
+    expect(onResetRoute).toHaveBeenCalledTimes(1);
+  });
+
+  it('prevents saving a manual route while it is blocked by a node', () => {
+    render(
+      <EdgeToolbar
+        presentation={{ routeMode: 'manual' }}
+        onChange={vi.fn()}
+        onClose={vi.fn()}
+        routeEditing
+        manualRouteConflict
+        onSaveRouteEdit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: '保存走向' })).toBeDisabled();
+  });
 });

@@ -46,10 +46,22 @@ export function EdgeToolbar({
   presentation,
   onChange,
   onClose,
+  routeEditing = false,
+  manualRouteConflict = false,
+  onStartRouteEdit,
+  onSaveRouteEdit,
+  onCancelRouteEdit,
+  onResetRoute,
 }: {
   presentation: EdgePresentation | undefined;
   onChange: (partial: Partial<EdgePresentation>) => void;
   onClose: () => void;
+  routeEditing?: boolean;
+  manualRouteConflict?: boolean;
+  onStartRouteEdit?: () => void;
+  onSaveRouteEdit?: () => void;
+  onCancelRouteEdit?: () => void;
+  onResetRoute?: () => void;
 }) {
   const [openMenu, setOpenMenu] = useState<EdgeToolbarMenu>(null);
   const selectedColor = presentation?.color ?? 'default';
@@ -90,6 +102,11 @@ export function EdgeToolbar({
     <ToolbarDivider />
     <div className="edge-toolbar-group edge-toolbar-group-end">
       <ToolbarTrigger menu="routing" openMenu={openMenu} onToggle={toggleMenu} preview={<RoutingPreview value={selectedRouting} />} />
+      {routeEditing ? <div className="edge-toolbar-route-actions" role="group" aria-label="编辑连线走向">
+        <button type="button" aria-label="保存走向" onClick={onSaveRouteEdit} disabled={manualRouteConflict}>保存</button>
+        <button type="button" aria-label="取消编辑" onClick={onCancelRouteEdit}>取消</button>
+        <button type="button" aria-label="恢复智能路线" onClick={onResetRoute}>恢复智能</button>
+      </div> : <button type="button" className="edge-toolbar-route-edit" aria-label="编辑走向" onClick={onStartRouteEdit}>编辑走向</button>}
       <ToolbarTrigger menu="arrows" openMenu={openMenu} onToggle={toggleMenu} preview={<ArrowPreview value={selectedArrows} />}>
         <ArrowRight size={22} weight="bold" aria-hidden="true" />
       </ToolbarTrigger>

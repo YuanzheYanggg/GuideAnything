@@ -1,6 +1,6 @@
 import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgePresentation, FlowLane, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
-import { duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, reconcileSubguideEdges, routeCanvasEdges, setSubguideExpanded, snapNodeForStraightRoute, type HierarchyLayoutResult, type NodeAlignmentSnap, type OrthogonalRoute } from '@guideanything/canvas-core';
+import { duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, moveRouteSegment, reconcileSubguideEdges, routeCanvasEdges, setSubguideExpanded, snapNodeForStraightRoute, type HierarchyLayoutResult, type NodeAlignmentSnap, type OrthogonalRoute, type Point } from '@guideanything/canvas-core';
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -46,6 +46,7 @@ import { CanvasCreationMenu, type CanvasCreationKind } from './CanvasCreationMen
 import { EdgeLabelEditor } from './EdgeLabelEditor';
 import { NodeDetailDialog } from './NodeDetailDialog';
 import { EdgeToolbar } from './EdgeToolbar';
+import { ManualRouteEditor } from './ManualRouteEditor';
 import { edgeAnchorFromClientPoint, isEditableBusinessEdge, resolveEdgeVisuals } from './edge-presentation';
 import { routeLabelPoint } from './OrthogonalEdge';
 
@@ -110,6 +111,11 @@ type PendingReconnect = {
   handleType: 'source' | 'target';
 };
 
+type ManualRouteDraft = {
+  edgeId: string;
+  points: Point[];
+};
+
 export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: { guideId: string; api: EditorApi; personalApi?: PersonalApi; focusNodeId?: string; onBack: () => void }) {
   const [guide, setGuide] = useState<GuideDraftDetail | null>(null);
   const [document, setDocument] = useState<CanvasDocument | null>(null);
@@ -133,6 +139,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const [expandedDetailNodeIds, setExpandedDetailNodeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [detailEditor, setDetailEditor] = useState<{ nodeId: string; title: string; value: string; opener: HTMLElement } | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [manualRouteDraft, setManualRouteDraft] = useState<ManualRouteDraft | null>(null);
   const [annotationEditorNodeId, setAnnotationEditorNodeId] = useState<string | null>(null);
   const [overlayViewport, setOverlayViewport] = useState<CanvasDocument['viewport']>({ x: 0, y: 0, zoom: 1 });
   const [hierarchyOpen, setHierarchyOpen] = useState(false);
@@ -204,13 +211,27 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
 
   const renderedDocument = layoutPreview?.document ?? dragPreviewDocument ?? document;
   const routing = useMemo(() => renderedDocument ? routeCanvasEdges(renderedDocument) : null, [renderedDocument]);
+  const manualRouteDocument = useMemo(() => {
+    if (!document || !manualRouteDraft) return null;
+    return {
+      ...document,
+      edges: document.edges.map((edge) => edge.id === manualRouteDraft.edgeId
+        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual' as const, waypoints: manualRouteDraft.points.slice(1, -1) } }
+        : edge),
+    };
+  }, [document, manualRouteDraft]);
+  const manualDraftRouting = useMemo(() => manualRouteDocument ? routeCanvasEdges(manualRouteDocument) : null, [manualRouteDocument]);
+  const manualDraftConflict = Boolean(manualRouteDraft && manualDraftRouting?.report.manualConflictEdgeIds.includes(manualRouteDraft.edgeId));
   const flowEdges = useMemo(() => renderedDocument ? [
     ...renderedDocument.edges.map((edge) => {
       const route = routing?.routesByEdgeId.get(edge.id);
-      return renderEdge(renderedDocument, edge, route);
+      const displayRoute = route && manualRouteDraft?.edgeId === edge.id
+        ? { ...route, points: manualRouteDraft.points, collision: manualDraftConflict }
+        : route;
+      return renderEdge(renderedDocument, edge, displayRoute);
     }),
     ...hierarchyPresentationEdges(renderedDocument),
-  ] : [], [renderedDocument, routing]);
+  ] : [], [manualDraftConflict, manualRouteDraft, renderedDocument, routing]);
   const nodeAnchorHandles = useMemo(() => renderedDocument && routing ? anchorHandlesByNodeId(renderedDocument, routing) : new Map<string, NodeAnchorHandle[]>(), [renderedDocument, routing]);
   const renderedFlowNodes = useMemo(() => layoutPreview ? toFlowNodes(layoutPreview.document.nodes, selectedIds, layoutPreview.document.lanes, expandedDetailNodeIds) : flowNodes, [expandedDetailNodeIds, flowNodes, layoutPreview, selectedIds]);
   const stageBounds = useMemo(() => renderedDocument ? getStageBounds(renderedDocument) : [], [renderedDocument]);
@@ -339,25 +360,28 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     connectSourceRef.current = null;
     if (layoutPreview || reconnectRef.current || !document || !source) return;
     const sourceNode = document.nodes.find((node) => node.id === source.sourceId);
-    if (!sourceNode || !isPrimaryFlowNode(sourceNode)) return;
-    if (source.connection?.target) {
-      const targetNode = document.nodes.find((node) => node.id === source.connection?.target);
-      if (!targetNode || !isPrimaryFlowNode(targetNode)) return;
-      const sourceAnchor = source.sourceAnchor ?? anchorFromPhysicalHandle(source.connection.sourceHandle);
-      const targetAnchor = anchorForNodeClientPoint(targetNode.id, clientPoint(event)) ?? anchorFromPhysicalHandle(source.connection.targetHandle);
+    if (!sourceNode || sourceNode.source) return;
+    const targetId = connectionState?.toNode?.id ?? source.connection?.target;
+    if (targetId) {
+      const connection = source.connection;
+      if (!connection || connection.target !== targetId) return;
+      const targetNode = document.nodes.find((node) => node.id === targetId);
+      if (!targetNode || targetNode.source) return;
+      const sourceAnchor = source.sourceAnchor ?? anchorFromPhysicalHandle(connection.sourceHandle);
+      const targetAnchor = anchorForNodeClientPoint(targetNode.id, clientPoint(event)) ?? anchorFromPhysicalHandle(connection.targetHandle);
       const presentation = edgePresentationWithAnchors(undefined, sourceAnchor, targetAnchor);
       const edge: CanvasEdge = {
         id: uniqueId('edge'),
         source: sourceNode.id,
         target: targetNode.id,
-        sourceHandle: semanticSourceHandle(sourceNode, source.connection.sourceHandle),
-        targetHandle: semanticTargetHandle(source.connection.targetHandle),
+        sourceHandle: semanticSourceHandle(sourceNode, connection.sourceHandle),
+        targetHandle: semanticTargetHandle(connection.targetHandle),
         ...(presentation ? { presentation } : {}),
       };
       commit({ ...document, edges: [...document.edges, edge] });
       return;
     }
-    if (!flowInstance || !isCanvasPane(event.target)) return;
+    if (!flowInstance || !isCanvasInteractionSurface(event.target)) return;
     setCreationMenu({ ...source, sourceHandle: semanticSourceHandle(sourceNode, source.sourceHandle), position: flowInstance.screenToFlowPosition(clientPoint(event)) });
   }, [commit, document, flowInstance, layoutPreview]);
 
@@ -367,7 +391,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     if (!persisted || !isEditableBusinessEdge(document, persisted)) return;
     const sourceNode = document.nodes.find((node) => node.id === connection.source);
     const targetNode = document.nodes.find((node) => node.id === connection.target);
-    if (!sourceNode || !targetNode || !isPrimaryFlowNode(sourceNode) || !isPrimaryFlowNode(targetNode)) return;
+    if (!sourceNode || !targetNode || sourceNode.source || targetNode.source) return;
     const sourceChanged = connection.source !== persisted.source || isPhysicalAnchorHandle(connection.sourceHandle);
     const targetChanged = connection.target !== persisted.target || isPhysicalAnchorHandle(connection.targetHandle);
     const sourceAnchor = sourceChanged ? anchorFromPhysicalHandle(connection.sourceHandle) ?? persisted.presentation?.sourceAnchor : persisted.presentation?.sourceAnchor;
@@ -413,16 +437,16 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const createFromConnection = useCallback((kind: CanvasCreationKind) => {
     if (!document || layoutPreview || !creationMenu) return;
     const source = document.nodes.find((node) => node.id === creationMenu.sourceId);
-    if (!source || !isPrimaryFlowNode(source)) {
+    if (!source || source.source) {
       setCreationMenu(null);
       return;
     }
     const id = uniqueId(kind);
     const created = createNode(id, kind, document.nodes.length, creationMenu.position);
     const node = isContentNode(created)
-      ? { ...created, contentParentId: source.id }
+      ? created
       : { ...created, ...(source.stageId ? { stageId: source.stageId } : {}), ...(source.laneId ? { laneId: source.laneId } : {}) };
-    const edges = isContentNode(created) ? document.edges : [...document.edges, {
+    const edges = [...document.edges, {
       id: uniqueId('edge'), source: source.id, target: id,
       ...(creationMenu.sourceHandle ? { sourceHandle: creationMenu.sourceHandle } : {}),
     }];
@@ -454,14 +478,64 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const onEdgeClick = useCallback((_: ReactMouseEvent, edge: Edge) => {
     if (layoutPreview || !document) return;
     const persisted = canvasEdgeFromFlowEdge(edge, document);
-    setSelectedEdgeId(persisted && isEditableBusinessEdge(document, persisted) ? persisted.id : null);
-  }, [document, layoutPreview]);
+    const editable = persisted && isEditableBusinessEdge(document, persisted) ? persisted.id : null;
+    if (manualRouteDraft && editable && manualRouteDraft.edgeId !== editable) return;
+    setSelectedEdgeId(editable);
+    if (editable) setSelectedIds([]);
+  }, [document, layoutPreview, manualRouteDraft]);
 
   const updateSelectedEdgePresentation = useCallback((partial: Partial<EdgePresentation>) => {
     if (layoutPreview || !document || !selectedEdgeId) return;
     const selected = document.edges.find((edge) => edge.id === selectedEdgeId);
     if (!selected || !isEditableBusinessEdge(document, selected)) return;
     commit({ ...document, edges: document.edges.map((edge) => edge.id === selected.id ? { ...edge, presentation: { ...edge.presentation, ...partial } } : edge) });
+  }, [commit, document, layoutPreview, selectedEdgeId]);
+
+  const startManualRouteEdit = useCallback(() => {
+    if (layoutPreview || !document || !selectedEdgeId) return;
+    const selected = document.edges.find((edge) => edge.id === selectedEdgeId);
+    if (!selected || !isEditableBusinessEdge(document, selected)) return;
+    const route = routing?.routesByEdgeId.get(selectedEdgeId);
+    if (!route) return;
+    setManualRouteDraft({ edgeId: selectedEdgeId, points: route.points.map((point) => ({ ...point })) });
+  }, [document, layoutPreview, routing, selectedEdgeId]);
+
+  const moveManualRouteSegment = useCallback((segmentIndex: number, coordinate: number) => {
+    setManualRouteDraft((current) => current
+      ? { ...current, points: moveRouteSegment(current.points, segmentIndex, coordinate) }
+      : current);
+  }, []);
+
+  const cancelManualRouteEdit = useCallback(() => {
+    setManualRouteDraft(null);
+  }, []);
+
+  const saveManualRouteEdit = useCallback(() => {
+    if (layoutPreview || !document || !manualRouteDraft || manualDraftConflict) return;
+    const selected = document.edges.find((edge) => edge.id === manualRouteDraft.edgeId);
+    if (!selected || !isEditableBusinessEdge(document, selected)) return;
+    commit({
+      ...document,
+      edges: document.edges.map((edge) => edge.id === selected.id
+        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual', waypoints: manualRouteDraft.points.slice(1, -1) } }
+        : edge),
+    });
+    setManualRouteDraft(null);
+  }, [commit, document, layoutPreview, manualDraftConflict, manualRouteDraft]);
+
+  const resetSelectedRoute = useCallback(() => {
+    if (layoutPreview || !document || !selectedEdgeId) return;
+    const selected = document.edges.find((edge) => edge.id === selectedEdgeId);
+    if (!selected || !isEditableBusinessEdge(document, selected)) return;
+    const edges = document.edges.map((edge) => {
+      if (edge.id !== selected.id || !edge.presentation) return edge;
+      const { routeMode: _routeMode, waypoints: _waypoints, ...autoPresentation } = edge.presentation;
+      if (Object.keys(autoPresentation).length > 0) return { ...edge, presentation: autoPresentation };
+      const { presentation: _presentation, ...withoutPresentation } = edge;
+      return withoutPresentation;
+    });
+    commit({ ...document, edges });
+    setManualRouteDraft(null);
   }, [commit, document, layoutPreview, selectedEdgeId]);
 
   const onSelectionChange = useCallback(({ nodes }: { nodes: Node[] }) => {
@@ -491,9 +565,11 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     if (!document || layoutPreview) return;
     const id = uniqueId(type);
     const created = createNode(id, type, document.nodes.length);
-    const selectedPrimary = document.nodes.find((node) => node.id === selectedIds[0] && isPrimaryFlowNode(node));
-    const node = isContentNode(created) && selectedPrimary ? { ...created, contentParentId: selectedPrimary.id } : created;
-    commit({ ...document, nodes: [...document.nodes, node] });
+    const selectedSource = document.nodes.find((node) => node.id === selectedIds[0] && !node.source);
+    const edges = isContentNode(created) && selectedSource
+      ? [...document.edges, { id: uniqueId('edge'), source: selectedSource.id, target: id, sourceHandle: semanticSourceHandle(selectedSource) }]
+      : document.edges;
+    commit({ ...document, nodes: [...document.nodes, created], edges });
     setSelectedIds([id]);
   };
 
@@ -637,7 +713,21 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     const removed = new Set(nodeIds);
     setSelectedIds((current) => current.filter((id) => !removed.has(id)));
   }, [commit, document, layoutPreview]);
-  const removeSelected = useCallback(() => removeNodes(selectedIds), [removeNodes, selectedIds]);
+  const removeEdges = useCallback((edgeIds: string[]) => {
+    if (!document || layoutPreview || edgeIds.length === 0) return;
+    const removable = document.edges.filter((edge) => edgeIds.includes(edge.id) && isEditableBusinessEdge(document, edge)).map((edge) => edge.id);
+    if (removable.length === 0) return;
+    commit(removeEdgesFromDocument(document, removable));
+    const removed = new Set(removable);
+    setSelectedEdgeId((current) => current && removed.has(current) ? null : current);
+  }, [commit, document, layoutPreview]);
+  const removeSelected = useCallback(() => {
+    if (selectedEdgeId) {
+      removeEdges([selectedEdgeId]);
+      return;
+    }
+    removeNodes(selectedIds);
+  }, [removeEdges, removeNodes, selectedEdgeId, selectedIds]);
   const removeNodeById = useCallback((nodeId: string) => removeNodes([nodeId]), [removeNodes]);
 
   useEffect(() => {
@@ -778,7 +868,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       <button type="button" onClick={previewLayout} disabled={Boolean(layoutPreview) || document.nodes.length < 2} aria-label="预览自动整理">自动整理</button>
       <button type="button" onClick={() => moveLayer(true)} disabled={Boolean(layoutPreview) || selectedIds.length === 0} aria-label="置于顶层">置顶</button>
       <button type="button" onClick={() => moveLayer(false)} disabled={Boolean(layoutPreview) || selectedIds.length === 0} aria-label="置于底层">置底</button>
-      <button type="button" onClick={removeSelected} disabled={Boolean(layoutPreview) || selectedIds.length === 0} aria-label="删除选中项">删除</button>
+      <button type="button" onClick={removeSelected} disabled={Boolean(layoutPreview) || (selectedIds.length === 0 && !selectedEdgeId)} aria-label="删除选中项">删除</button>
       <span className="toolbar-divider" />
       <button type="button" className="reference-button" onClick={() => { setReferenceQuery(''); setReferenceResults([]); setReferenceError(''); setReferenceSearching(true); setReferenceOpen(true); }} disabled={Boolean(layoutPreview)} aria-label="插入子指南">＋ 插入子指南</button>
       {layoutPreview ? <div className="layout-preview" role="status"><div className="layout-preview-copy"><span>阶段从上到下 · 阶段内从左到右</span><div className="layout-preview-summary"><span>主流程 {layoutPreview.report.primaryNodeIds.length}</span><span>阶段 {layoutPreview.report.stageCount}</span><span>泳道 {layoutPreview.report.laneCount}</span><span>已挂靠资料 {layoutPreview.report.attachedContentIds.length}</span><span>未挂靠资料 {layoutPreview.report.unassignedContentIds.length}</span><span>孤立节点 {layoutPreview.report.unconnectedPrimaryIds.length}</span><span>循环 {layoutPreview.report.cycleNodeIds.length}</span><span>回流 {layoutPreview.report.backEdgeIds.length}</span><span>避障 {routing?.report.avoidedEdgeIds.length ?? 0}</span></div><span className="layout-preview-rule">入口 → 阶段 → 分支与回流 → 资料</span></div><button type="button" onClick={applyLayoutPreview} aria-label="应用自动整理">应用自动整理</button><button type="button" onClick={() => setLayoutPreview(null)} aria-label="取消自动整理">取消</button></div> : null}
@@ -812,7 +902,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
           onReconnect={onReconnect}
           onReconnectStart={onReconnectStart}
           onReconnectEnd={onReconnectEnd}
-          onPaneClick={() => { setCreationMenu(null); setSelectedEdgeId(null); }}
+          onPaneClick={() => { setCreationMenu(null); setSelectedEdgeId(null); setManualRouteDraft(null); }}
           onSelectionChange={onSelectionChange}
           onMove={onMove}
           onMoveEnd={onMoveEnd}
@@ -825,7 +915,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
           multiSelectionKeyCode={multiSelectionKeyCode}
           minZoom={0.1}
           maxZoom={2.5}
-          nodesDraggable={!layoutPreview}
+          nodesDraggable={!layoutPreview && !manualRouteDraft}
           nodesConnectable={!layoutPreview}
           edgesReconnectable={!layoutPreview}
           edgesFocusable={!layoutPreview}
@@ -833,6 +923,12 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
         >
           <ViewportPortal>
             {stageBounds.map((bound) => <div key={bound.stageId ?? 'none'} className="stage-lane" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><span className="stage-lane-label">{bound.title}</span></div>)}
+            {!layoutPreview && manualRouteDraft && flowInstance ? <ManualRouteEditor
+              points={manualRouteDraft.points}
+              conflict={manualDraftConflict}
+              onMoveSegment={moveManualRouteSegment}
+              screenToFlowPosition={(point) => flowInstance.screenToFlowPosition(point)}
+            /> : null}
           </ViewportPortal>
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--ga-border-strong)" />
           <MiniMap pannable zoomable nodeStrokeWidth={3} />
@@ -846,7 +942,19 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
           {alignmentGuide ? <AlignmentGuide guide={alignmentGuide} viewport={overlayViewport} /> : null}
           {creationMenu ? <CanvasCreationMenu position={canvasPointToScreen(creationMenu.position, overlayViewport)} allowResources onCreate={createFromConnection} onCancel={() => setCreationMenu(null)} /> : null}
           {edgeLabelEditor ? <EdgeLabelEditor position={canvasPointToScreen(edgeLabelEditor.position, overlayViewport)} {...(edgeLabelEditor.label !== undefined ? { label: edgeLabelEditor.label } : {})} onSave={saveEdgeLabel} onCancel={() => setEdgeLabelEditor(null)} /> : null}
-          {!layoutPreview && selectedBusinessEdge && selectedEdgeRoute ? <EdgeToolbarAtRoute route={selectedEdgeRoute} viewport={overlayViewport} presentation={selectedBusinessEdge.presentation} onChange={updateSelectedEdgePresentation} onClose={() => setSelectedEdgeId(null)} /> : null}
+          {!layoutPreview && selectedBusinessEdge && selectedEdgeRoute ? <EdgeToolbarAtRoute
+            route={selectedEdgeRoute}
+            viewport={overlayViewport}
+            presentation={selectedBusinessEdge.presentation}
+            onChange={updateSelectedEdgePresentation}
+            onClose={() => { setSelectedEdgeId(null); setManualRouteDraft(null); }}
+            routeEditing={manualRouteDraft?.edgeId === selectedBusinessEdge.id}
+            manualRouteConflict={manualDraftConflict}
+            onStartRouteEdit={startManualRouteEdit}
+            onSaveRouteEdit={saveManualRouteEdit}
+            onCancelRouteEdit={cancelManualRouteEdit}
+            onResetRoute={resetSelectedRoute}
+          /> : null}
         </div>
       </section>
       <aside className="inspector" aria-label="属性与教学步骤">
@@ -955,7 +1063,7 @@ function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleRe
     {node.type === 'video' ? <><label>视频地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>视频说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><div className="keypoint-editor">{node.data.keypoints.map((point, index) => <div key={point.id}><input aria-label={`关键点 ${index + 1} 标题`} value={point.title} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, title: event.target.value } : item) })} /><input type="number" min="0" aria-label={`关键点 ${index + 1} 秒数`} value={point.timeSeconds} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, timeSeconds: Number(event.target.value) } : item) })} /></div>)}<button type="button" onClick={() => updateData({ ...node.data, keypoints: [...node.data.keypoints, { id: uniqueId('keypoint'), title: '新关键点', timeSeconds: 0 }] })}>添加视频关键点</button></div><label className="upload-label">上传视频<input type="file" accept="video/mp4,video/webm" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
     {node.type === 'subguide' ? <><div className="pinned-version"><strong>{node.data.title}</strong><span>固定版本 v{node.data.version}</span></div><button className="secondary-button" type="button" onClick={onToggleReference} aria-label={node.data.expanded ? '折叠子指南' : '展开子指南'}>{node.data.expanded ? '折叠子指南' : '展开子指南'}</button></> : null}
     {isPrimaryFlowNode(node) ? <><label>所属业务阶段<select value={node.stageId ?? ''} onChange={(event) => onChange({ ...node, stageId: event.target.value || undefined })}><option value="">未分阶段</option>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.title}</option>)}</select></label><label>责任泳道<select value={node.laneId ?? ''} onChange={(event) => onChange({ ...node, laneId: event.target.value || undefined })}><option value="">未分配责任</option>{lanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.title}</option>)}</select></label></> : null}
-    {isContentNode(node) ? <label>挂靠到流程节点<select value={node.contentParentId ?? ''} onChange={(event) => onChange({ ...node, contentParentId: event.target.value || undefined })}><option value="">未挂靠</option>{primaryNodes.map((primary) => <option key={primary.id} value={primary.id}>{nodeLabel(primary)}</option>)}</select></label> : null}
+    {isContentNode(node) ? <><p className="node-inspector-hint">资料可通过画布连线被多个节点引用。</p><label>旧版层级挂靠（兼容）<select value={node.contentParentId ?? ''} onChange={(event) => onChange({ ...node, contentParentId: event.target.value || undefined })}><option value="">未挂靠</option>{primaryNodes.map((primary) => <option key={primary.id} value={primary.id}>{nodeLabel(primary)}</option>)}</select></label></> : null}
     <button className="secondary-button" type="button" onClick={onAddStep}>加入教学步骤</button>
   </fieldset>;
 }
@@ -1000,6 +1108,11 @@ export function removeNodesFromDocument(document: CanvasDocument, nodeIds: strin
   } as CanvasDocument;
 }
 
+export function removeEdgesFromDocument(document: CanvasDocument, edgeIds: string[]): CanvasDocument {
+  const removed = new Set(edgeIds);
+  return { ...document, edges: document.edges.filter((edge) => !removed.has(edge.id)) };
+}
+
 export function toFlowNodes(nodes: CanvasDocument['nodes'], selectedIds: string[] = [], lanes: FlowLane[] = [], expandedNodeIds: ReadonlySet<string> = noExpandedDetails): Node[] {
   const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
   return nodes.map((node) => {
@@ -1028,16 +1141,32 @@ export function physicalHandleId(edgeId: string, end: 'source' | 'target'): stri
   return `edge:${edgeId}:${end}`;
 }
 
-function EdgeToolbarAtRoute({ route, viewport, presentation, onChange, onClose }: {
+function EdgeToolbarAtRoute({ route, viewport, presentation, onChange, onClose, routeEditing, manualRouteConflict, onStartRouteEdit, onSaveRouteEdit, onCancelRouteEdit, onResetRoute }: {
   route: OrthogonalRoute;
   viewport: CanvasDocument['viewport'];
   presentation: EdgePresentation | undefined;
   onChange: (partial: Partial<EdgePresentation>) => void;
   onClose: () => void;
+  routeEditing: boolean;
+  manualRouteConflict: boolean;
+  onStartRouteEdit: () => void;
+  onSaveRouteEdit: () => void;
+  onCancelRouteEdit: () => void;
+  onResetRoute: () => void;
 }) {
   const position = canvasPointToScreen(routeLabelPoint(route.points), viewport);
   return <div className="edge-toolbar-position" style={{ left: position.x, top: position.y }}>
-    <EdgeToolbar presentation={presentation} onChange={onChange} onClose={onClose} />
+    <EdgeToolbar
+      presentation={presentation}
+      onChange={onChange}
+      onClose={onClose}
+      routeEditing={routeEditing}
+      manualRouteConflict={manualRouteConflict}
+      onStartRouteEdit={onStartRouteEdit}
+      onSaveRouteEdit={onSaveRouteEdit}
+      onCancelRouteEdit={onCancelRouteEdit}
+      onResetRoute={onResetRoute}
+    />
   </div>;
 }
 
@@ -1238,12 +1367,10 @@ function uniqueId(prefix: string): string {
   return `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 }
 
-function isCanvasPane(target: EventTarget | null): boolean {
-  return typeof target === 'object'
-    && target !== null
-    && 'classList' in target
-    && target.classList instanceof DOMTokenList
-    && target.classList.contains('react-flow__pane');
+function isCanvasInteractionSurface(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest('.react-flow'))
+    && !target.closest('.react-flow__controls, .react-flow__minimap');
 }
 
 function clientPoint(event: MouseEvent | TouchEvent): { x: number; y: number } {

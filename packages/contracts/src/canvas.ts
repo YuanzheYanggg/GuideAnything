@@ -89,18 +89,28 @@ const EdgeAnchorSchema = z.object({
 
 const EdgeRoutingSchema = z.enum(['straight', 'elbow', 'smart']);
 
-const EdgePresentationSchema = z.object({
+const EdgeRouteModeSchema = z.enum(['auto', 'manual']);
+const EdgeWaypointSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+});
+
+export const EdgePresentationSchema = z.object({
   color: z.union([z.enum(['default', 'blue', 'green', 'yellow', 'red', 'purple']), z.string().regex(/^#[0-9a-f]{6}$/i)]).optional(),
   width: z.number().int().min(1).max(24).optional(),
   pattern: z.enum(['solid', 'dashed', 'dotted']).optional(),
   arrows: z.enum(['none', 'forward', 'reverse', 'both']).optional(),
   routing: EdgeRoutingSchema.optional(),
+  routeMode: EdgeRouteModeSchema.optional(),
+  waypoints: z.array(EdgeWaypointSchema).max(32).optional(),
   sourceAnchor: EdgeAnchorSchema.optional(),
   targetAnchor: EdgeAnchorSchema.optional(),
 });
 
 export type EdgeAnchor = z.infer<typeof EdgeAnchorSchema>;
 export type EdgeRouting = z.infer<typeof EdgeRoutingSchema>;
+export type EdgeRouteMode = z.infer<typeof EdgeRouteModeSchema>;
+export type EdgeWaypoint = z.infer<typeof EdgeWaypointSchema>;
 export type EdgePresentation = z.infer<typeof EdgePresentationSchema>;
 
 export const FlowStageSchema = z.object({

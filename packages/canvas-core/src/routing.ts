@@ -48,6 +48,7 @@ export interface RoutingReport {
   backEdgeIds: string[];
   avoidedEdgeIds: string[];
   collisionEdgeIds: string[];
+  manualConflictEdgeIds: string[];
 }
 
 export interface RoutingResult {
@@ -87,6 +88,7 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
   const routesByEdgeId = new Map<string, OrthogonalRoute>();
   const avoidedEdgeIds: string[] = [];
   const collisionEdgeIds: string[] = [];
+  const manualConflictEdgeIds: string[] = [];
   const backEdgeIds: string[] = [];
   const offsetCountByChannel = new Map<string, number>();
 
@@ -121,14 +123,33 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
     const offset = channelIndex * CHANNEL_GAP;
     const obstacles = rects.filter((rect) => rect.id !== source.id && rect.id !== target.id);
     const directPoints = [sourcePort.point, targetPort.point];
+    const routeBlocked = (candidatePoints: Point[]) => routeIntersects(candidatePoints, obstacles)
+      || routeIntersectsEndpointNodes(candidatePoints, source, target);
     const usesDisplayedPorts = candidate.usesAnchors || candidate.sourceFanned || candidate.targetFanned;
+    const manualPoints = edge.presentation?.routeMode === 'manual' && edge.presentation.waypoints?.length
+      ? compact([sourcePort.point, ...edge.presentation.waypoints, targetPort.point])
+      : undefined;
+    const manualBlocked = manualPoints ? !isOrthogonal(manualPoints) || routeBlocked(manualPoints) : false;
     const elbowPoints = () => usesDisplayedPorts
       ? anchoredDirectRoute(kind, sourcePort, targetPort, offset, maximumRight)
       : directRoute(kind, source, target, fallbackSides.source, fallbackSides.target, offset, maximumRight);
-    let points = routing === 'straight' || (routing === 'smart' && !routeIntersects(directPoints, obstacles))
-      ? directPoints
-      : elbowPoints();
-    if (routing !== 'straight' && routeIntersects(points, obstacles)) {
+    const elbowCandidates = [elbowPoints()];
+    if (kind === 'BACK' && usesDisplayedPorts && portsFaceEachOther(sourcePort, targetPort)) {
+      elbowCandidates.push(routePorts(sourcePort, targetPort, offset));
+    }
+    const clearElbowCandidates = elbowCandidates.filter((candidatePoints) => !routeBlocked(candidatePoints));
+    let points: Point[];
+    if (manualPoints && !manualBlocked) {
+      points = manualPoints;
+    } else {
+      if (manualPoints && manualBlocked) manualConflictEdgeIds.push(edge.id);
+      points = routing === 'straight' && !manualPoints
+        ? directPoints
+        : routing === 'smart' && !manualPoints && !routeBlocked(directPoints)
+          ? directPoints
+          : chooseShortestRoute(clearElbowCandidates) ?? elbowCandidates[0]!;
+    }
+    if ((routing !== 'straight' || manualBlocked) && clearElbowCandidates.length === 0) {
       avoidedEdgeIds.push(edge.id);
       points = usesDisplayedPorts
         ? kind === 'BACK'
@@ -139,7 +160,7 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
           : outerRoute(source, target, fallbackSides.source, fallbackSides.target, offset, maximumRight, minimumTop);
     }
     points = compact(points);
-    const collision = routeIntersects(points, obstacles);
+    const collision = routeBlocked(points);
     if (collision) collisionEdgeIds.push(edge.id);
     if (kind === 'BACK') backEdgeIds.push(edge.id);
     routesByEdgeId.set(edge.id, {
@@ -155,7 +176,7 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
     });
   });
 
-  return { routesByEdgeId, report: { backEdgeIds, avoidedEdgeIds, collisionEdgeIds } };
+  return { routesByEdgeId, report: { backEdgeIds, avoidedEdgeIds, collisionEdgeIds, manualConflictEdgeIds } };
 }
 
 export function snapNodeForStraightRoute(
@@ -226,7 +247,8 @@ function classify(edge: CanvasEdge, source: NodeRect, target: NodeRect, nodes: C
   const targetNode = nodes.find((node) => node.id === edge.target);
   if (sourceNode?.stageId && targetNode?.stageId && sourceNode.stageId !== targetNode.stageId) return 'CROSS_STAGE';
   if (edge.sourceHandle !== 'no' && target.y > source.y + source.height + CHANNEL_GAP && target.x <= source.x) return 'WRAP';
-  if (target.y < source.y || (target.x <= source.x && sourceNode?.stageId === targetNode?.stageId)) return 'BACK';
+  const nearlySameRow = Math.abs(target.y - source.y) <= DEFAULT_ALIGNMENT_THRESHOLD;
+  if ((!nearlySameRow && target.y < source.y) || (target.x <= source.x && sourceNode?.stageId === targetNode?.stageId)) return 'BACK';
   if (edge.sourceHandle === 'no' || target.y > source.y + source.height + CHANNEL_GAP) return 'BRANCH';
   return 'FORWARD';
 }
@@ -471,6 +493,32 @@ function portsFaceEachOther(source: RoutePort, target: RoutePort): boolean {
   return false;
 }
 
+function chooseShortestRoute(routes: Point[][]): Point[] | undefined {
+  return routes.reduce<Point[] | undefined>((shortest, candidate) => {
+    if (!shortest) return candidate;
+    const lengthDifference = routeLength(candidate) - routeLength(shortest);
+    if (lengthDifference !== 0) return lengthDifference < 0 ? candidate : shortest;
+    return bendCount(candidate) < bendCount(shortest) ? candidate : shortest;
+  }, undefined);
+}
+
+function routeLength(points: Point[]): number {
+  return points.slice(1).reduce((length, point, index) => {
+    const previous = points[index]!;
+    return length + Math.abs(point.x - previous.x) + Math.abs(point.y - previous.y);
+  }, 0);
+}
+
+function bendCount(points: Point[]): number {
+  return points.slice(2).reduce((count, point, index) => {
+    const previous = points[index + 1]!;
+    const beforePrevious = points[index]!;
+    const previousHorizontal = previous.y === beforePrevious.y;
+    const currentHorizontal = point.y === previous.y;
+    return count + Number(previousHorizontal !== currentHorizontal);
+  }, 0);
+}
+
 function extendPort(port: RoutePort, amount: number): Point {
   if (port.side === 'LEFT') return { x: port.point.x - amount, y: port.point.y };
   if (port.side === 'RIGHT') return { x: port.point.x + amount, y: port.point.y };
@@ -487,6 +535,18 @@ function port(rect: NodeRect, side: RouteSide): Point {
 
 function routeIntersects(points: Point[], obstacles: NodeRect[]): boolean {
   return points.slice(1).some((point, index) => obstacles.some((rect) => segmentIntersects(points[index]!, point, rect)));
+}
+
+function routeIntersectsEndpointNodes(points: Point[], source: NodeRect, target: NodeRect): boolean {
+  const segments = points.slice(1);
+  return segments.some((finish, index) => {
+    const start = points[index]!;
+    return [source, target].some((rect) => {
+      if (rect.id === source.id && index === 0) return false;
+      if (rect.id === target.id && index === segments.length - 1) return false;
+      return segmentIntersects(start, finish, rect);
+    });
+  });
 }
 
 function segmentIntersects(start: Point, finish: Point, rect: NodeRect): boolean {
@@ -528,6 +588,13 @@ function compact(points: Point[]): Point[] {
     const previous = unique[index - 1]!;
     const next = unique[index + 1]!;
     return !(previous.x === point.x && point.x === next.x) && !(previous.y === point.y && point.y === next.y);
+  });
+}
+
+function isOrthogonal(points: Point[]): boolean {
+  return points.slice(1).every((point, index) => {
+    const previous = points[index]!;
+    return point.x === previous.x || point.y === previous.y;
   });
 }
 
