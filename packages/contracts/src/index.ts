@@ -6,3 +6,4 @@ export * from './conversation-api';
 export * from './flow-knowledge';
 export * from './knowledge';
 export * from './workspace';
+export * from './workspace-editorial';
