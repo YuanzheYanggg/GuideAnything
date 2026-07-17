@@ -201,6 +201,28 @@ export function updateGuide(
   revision: number,
   input: { title?: string; summary?: string; tags?: string[]; document?: CanvasDocument },
 ): GuideDraft {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const guide = updateGuideInTransaction(database, guideId, actorId, revision, input);
+    database.exec('COMMIT');
+    return guide;
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+/**
+ * Updates a guide inside an existing transaction. Callers are responsible for
+ * beginning and committing (or rolling back) that transaction.
+ */
+export function updateGuideInTransaction(
+  database: DatabaseSync,
+  guideId: string,
+  actorId: string,
+  revision: number,
+  input: { title?: string; summary?: string; tags?: string[]; document?: CanvasDocument },
+): GuideDraft {
   const current = getGuide(database, guideId);
   if (!current) throw httpError(404, 'GUIDE_NOT_FOUND', '指南不存在');
   const next = {
@@ -210,38 +232,31 @@ export function updateGuide(
     document: input.document ?? current.document,
   };
   const now = new Date().toISOString();
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    const result = database.prepare(
-      `UPDATE guides
-       SET title = ?, summary = ?, tags_json = ?, draft_document = ?, revision = revision + 1, updated_at = ?
-       WHERE id = ? AND revision = ?`,
-    ).run(
-      next.title,
-      next.summary,
-      JSON.stringify(next.tags),
-      JSON.stringify(next.document),
-      now,
-      guideId,
-      revision,
-    );
-    if (result.changes === 0) {
-      throw httpError(409, 'REVISION_CONFLICT', '指南已被其他操作更新，请重新载入');
-    }
-    database.prepare(
-      `UPDATE workspace_items SET title = ?, summary = ?, updated_at = ? WHERE id = ?`,
-    ).run(next.title, next.summary, now, current.workspaceItemId);
-    recordActivity(database, {
-      workspaceId: current.workspaceId,
-      actorId,
-      action: 'GUIDE_UPDATED',
-      itemId: current.workspaceItemId,
-    });
-    database.exec('COMMIT');
-  } catch (error) {
-    database.exec('ROLLBACK');
-    throw error;
+  const result = database.prepare(
+    `UPDATE guides
+     SET title = ?, summary = ?, tags_json = ?, draft_document = ?, revision = revision + 1, updated_at = ?
+     WHERE id = ? AND revision = ?`,
+  ).run(
+    next.title,
+    next.summary,
+    JSON.stringify(next.tags),
+    JSON.stringify(next.document),
+    now,
+    guideId,
+    revision,
+  );
+  if (result.changes === 0) {
+    throw httpError(409, 'REVISION_CONFLICT', '指南已被其他操作更新，请重新载入');
   }
+  database.prepare(
+    `UPDATE workspace_items SET title = ?, summary = ?, updated_at = ? WHERE id = ?`,
+  ).run(next.title, next.summary, now, current.workspaceItemId);
+  recordActivity(database, {
+    workspaceId: current.workspaceId,
+    actorId,
+    action: 'GUIDE_UPDATED',
+    itemId: current.workspaceItemId,
+  });
   return getGuide(database, guideId)!;
 }
 

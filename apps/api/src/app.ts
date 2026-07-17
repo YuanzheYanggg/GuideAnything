@@ -9,6 +9,7 @@ import { registerArtifactRoutes } from './modules/artifacts/routes';
 import { registerAuthRoutes } from './modules/auth/routes';
 import { registerConversationAttachmentRoutes } from './modules/conversation-attachments/routes';
 import { registerConversationRoutes, type ConversationRouteRuntime } from './modules/conversations/routes';
+import { registerWorkspaceEditorialRoutes } from './modules/editorial/routes';
 import { registerGuideRoutes } from './modules/guides/routes';
 import { registerMediaRoutes } from './modules/media/routes';
 import { registerKnowledgeRoutes } from './modules/knowledge/routes';
@@ -70,6 +71,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     );
   }
   await registerGuideRoutes(app, options.database);
+  await registerWorkspaceEditorialRoutes(app, options.database);
   await registerKnowledgeRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
   await registerConversationAttachmentRoutes(
     app,

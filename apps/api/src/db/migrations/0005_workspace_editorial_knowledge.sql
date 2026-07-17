@@ -134,6 +134,31 @@ CREATE TABLE workspace_flow_proposal_operations (
   PRIMARY KEY (proposal_id, ordinal)
 ) STRICT;
 
+CREATE TABLE workspace_flow_proposal_evidence (
+  proposal_id TEXT NOT NULL REFERENCES workspace_flow_proposals(id) ON DELETE CASCADE,
+  reference_id TEXT NOT NULL REFERENCES answer_citations(reference_id) ON DELETE RESTRICT,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (proposal_id, reference_id)
+) STRICT;
+
+CREATE TRIGGER workspace_flow_proposal_evidence_scope_insert
+BEFORE INSERT ON workspace_flow_proposal_evidence
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM workspace_flow_proposals AS proposal
+  JOIN answer_citations AS citation ON citation.reference_id = NEW.reference_id
+  JOIN agent_runs AS run ON run.id = citation.run_id
+  JOIN conversations AS conversation ON conversation.id = run.conversation_id
+  WHERE proposal.id = NEW.proposal_id
+    AND proposal.workspace_id = NEW.workspace_id
+    AND conversation.scope = 'WORKSPACE'
+    AND conversation.workspace_id = NEW.workspace_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'proposal evidence must be a workspace citation');
+END;
+
 CREATE TABLE workspace_editorial_audit_events (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,

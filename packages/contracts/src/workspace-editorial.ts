@@ -68,6 +68,7 @@ export const WorkspaceFlowProposalV1Schema = z.object({
   createdBy: IdSchema,
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
+  appliedRevision: z.number().int().min(0).nullable(),
 }).strict();
 
 export type FlowProposalOperationV1 = z.infer<typeof FlowProposalOperationV1Schema>;

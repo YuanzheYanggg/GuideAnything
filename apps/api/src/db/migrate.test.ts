@@ -171,6 +171,7 @@ describe('database migrations', () => {
       'workspace_knowledge_card_evidence',
       'workspace_flow_proposals',
       'workspace_flow_proposal_operations',
+      'workspace_flow_proposal_evidence',
       'workspace_editorial_audit_events',
     ]));
     expect(database.prepare(
@@ -199,6 +200,7 @@ describe('database migrations', () => {
       'workspace_knowledge_card_scope_insert',
       'workspace_card_evidence_scope_insert',
       'workspace_flow_proposal_scope_insert',
+      'workspace_flow_proposal_evidence_scope_insert',
     ]));
 
     const strictByTable = new Map(
@@ -214,6 +216,7 @@ describe('database migrations', () => {
       'workspace_question_clusters', 'workspace_question_cluster_examples',
       'workspace_knowledge_cards', 'workspace_knowledge_card_evidence',
       'workspace_flow_proposals', 'workspace_flow_proposal_operations',
+      'workspace_flow_proposal_evidence',
       'workspace_editorial_audit_events',
     ]) {
       expect(strictByTable.get(table), `${table} should be STRICT`).toBe(1);
