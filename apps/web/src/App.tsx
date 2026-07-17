@@ -14,6 +14,7 @@ import { LoginPage, type LoginCredentials } from './features/auth/LoginPage';
 import type { AuthUser } from './features/auth/types';
 import { WorkspaceAgentsPage } from './features/agents/WorkspaceAgentsPage';
 import { WorkspaceArtifactsPage } from './features/artifacts/WorkspaceArtifactsPage';
+import { WorkspaceEditorialPage } from './features/editorial/WorkspaceEditorialPage';
 import { LibraryPage } from './features/library/LibraryPage';
 import { SantexwellKnowledgePage } from './features/knowledge/SantexwellKnowledgePage';
 import { PersonalResourcePage } from './features/personal/PersonalResourcePage';
@@ -43,6 +44,7 @@ function AppContent() {
   const sourcesApi = useMemo(() => apiClient.sourcesApi(), []);
   const agentApi = useMemo(() => apiClient.agentApi(), []);
   const artifactsApi = useMemo(() => apiClient.artifactsApi(), []);
+  const editorialApi = useMemo(() => apiClient.editorialApi(), []);
 
   useEffect(() => {
     if (!apiClient.hasToken) return;
@@ -75,6 +77,7 @@ function AppContent() {
       <Route path="/workspaces/:workspaceId" element={<WorkspaceOverviewPage workspaceApi={workspaceApi} />} />
       <Route path="/workspaces/:workspaceId/guides" element={<LibraryRoute user={user} />} />
       <Route path="/workspaces/:workspaceId/sources" element={<WorkspaceSourcesPage api={sourcesApi} />} />
+      <Route path="/workspaces/:workspaceId/knowledge-evolution" element={<WorkspaceEditorialPage api={editorialApi} />} />
       <Route path="/workspaces/:workspaceId/agents" element={<WorkspaceAgentsPage api={agentApi} />} />
       <Route path="/workspaces/:workspaceId/artifacts" element={<WorkspaceArtifactsPage api={artifactsApi} />} />
     </Route>

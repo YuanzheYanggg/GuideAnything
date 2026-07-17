@@ -87,6 +87,29 @@ describe('workspace pages', () => {
     expect(screen.getByText('工作区概览')).toBeVisible();
   });
 
+  it.each(['OWNER', 'EDIT'] as const)('shows the knowledge-evolution entry to a %s workspace member', async (permission) => {
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces/workspace-materials',
+      workspaces: [{ ...workspaceDefaults, id: 'workspace-materials', name: '物料管理', permission }],
+    });
+
+    expect(await screen.findByRole('heading', { name: '物料管理' })).toBeVisible();
+    expect(screen.getByRole('link', { name: /知识演进/u })).toHaveAttribute(
+      'href',
+      '/workspaces/workspace-materials/knowledge-evolution',
+    );
+  });
+
+  it('hides the knowledge-evolution entry from a VIEW workspace member', async () => {
+    renderWorkspaceRoutes({
+      initialPath: '/workspaces/workspace-materials',
+      workspaces: [{ ...workspaceDefaults, id: 'workspace-materials', name: '物料管理', permission: 'VIEW' }],
+    });
+
+    expect(await screen.findByRole('heading', { name: '物料管理' })).toBeVisible();
+    expect(screen.queryByRole('link', { name: /知识演进/u })).not.toBeInTheDocument();
+  });
+
   it('renders the workspace directory from API data', async () => {
     const { workspaceApi } = renderWorkspaceRoutes({
       initialPath: '/workspaces',

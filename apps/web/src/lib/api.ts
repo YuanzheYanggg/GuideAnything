@@ -4,6 +4,7 @@ import { decodeAgentEventStream } from '../features/agents/useAgentRunStream';
 import type { ArtifactsApi } from '../features/artifacts/types';
 import type { DraftItem, LibraryApi, SearchItem } from '../features/library/LibraryPage';
 import type { EditorApi, GuideDraftDetail, SearchPage } from '../features/editor/GuideEditor';
+import type { EditorialApi } from '../features/editorial/types';
 import type { KnowledgeApi, KnowledgeDocument, KnowledgeHealth, KnowledgeOverview, KnowledgeSearchHit } from '../features/knowledge/types';
 import type { SourcesApi, WorkspaceSource, WorkspaceSourcesResult, FlowSnapshotSummary } from '../features/sources/types';
 import type { GuideVersionSnapshot } from '@guideanything/contracts';
@@ -158,6 +159,39 @@ export class ApiClient {
           { method: 'POST', body: form },
         )).source;
       },
+    };
+  }
+
+  editorialApi(): EditorialApi {
+    return {
+      listQuestionClusters: async (workspaceId) => (await this.request<{ items: Awaited<ReturnType<EditorialApi['listQuestionClusters']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/editorial/question-clusters`,
+      )).items,
+      listOwnerQuestionExamples: async (workspaceId, clusterId) => (await this.request<{ items: Awaited<ReturnType<EditorialApi['listOwnerQuestionExamples']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/editorial/question-clusters/${encodeURIComponent(clusterId)}/examples`,
+      )).items,
+      listCards: async (workspaceId) => (await this.request<{ items: Awaited<ReturnType<EditorialApi['listCards']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/editorial/cards`,
+      )).items,
+      createCard: async (workspaceId, input) => (await this.request<{ card: Awaited<ReturnType<EditorialApi['createCard']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/editorial/cards`,
+        { method: 'POST', body: JSON.stringify(input) },
+      )).card,
+      transitionCard: async (workspaceId, cardId, status) => (await this.request<{ card: Awaited<ReturnType<EditorialApi['transitionCard']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/editorial/cards/${encodeURIComponent(cardId)}/status`,
+        { method: 'PATCH', body: JSON.stringify({ status }) },
+      )).card,
+      listProposals: async (workspaceId) => (await this.request<{ items: Awaited<ReturnType<EditorialApi['listProposals']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/editorial/proposals`,
+      )).items,
+      transitionProposal: async (workspaceId, proposalId, status) => (await this.request<{ proposal: Awaited<ReturnType<EditorialApi['transitionProposal']>> }>(
+        `/workspaces/${encodeURIComponent(workspaceId)}/editorial/proposals/${encodeURIComponent(proposalId)}/status`,
+        { method: 'PATCH', body: JSON.stringify({ status }) },
+      )).proposal,
+      applyProposal: (workspaceId, proposalId) => this.request(
+        `/workspaces/${encodeURIComponent(workspaceId)}/editorial/proposals/${encodeURIComponent(proposalId)}/apply`,
+        { method: 'POST' },
+      ),
     };
   }
 

@@ -5,6 +5,7 @@ import {
   BookOpen,
   ChatCircleDots,
   Database,
+  Lightbulb,
   Star,
 } from '@phosphor-icons/react';
 import { Link, useOutletContext, useParams } from 'react-router-dom';
@@ -57,7 +58,7 @@ export function WorkspaceOverviewPage({ workspaceApi }: { workspaceApi: Workspac
   const favorites = data.items.filter((item) => item.favorite);
   return <section className="workspace-overview">
     <WorkspaceHero workspace={data.workspace} canCreate={user.role === 'AUTHOR' || user.role === 'EDITOR'} />
-    <ModuleGrid counts={data.counts} workspaceId={data.workspace.id} />
+    <ModuleGrid counts={data.counts} workspace={data.workspace} />
     <RecentActivity items={data.activity} />
     <FavoriteResources items={favorites} />
   </section>;
@@ -74,20 +75,32 @@ function WorkspaceHero({ workspace, canCreate }: { workspace: WorkspaceSummary; 
   </header>;
 }
 
-function ModuleGrid({ counts, workspaceId }: { counts: Counts; workspaceId: string }) {
+function ModuleGrid({ counts, workspace }: { counts: Counts; workspace: WorkspaceSummary }) {
+  const modules = [
+    ...moduleDefinitions,
+    ...(workspace.permission === 'OWNER' || workspace.permission === 'EDIT'
+      ? [{ key: 'EDITORIAL', label: '知识演进', route: 'knowledge-evolution', icon: Lightbulb }]
+      : []),
+  ];
   return <section aria-labelledby="module-heading">
     <div className="section-title"><div><span className="page-kicker">MODULES</span><h2 id="module-heading">知识模块</h2></div></div>
     <div className="module-grid">
-      {moduleDefinitions.map(({ key, label, route, icon: IconComponent }) => {
-        const count = key === 'ARTIFACT' ? counts.ARTIFACT + counts.CONVERSATION : counts[key];
-        return <Link key={key} to={`/workspaces/${workspaceId}/${route}`} className="module-card">
+      {modules.map(({ key, label, route, icon: IconComponent }) => {
+        const count = moduleCount(counts, key);
+        return <Link key={key} to={`/workspaces/${workspace.id}/${route}`} className="module-card">
           <span className="module-icon"><IconComponent size={23} /></span>
-          <div><strong>{label}</strong><span>{count} 项</span></div>
+          <div><strong>{label}</strong><span>{count === undefined ? '编辑专属' : `${count} 项`}</span></div>
           <ArrowRight size={18} />
         </Link>;
       })}
     </div>
   </section>;
+}
+
+function moduleCount(counts: Counts, key: string): number | undefined {
+  if (key === 'ARTIFACT') return counts.ARTIFACT + counts.CONVERSATION;
+  if (key === 'EDITORIAL') return undefined;
+  return counts[key as WorkspaceItemKind];
 }
 
 function RecentActivity({ items }: { items: WorkspaceActivity[] }) {
