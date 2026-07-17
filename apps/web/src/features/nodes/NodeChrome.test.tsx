@@ -3,10 +3,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { NodeActionProvider, NodeAnchorPresentationProvider, NodeChrome, nodeChromeStyle, nodeHandleConfig } from './NodeChrome';
 
+const { updateNodeInternals } = vi.hoisted(() => ({ updateNodeInternals: vi.fn() }));
+
 vi.mock('@xyflow/react', () => ({
   Handle: ({ id, className, style, 'aria-label': label, 'aria-hidden': hidden }: { id?: string; className?: string; style?: React.CSSProperties; 'aria-label'?: string; 'aria-hidden'?: boolean | 'true' | 'false' }) => <span data-handle-id={id} className={className} style={style} aria-label={label} aria-hidden={hidden} />,
   NodeResizer: ({ isVisible }: { isVisible?: boolean }) => <span data-testid="node-resizer" data-visible={String(isVisible)} />,
   Position: { Left: 'left', Right: 'right', Bottom: 'bottom' },
+  useUpdateNodeInternals: () => updateNodeInternals,
 }));
 
 describe('nodeChromeStyle', () => {
@@ -61,6 +64,20 @@ describe('NodeChrome delete action', () => {
     expect(stored).toHaveAttribute('aria-hidden', 'true');
     expect(stored).not.toHaveAttribute('aria-label');
     expect(screen.getByLabelText('终点连接面 LEFT')).toBeInTheDocument();
+  });
+
+  it('refreshes React Flow’s local handle bounds after route anchors or detail height change', () => {
+    updateNodeInternals.mockClear();
+    const handles = new Map([['process-1', [{
+      id: 'edge:business:target', type: 'target' as const, side: 'LEFT' as const, offset: 0.4,
+    }]]]);
+    render(
+      <NodeAnchorPresentationProvider handlesByNodeId={handles}>
+        <NodeChrome nodeId="process-1" tone="process" expanded><strong>节点</strong></NodeChrome>
+      </NodeAnchorPresentationProvider>,
+    );
+
+    expect(updateNodeInternals).toHaveBeenCalledWith('process-1');
   });
 
   it('keeps continuous surfaces inside the node so a reconnect endpoint remains clickable', () => {

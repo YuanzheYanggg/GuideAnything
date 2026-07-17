@@ -17,10 +17,21 @@ vi.mock('@xyflow/react', async () => {
   };
 });
 
-import { OrthogonalEdge } from './OrthogonalEdge';
+import { OrthogonalEdge, syncEdgeUpdaterCoordinates } from './OrthogonalEdge';
 
 describe('OrthogonalEdge', () => {
   beforeEach(() => baseEdge.mockReset());
+
+  it('keeps React Flow reconnect circles on the custom route endpoints', () => {
+    const { container } = render(<svg><g className="react-flow__edge" data-id="edge-1"><circle className="react-flow__edgeupdater-source" cx="0" cy="0" /><circle className="react-flow__edgeupdater-target" cx="0" cy="0" /></g></svg>);
+
+    syncEdgeUpdaterCoordinates('edge-1', [{ x: 24, y: 36 }, { x: 180, y: 36 }], container);
+
+    expect(container.querySelector('.react-flow__edgeupdater-source')).toHaveAttribute('cx', '24');
+    expect(container.querySelector('.react-flow__edgeupdater-source')).toHaveAttribute('cy', '36');
+    expect(container.querySelector('.react-flow__edgeupdater-target')).toHaveAttribute('cx', '180');
+    expect(container.querySelector('.react-flow__edgeupdater-target')).toHaveAttribute('cy', '36');
+  });
 
   it('forwards both markers and the constrained SVG style to BaseEdge', () => {
     const props = {
