@@ -7,6 +7,7 @@ import { FlowNode } from './FlowNode';
 import { ImageNode } from './ImageNode';
 import { InlineNodeEditingProvider } from './InlineNodeTextEditor';
 import { MarkdownNode } from './MarkdownNode';
+import { NodeDetailPresentationProvider } from './NodeDetailPresentation';
 import { SubguideNode } from './SubguideNode';
 import { VideoNode } from './VideoNode';
 
@@ -20,19 +21,49 @@ function props(id: string, type: string, data: Record<string, unknown>, selected
 }
 
 describe('inline node text integration', () => {
-  it('opens flow titles and details for direct editing', async () => {
+  it('keeps flow titles inline while requesting a dialog for details', async () => {
     const user = userEvent.setup();
+    const onOpenEditor = vi.fn();
+    const onToggleExpanded = vi.fn();
     render(
       <InlineNodeEditingProvider value={{ enabled: true, updateText: vi.fn() }}>
-        <FlowNode {...props('process-1', 'process', { label: '收到订单', description: '检查客户' })} />
+        <NodeDetailPresentationProvider value={{ expandedNodeIds: new Set(), onOpenEditor, onToggleExpanded }}>
+          <FlowNode {...props('process-1', 'process', { label: '收到订单', description: '检查客户' })} />
+        </NodeDetailPresentationProvider>
       </InlineNodeEditingProvider>,
     );
 
     await user.dblClick(screen.getByText('收到订单'));
     expect(screen.getByRole('textbox', { name: '收到订单 · 节点标题' })).toBeVisible();
     await user.keyboard('{Escape}');
-    await user.dblClick(screen.getByText('检查客户'));
-    expect(screen.getByRole('textbox', { name: '收到订单 · 节点明细' })).toBeVisible();
+    await user.dblClick(screen.getByRole('button', { name: '编辑收到订单 · 节点明细' }));
+    expect(onOpenEditor).toHaveBeenCalledWith('process-1', expect.any(HTMLButtonElement));
+    await user.click(screen.getByRole('button', { name: '详情' }));
+    expect(onToggleExpanded).toHaveBeenCalledWith('process-1');
+  });
+
+  it('opens flow details from a direct click when the canvas consumes a double-click gesture', async () => {
+    const user = userEvent.setup();
+    const onOpenEditor = vi.fn();
+    render(
+      <NodeDetailPresentationProvider value={{ expandedNodeIds: new Set(), onOpenEditor, onToggleExpanded: vi.fn() }}>
+        <FlowNode {...props('process-1', 'process', { label: '收到订单', description: '检查客户' })} />
+      </NodeDetailPresentationProvider>,
+    );
+
+    await user.click(screen.getByRole('button', { name: '编辑收到订单 · 节点明细' }));
+    expect(onOpenEditor).toHaveBeenCalledWith('process-1', expect.any(HTMLButtonElement));
+  });
+
+  it('uses the local presentation state when a controlled React Flow node still carries an old expanded flag', () => {
+    render(
+      <NodeDetailPresentationProvider value={{ expandedNodeIds: new Set(), onOpenEditor: vi.fn(), onToggleExpanded: vi.fn() }}>
+        <FlowNode {...props('process-1', 'process', { label: '收到订单', description: '第一行\n第二行', detailExpanded: true })} />
+      </NodeDetailPresentationProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: '详情' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '收起' })).not.toBeInTheDocument();
   });
 
   it('opens rendered Markdown as a raw multiline editor', async () => {

@@ -4,7 +4,7 @@ import { memo } from 'react';
 
 import { NodeChrome } from './NodeChrome';
 
-export const SubguideNode = memo(function SubguideNode({ data, selected, width, height }: NodeProps) {
+export const SubguideNode = memo(function SubguideNode({ id, data, selected, width, height }: NodeProps) {
   const value = data as CanvasNode<'subguide'>['data'];
-  return <NodeChrome selected={selected} tone="subguide" width={width} height={height}><span className="node-kicker">PINNED GUIDE · v{value.version}</span><strong>{value.title}</strong><p>{value.expanded ? '已展开到当前画布' : '折叠引用，点击后可拼接完整流程'}</p></NodeChrome>;
+  return <NodeChrome nodeId={id} selected={selected} tone="subguide" width={width} height={height}><span className="node-kicker">PINNED GUIDE · v{value.version}</span><strong>{value.title}</strong><p>{value.expanded ? '已展开到当前画布' : '折叠引用，点击后可拼接完整流程'}</p></NodeChrome>;
 });

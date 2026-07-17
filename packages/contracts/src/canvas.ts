@@ -82,6 +82,23 @@ const ExpandedContinuationEdgeSchema = z.object({
   hidden: z.boolean(),
 });
 
+const EdgeAnchorSchema = z.object({
+  side: z.enum(['TOP', 'RIGHT', 'BOTTOM', 'LEFT']),
+  offset: z.number().min(0).max(1),
+});
+
+const EdgePresentationSchema = z.object({
+  color: z.enum(['default', 'blue', 'green', 'yellow', 'red', 'purple']).optional(),
+  width: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional(),
+  pattern: z.enum(['solid', 'dashed', 'dotted']).optional(),
+  arrows: z.enum(['none', 'forward', 'reverse', 'both']).optional(),
+  sourceAnchor: EdgeAnchorSchema.optional(),
+  targetAnchor: EdgeAnchorSchema.optional(),
+});
+
+export type EdgeAnchor = z.infer<typeof EdgeAnchorSchema>;
+export type EdgePresentation = z.infer<typeof EdgePresentationSchema>;
+
 export const FlowStageSchema = z.object({
   id: IdSchema,
   title: z.string().min(1).max(120),
@@ -152,6 +169,7 @@ export const CanvasEdgeSchema = z.object({
   label: z.string().max(200).optional(),
   hidden: z.boolean().optional(),
   sourceTrace: SourceTraceSchema.optional(),
+  presentation: EdgePresentationSchema.optional(),
 });
 
 export const LessonStepSchema = z.object({

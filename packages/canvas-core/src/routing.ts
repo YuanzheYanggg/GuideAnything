@@ -1,4 +1,4 @@
-import type { CanvasDocument, CanvasEdge, CanvasNode } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor } from '@guideanything/contracts';
 
 const CHANNEL_GAP = 18;
 const PORT_GAP = 24;
@@ -41,6 +41,11 @@ export interface RoutingResult {
   report: RoutingReport;
 }
 
+interface RoutePort {
+  point: Point;
+  side: RouteSide;
+}
+
 export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
   const visibleNodes = document.nodes.filter((node) => !node.hidden);
   const rects = visibleNodes.map(nodeRect);
@@ -60,24 +65,33 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
     const source = rectById.get(edge.source)!;
     const target = rectById.get(edge.target)!;
     const kind = classify(edge, source, target, document.nodes);
-    const sides = sidesFor(kind, source, target);
-    const channelKey = offsetChannelKey(kind, edge, sides.source);
+    const fallbackSides = sidesFor(kind, source, target);
+    const sourcePort = anchoredPort(source, edge.presentation?.sourceAnchor, fallbackSides.source);
+    const targetPort = anchoredPort(target, edge.presentation?.targetAnchor, fallbackSides.target);
+    const usesAnchors = Boolean(edge.presentation?.sourceAnchor || edge.presentation?.targetAnchor);
+    const channelKey = offsetChannelKey(kind, edge, sourcePort.side);
     const channelIndex = channelKey ? offsetCountByChannel.get(channelKey) ?? 0 : 0;
     if (channelKey) offsetCountByChannel.set(channelKey, channelIndex + 1);
     const offset = channelIndex * CHANNEL_GAP;
-    let points = directRoute(kind, source, target, sides.source, sides.target, offset, maximumRight);
+    let points = usesAnchors
+      ? anchoredDirectRoute(kind, sourcePort, targetPort, offset, maximumRight)
+      : directRoute(kind, source, target, fallbackSides.source, fallbackSides.target, offset, maximumRight);
     const obstacles = rects.filter((rect) => rect.id !== source.id && rect.id !== target.id);
     if (routeIntersects(points, obstacles)) {
       avoidedEdgeIds.push(edge.id);
-      points = kind === 'BACK'
-        ? backRoute(source, target, offset, maximumRight)
-        : outerRoute(source, target, sides.source, sides.target, offset, maximumRight, minimumTop);
+      points = usesAnchors
+        ? kind === 'BACK'
+          ? anchoredBackRoute(sourcePort, targetPort, offset, maximumRight)
+          : anchoredOuterRoute(sourcePort, targetPort, offset, maximumRight, minimumTop)
+        : kind === 'BACK'
+          ? backRoute(source, target, offset, maximumRight)
+          : outerRoute(source, target, fallbackSides.source, fallbackSides.target, offset, maximumRight, minimumTop);
     }
     points = compact(points);
     const collision = routeIntersects(points, obstacles);
     if (collision) collisionEdgeIds.push(edge.id);
     if (kind === 'BACK') backEdgeIds.push(edge.id);
-    routesByEdgeId.set(edge.id, { edgeId: edge.id, points, kind, sourceSide: sides.source, targetSide: sides.target, collision });
+    routesByEdgeId.set(edge.id, { edgeId: edge.id, points, kind, sourceSide: sourcePort.side, targetSide: targetPort.side, collision });
   });
 
   return { routesByEdgeId, report: { backEdgeIds, avoidedEdgeIds, collisionEdgeIds } };
@@ -125,6 +139,17 @@ function directRoute(
   return [start, { x: channelX, y: start.y }, { x: channelX, y: finish.y }, finish];
 }
 
+function anchoredDirectRoute(
+  kind: RouteKind,
+  source: RoutePort,
+  target: RoutePort,
+  offset: number,
+  maximumRight: number,
+): Point[] {
+  if (kind === 'BACK') return anchoredBackRoute(source, target, offset, maximumRight);
+  return routePorts(source, target, offset);
+}
+
 function backRoute(source: NodeRect, target: NodeRect, offset: number, maximumRight: number): Point[] {
   const start = port(source, 'RIGHT');
   const finish = port(target, 'RIGHT');
@@ -140,6 +165,22 @@ function backRoute(source: NodeRect, target: NodeRect, offset: number, maximumRi
     { x: targetApproachX, y: targetChannelY },
     { x: targetApproachX, y: finish.y },
     finish,
+  ];
+}
+
+function anchoredBackRoute(source: RoutePort, target: RoutePort, offset: number, maximumRight: number): Point[] {
+  const sourceExit = extendPort(source, PORT_GAP);
+  const targetApproach = extendPort(target, PORT_GAP);
+  const outerX = maximumRight + OUTER_GAP + offset;
+  const outerY = Math.min(sourceExit.y, targetApproach.y) - OUTER_GAP - offset;
+  return [
+    source.point,
+    sourceExit,
+    { x: outerX, y: sourceExit.y },
+    { x: outerX, y: outerY },
+    { x: targetApproach.x, y: outerY },
+    targetApproach,
+    target.point,
   ];
 }
 
@@ -178,6 +219,69 @@ function outerRoute(
     finish,
   );
   return points;
+}
+
+function anchoredOuterRoute(
+  source: RoutePort,
+  target: RoutePort,
+  offset: number,
+  maximumRight: number,
+  minimumTop: number,
+): Point[] {
+  const sourceExit = extendPort(source, PORT_GAP);
+  const targetApproach = extendPort(target, PORT_GAP);
+  const outerX = maximumRight + OUTER_GAP + offset;
+  const outerY = minimumTop - OUTER_GAP - offset;
+  return [
+    source.point,
+    sourceExit,
+    { x: sourceExit.x, y: outerY },
+    { x: outerX, y: outerY },
+    { x: targetApproach.x, y: outerY },
+    targetApproach,
+    target.point,
+  ];
+}
+
+function routePorts(source: RoutePort, target: RoutePort, offset: number): Point[] {
+  const sourceExit = extendPort(source, PORT_GAP);
+  const targetApproach = extendPort(target, PORT_GAP);
+  if (source.side === 'LEFT' || source.side === 'RIGHT') {
+    const channelX = (sourceExit.x + targetApproach.x) / 2 + offset;
+    return [
+      source.point,
+      sourceExit,
+      { x: channelX, y: sourceExit.y },
+      { x: channelX, y: targetApproach.y },
+      targetApproach,
+      target.point,
+    ];
+  }
+  const channelY = (sourceExit.y + targetApproach.y) / 2 + offset;
+  return [
+    source.point,
+    sourceExit,
+    { x: sourceExit.x, y: channelY },
+    { x: targetApproach.x, y: channelY },
+    targetApproach,
+    target.point,
+  ];
+}
+
+function anchoredPort(rect: NodeRect, anchor: EdgeAnchor | undefined, fallback: RouteSide): RoutePort {
+  const side = anchor?.side ?? fallback;
+  const offset = Math.min(1, Math.max(0, anchor?.offset ?? 0.5));
+  if (side === 'LEFT') return { side, point: { x: rect.x, y: rect.y + rect.height * offset } };
+  if (side === 'RIGHT') return { side, point: { x: rect.x + rect.width, y: rect.y + rect.height * offset } };
+  if (side === 'TOP') return { side, point: { x: rect.x + rect.width * offset, y: rect.y } };
+  return { side, point: { x: rect.x + rect.width * offset, y: rect.y + rect.height } };
+}
+
+function extendPort(port: RoutePort, amount: number): Point {
+  if (port.side === 'LEFT') return { x: port.point.x - amount, y: port.point.y };
+  if (port.side === 'RIGHT') return { x: port.point.x + amount, y: port.point.y };
+  if (port.side === 'TOP') return { x: port.point.x, y: port.point.y - amount };
+  return { x: port.point.x, y: port.point.y + amount };
 }
 
 function port(rect: NodeRect, side: RouteSide): Point {

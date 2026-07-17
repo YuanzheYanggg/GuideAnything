@@ -247,6 +247,54 @@ describe('CanvasDocumentSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts legacy edges and preserves constrained edge presentation', () => {
+    const legacy = hierarchyDocument({
+      edges: [{ id: 'legacy', source: 'start', target: 'start' }],
+    });
+    const presentation = {
+      color: 'purple',
+      width: 4,
+      pattern: 'dotted',
+      arrows: 'both',
+      sourceAnchor: { side: 'BOTTOM', offset: 0.2 },
+      targetAnchor: { side: 'LEFT', offset: 0.8 },
+    };
+    const styled = hierarchyDocument({
+      edges: [{
+        id: 'styled',
+        source: 'start',
+        target: 'start',
+        presentation,
+      }],
+    });
+
+    expect(CanvasDocumentSchema.safeParse(legacy).success).toBe(true);
+    expect(CanvasDocumentSchema.safeParse(styled).data?.edges[0]?.presentation)
+      .toEqual(presentation);
+  });
+
+  it('rejects unsafe edge presentation values', () => {
+    const invalidOffset = hierarchyDocument({
+      edges: [{
+        id: 'bad-offset',
+        source: 'start',
+        target: 'start',
+        presentation: { sourceAnchor: { side: 'TOP', offset: 1.01 } },
+      }],
+    });
+    const invalidStyle = hierarchyDocument({
+      edges: [{
+        id: 'bad-style',
+        source: 'start',
+        target: 'start',
+        presentation: { color: 'url(javascript:alert(1))', width: 5 },
+      }],
+    });
+
+    expect(CanvasDocumentSchema.safeParse(invalidOffset).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(invalidStyle).success).toBe(false);
+  });
+
   it('accepts legacy images and normalized point and rectangle annotations', () => {
     expect(CanvasDocumentSchema.safeParse(imageDocument()).success).toBe(true);
 

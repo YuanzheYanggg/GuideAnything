@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { VideoNodeView } from './VideoNode';
 
@@ -18,5 +18,17 @@ describe('VideoNodeView', () => {
     await user.click(screen.getByRole('button', { name: '跳转到 00:15' }));
     expect(video.currentTime).toBe(15);
     expect(selected).toBe('kp-1');
+  });
+
+  it('notifies an optional preview bridge when the video is clicked', () => {
+    const onOpenPreview = vi.fn();
+    render(<VideoNodeView data={{
+      url: 'https://example.com/demo.mp4',
+      caption: 'VA01 演示',
+      keypoints: [],
+    }} onOpenPreview={onOpenPreview} />);
+
+    fireEvent.click(screen.getByLabelText('VA01 演示'));
+    expect(onOpenPreview).toHaveBeenCalledWith('https://example.com/demo.mp4');
   });
 });
