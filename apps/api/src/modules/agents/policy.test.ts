@@ -223,7 +223,7 @@ describe('agent orchestration policy', () => {
       },
     });
     expect(prompt).toContain('不可变安全规则');
-    expect(prompt).toContain('受信任的 Santexwell Harness');
+    expect(prompt).toContain('受信任的运行 Harness');
     expect(prompt).toContain('不可信 JSON 数据');
     expect(prompt.indexOf('不可变安全规则')).toBeLessThan(prompt.indexOf('恶意页面'));
     expect(prompt).not.toContain('/Users/');

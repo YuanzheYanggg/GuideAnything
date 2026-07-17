@@ -38,6 +38,7 @@ import type { AgentRuntimeClient } from './runtime-client';
 import { RuntimeClientError } from './runtime-client';
 import { enforceSchedulePolicy, SchedulePolicyError } from './scheduler';
 import { StructuredAnswerPreviewDecoder } from './structured-answer-preview';
+import { loadWorkspaceQueryInstructions, workspaceQueryBundleRevisions } from './bundles/workspace-query';
 import {
   AgentInvocationError,
   runFinalAnswer,
@@ -786,6 +787,7 @@ export class AgentOrchestrator {
     evidence: readonly ValidatedEvidenceV1[],
     role: 'FOCUSED_WORKER' | 'DEEP_WORKER',
   ): string {
+    const workspaceQueryHarness = loadWorkspaceQueryInstructions(context, decision, task);
     const santexwellHarness = this.#workerNeedsSantexwellHarness(context, decision, task, evidence)
       ? this.#loadSantexwellHarness(context)
       : [];
@@ -793,6 +795,7 @@ export class AgentOrchestrator {
       role,
       trustedHarness: [
         ...this.#trustedHarness,
+        ...workspaceQueryHarness,
         ...santexwellHarness,
         '只能使用 retrievedContext 中由服务端提供的证据 ID 与 locator；不得新增、猜测或改写 locator。',
       ],
@@ -1098,6 +1101,7 @@ function assertAtMostThreeWorkers(decision: RouteDecisionV1): void {
 }
 
 function toPublicPlan(decision: RouteDecisionV1): PublicRoutePlanV1 {
+  const bundleRevisions = workspaceQueryBundleRevisions(decision.tasks);
   return PublicRoutePlanV1Schema.parse({
     route: decision.route,
     userFacingPlan: decision.userFacingPlan,
@@ -1108,6 +1112,7 @@ function toPublicPlan(decision: RouteDecisionV1): PublicRoutePlanV1 {
       sourceKind: task.kind,
       status: 'PENDING' as const,
     })),
+    ...(bundleRevisions.length > 0 ? { bundleRevisions } : {}),
   });
 }
 

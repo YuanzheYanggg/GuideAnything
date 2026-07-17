@@ -72,11 +72,17 @@ export const PublicRoutePlanTaskV1Schema = z.object({
   status: z.enum(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'SKIPPED']).optional(),
 }).strict();
 
+export const PromptBundleRevisionV1Schema = z.object({
+  name: z.string().min(1).max(200),
+  revision: z.string().regex(/^[a-f0-9]{64}$/).max(64),
+}).strict();
+
 export const PublicRoutePlanV1Schema = z.object({
   route: z.enum(['DIRECT', 'FOCUSED', 'COMPOSITE', 'OPEN_RESEARCH']),
   userFacingPlan: z.string().min(1).max(5_000),
   executionMode: z.enum(['SEQUENTIAL', 'PARALLEL']),
   tasks: z.array(PublicRoutePlanTaskV1Schema).max(5),
+  bundleRevisions: z.array(PromptBundleRevisionV1Schema).max(4).optional(),
 }).strict().superRefine((plan, context) => {
   const taskIds = new Set<string>();
   plan.tasks.forEach((task, index) => {

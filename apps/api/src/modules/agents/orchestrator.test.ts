@@ -44,6 +44,16 @@ describe('AgentOrchestrator', () => {
     ]);
     expect(new Set(runtime.requests.map((request) => request.runId)).size).toBe(2);
     expect(runtime.requests.every((request) => request.runId !== 'public-run-1')).toBe(true);
+    const workerRequest = runtime.requests.find((request) => request.role === 'FOCUSED_WORKER');
+    expect(workerRequest?.prompt).toContain('选中上下文优先');
+    expect(workerRequest?.prompt).not.toContain('测试用 Santexwell 只读 QA Harness。');
+    expect(events.items.find((item) => item.type === 'plan.committed')).toMatchObject({
+      payload: {
+        plan: {
+          bundleRevisions: [expect.objectContaining({ name: 'guideanything-workspace-query' })],
+        },
+      },
+    });
     expect(retriever.retrieve).toHaveBeenCalledOnce();
     expect(events.items.map((event) => event.type)).toEqual([
       'route.started', 'route.completed', 'plan.committed',
