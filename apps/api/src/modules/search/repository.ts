@@ -50,6 +50,20 @@ const REQUESTER_CAN_ACCESS = `(
   )
 )`;
 
+const MOUNTED_PROVIDER_ACCESS = `EXISTS (
+  SELECT 1
+  FROM workspace_resource_mounts AS mount
+  JOIN workspaces AS consumer ON consumer.id = mount.consumer_workspace_id
+  JOIN workspaces AS provider ON provider.id = mount.provider_workspace_id
+  JOIN workspace_members AS consumer_member
+    ON consumer_member.workspace_id = consumer.id AND consumer_member.user_id = ?
+  WHERE mount.consumer_workspace_id = ?
+    AND mount.provider_workspace_id = item.workspace_id
+    AND consumer.status = 'ACTIVE' AND consumer.kind = 'BUSINESS_TEAM'
+    AND provider.status = 'ACTIVE'
+    AND provider.kind IN ('FINANCE', 'TECHNICAL', 'FOLLOW_UP', 'PRODUCTION')
+)`;
+
 export function searchPublishedGuides(
   database: DatabaseSync,
   userId: string,
@@ -57,12 +71,25 @@ export function searchPublishedGuides(
   limit = 20,
   offset = 0,
   workspaceId?: string,
+  consumerWorkspaceId?: string,
 ): SearchPage {
   const matchQuery = query
     .split(/\s+/u)
     .filter(Boolean)
     .map((term) => `"${term.replaceAll('"', '""')}"*`)
     .join(' AND ');
+  const mountedScope = consumerWorkspaceId
+    ? `AND (item.workspace_id = ? OR ${MOUNTED_PROVIDER_ACCESS})`
+    : '';
+  const requesterAccess = consumerWorkspaceId
+    ? `(${REQUESTER_CAN_ACCESS} OR ${MOUNTED_PROVIDER_ACCESS})`
+    : REQUESTER_CAN_ACCESS;
+  const mountedScopeParameters = consumerWorkspaceId
+    ? [consumerWorkspaceId, userId, consumerWorkspaceId]
+    : [];
+  const requesterAccessParameters = consumerWorkspaceId
+    ? [userId, userId, userId, userId, consumerWorkspaceId]
+    : [userId, userId, userId];
   const rows = (matchQuery
     ? database.prepare(
       `SELECT gs.version_id, gs.guide_id, gs.title, gs.summary, v.tags_json,
@@ -81,10 +108,14 @@ export function searchPublishedGuides(
        LEFT JOIN workspace_members requester_member ON requester_member.workspace_id = workspace.id AND requester_member.user_id = ?
        WHERE guide_search MATCH ? AND item.deleted_at IS NULL AND workspace.status = 'ACTIVE'
          AND (? IS NULL OR item.workspace_id = ?)
-         AND ${REQUESTER_CAN_ACCESS}
+         ${mountedScope}
+         AND ${requesterAccess}
        ORDER BY rank, v.published_at DESC
        LIMIT ? OFFSET ?`,
-    ).all(userId, userId, userId, matchQuery, workspaceId ?? null, workspaceId ?? null, userId, userId, userId, limit + 1, offset)
+    ).all(
+      userId, userId, userId, matchQuery, workspaceId ?? null, workspaceId ?? null,
+      ...mountedScopeParameters, ...requesterAccessParameters, limit + 1, offset,
+    )
     : database.prepare(
       `SELECT gs.version_id, gs.guide_id, gs.title, gs.summary, v.tags_json,
               v.version, u.display_name AS author_name, v.published_at AS published_at,
@@ -102,10 +133,14 @@ export function searchPublishedGuides(
        LEFT JOIN workspace_members requester_member ON requester_member.workspace_id = workspace.id AND requester_member.user_id = ?
        WHERE item.deleted_at IS NULL AND workspace.status = 'ACTIVE'
          AND (? IS NULL OR item.workspace_id = ?)
-         AND ${REQUESTER_CAN_ACCESS}
+         ${mountedScope}
+         AND ${requesterAccess}
        ORDER BY v.published_at DESC, v.version DESC
        LIMIT ? OFFSET ?`,
-    ).all(userId, userId, userId, workspaceId ?? null, workspaceId ?? null, userId, userId, userId, limit + 1, offset)) as unknown as SearchRow[];
+    ).all(
+      userId, userId, userId, workspaceId ?? null, workspaceId ?? null,
+      ...mountedScopeParameters, ...requesterAccessParameters, limit + 1, offset,
+    )) as unknown as SearchRow[];
   const hasMore = rows.length > limit;
   return {
     items: rows.slice(0, limit).map((row) => ({

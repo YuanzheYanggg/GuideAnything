@@ -152,6 +152,8 @@ describe('database migrations', () => {
       'workspaces',
       'workspace_members',
       'workspace_items',
+      'workspace_folders',
+      'workspace_resource_mounts',
       'knowledge_sources',
       'knowledge_documents',
       'knowledge_fragments',
@@ -176,7 +178,7 @@ describe('database migrations', () => {
     ]));
     expect(database.prepare(
       'SELECT version FROM schema_migrations ORDER BY version',
-    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
 
     const indexesAndTriggers = database.prepare(
       "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_%'",
@@ -201,6 +203,9 @@ describe('database migrations', () => {
       'workspace_card_evidence_scope_insert',
       'workspace_flow_proposal_scope_insert',
       'workspace_flow_proposal_evidence_scope_insert',
+      'workspace_folders_workspace_parent_idx',
+      'workspace_resource_mounts_consumer_idx',
+      'workspace_resource_mounts_provider_idx',
     ]));
 
     const strictByTable = new Map(
@@ -218,11 +223,23 @@ describe('database migrations', () => {
       'workspace_flow_proposals', 'workspace_flow_proposal_operations',
       'workspace_flow_proposal_evidence',
       'workspace_editorial_audit_events',
+      'workspace_folders', 'workspace_resource_mounts',
     ]) {
       expect(strictByTable.get(table), `${table} should be STRICT`).toBe(1);
     }
     expect(strictByTable.get('knowledge_fragment_search')).toBe(0);
     expect(database.prepare('PRAGMA foreign_keys').get()).toEqual({ foreign_keys: 1 });
+    database.prepare(`INSERT INTO users (id, email, password_hash, display_name, role, created_at)
+      VALUES ('migration-user', 'migration@example.com', 'hash', '迁移用户', 'AUTHOR', ?)`).run(now);
+    database.prepare(`INSERT INTO workspaces (
+      id, slug, name, description, icon_key, color_key, owner_id, created_at, updated_at
+    ) VALUES ('workspace-one', 'one', '工作区一', '', 'SquaresFour', 'general', 'migration-user', ?, ?)`).run(now, now);
+    expect(database.prepare(`SELECT kind FROM workspaces WHERE id = 'workspace-one'`).get()).toEqual({
+      kind: 'BUSINESS_TEAM',
+    });
+    expect(database.prepare(`PRAGMA table_info('workspace_items')`).all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'folder_id', notnull: 0 }),
+    ]));
   });
 
   it('enforces conversation scope and mutually exclusive source ownership', () => {

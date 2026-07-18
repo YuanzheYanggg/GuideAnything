@@ -8,6 +8,7 @@ import {
 } from '@guideanything/contracts';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { listMountedResourceWorkspaceIds } from '../workspaces/repository';
 import type { AgentRunExecutionContext } from './orchestrator';
 
 interface ExecutionRow {
@@ -89,12 +90,17 @@ export function loadAgentRunExecutionContext(
     if (!access) throw new Error('用户已经失去工作区访问权限，或工作区已归档');
   }
 
+  const sharedWorkspaceIds = row.scope === 'WORKSPACE' && row.workspace_id
+    ? listMountedResourceWorkspaceIds(database, row.workspace_id)
+    : [];
+
   requireAttachments(database, row.conversation_id, row.owner_id, attachmentIds, runSources, now);
   if (selectedContext) {
     requireSelectedContext(
       database,
       row.conversation_id,
       row.workspace_id,
+      sharedWorkspaceIds,
       runSources,
       selectedContext,
       now,
@@ -107,6 +113,7 @@ export function loadAgentRunExecutionContext(
     ownerId: row.owner_id,
     scope: row.scope,
     workspaceId: row.workspace_id,
+    sharedWorkspaceIds,
     planVersion: row.plan_version,
     status: AgentRunStatusV1Schema.parse(row.run_status),
     text: row.message_text,
@@ -149,16 +156,18 @@ function requireSelectedContext(
   database: DatabaseSync,
   conversationId: string,
   workspaceId: string | null,
+  sharedWorkspaceIds: readonly string[],
   sources: SourceOptionsV1,
   context: SelectedAgentContextV1,
   now: Date,
 ): void {
   if (context.kind === 'FLOW_NODE' || context.kind === 'FLOW_SNAPSHOT') {
     if (!workspaceId || !sources.workspaceFlows) throw new Error('选中的流程上下文不再可用');
+    const workspaceIds = scopedWorkspaceIds(workspaceId, sharedWorkspaceIds);
     const row = database.prepare(
       `SELECT snapshot_json FROM flow_knowledge_snapshots
-       WHERE id = ? AND workspace_id = ?`,
-    ).get(context.snapshotId, workspaceId) as { snapshot_json: string } | undefined;
+       WHERE id = ? AND workspace_id IN (${workspaceIds.map(() => '?').join(', ')})`,
+    ).get(context.snapshotId, ...workspaceIds) as { snapshot_json: string } | undefined;
     if (!row) throw new Error('选中的流程快照不再可用');
     if (context.kind === 'FLOW_NODE') {
       const snapshot = FlowKnowledgeSnapshotV1Schema.parse(JSON.parse(row.snapshot_json));
@@ -170,11 +179,13 @@ function requireSelectedContext(
   }
   if (context.kind === 'WORKSPACE_SOURCE') {
     if (!workspaceId || !sources.workspaceDocuments) throw new Error('选中的工作区资料不再可用');
+    const workspaceIds = scopedWorkspaceIds(workspaceId, sharedWorkspaceIds);
     const source = database.prepare(
       `SELECT 1 FROM knowledge_sources
        WHERE id = ? AND scope = 'WORKSPACE' AND kind = 'WORKSPACE_DOCUMENT'
-         AND workspace_id = ? AND status IN ('READY', 'STALE')`,
-    ).get(context.sourceId, workspaceId);
+         AND workspace_id IN (${workspaceIds.map(() => '?').join(', ')})
+         AND status IN ('READY', 'STALE')`,
+    ).get(context.sourceId, ...workspaceIds);
     if (!source) throw new Error('选中的工作区资料不再可用');
     return;
   }
@@ -208,7 +219,7 @@ function requireSelectedContext(
       && sources.santexwell
       && (source.status === 'READY' || source.status === 'STALE')
     : source.scope === 'WORKSPACE'
-      ? source.workspace_id === workspaceId
+      ? workspaceScopeIncludes(source.workspace_id, workspaceId, sharedWorkspaceIds)
         && (source.status === 'READY' || source.status === 'STALE')
         && (
           (source.kind === 'WORKSPACE_DOCUMENT' && sources.workspaceDocuments)
@@ -222,6 +233,19 @@ function requireSelectedContext(
            WHERE source_id = ? AND conversation_id = ? AND status = 'READY' AND expires_at > ?`,
         ).get(source.id, conversationId, now.toISOString()) !== undefined;
   if (!allowed) throw new Error('选中的知识片段不再属于本轮已授权来源');
+}
+
+function scopedWorkspaceIds(workspaceId: string, sharedWorkspaceIds: readonly string[]): string[] {
+  return [workspaceId, ...sharedWorkspaceIds.filter((id) => id !== workspaceId)];
+}
+
+function workspaceScopeIncludes(
+  candidateWorkspaceId: string | null,
+  workspaceId: string | null,
+  sharedWorkspaceIds: readonly string[],
+): boolean {
+  return candidateWorkspaceId !== null
+    && (candidateWorkspaceId === workspaceId || sharedWorkspaceIds.includes(candidateWorkspaceId));
 }
 
 function parseAttachmentIds(value: string): string[] {

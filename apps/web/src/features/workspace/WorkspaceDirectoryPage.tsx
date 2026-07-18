@@ -35,6 +35,7 @@ export function WorkspaceDirectoryPage() {
         <div className="workspace-card-title"><h2>{workspace.name}</h2><ArrowRight size={20} /></div>
         <p>{workspace.description || '这个工作区暂未补充业务范围说明。'}</p>
         <dl>
+          <div><dt>类型</dt><dd>{workspaceKindLabel(workspace.kind)}</dd></div>
           <div><dt>负责人</dt><dd>{workspace.ownerName}</dd></div>
           <div><dt>权限</dt><dd>{permissionLabel(workspace.permission)}</dd></div>
           <div><dt>内容</dt><dd>{workspace.guideCount} 条指南</dd></div>
@@ -48,6 +49,12 @@ export function WorkspaceDirectoryPage() {
 
 function permissionLabel(permission: WorkspaceSummary['permission']) {
   return { OWNER: '所有者', EDIT: '可编辑', VIEW: '可查看' }[permission];
+}
+
+function workspaceKindLabel(kind: WorkspaceSummary['kind']) {
+  return {
+    BUSINESS_TEAM: '业务团队', FINANCE: '财务中心', TECHNICAL: '工艺中心', FOLLOW_UP: '跟单中心', PRODUCTION: '生产中心',
+  }[kind ?? 'BUSINESS_TEAM'];
 }
 
 function formatDate(value: string) {

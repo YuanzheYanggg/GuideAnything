@@ -177,6 +177,58 @@ export function setSubguideExpanded(
   });
 }
 
+/**
+ * Switches a direct subguide reference to a newer immutable version. Derived
+ * artifacts are deliberately discarded first; callers must explicitly expand
+ * the replacement snapshot again.
+ */
+export function replaceSubguideReference(
+  document: CanvasDocument,
+  referenceNodeId: string,
+  snapshot: GuideVersionSnapshot,
+): CanvasDocument {
+  const reference = document.nodes.find(
+    (node): node is CanvasNode<'subguide'> => node.id === referenceNodeId && node.type === 'subguide',
+  );
+  if (!reference) throw new Error('子指南引用不存在');
+  if (reference.data.guideId !== snapshot.guideId) throw new Error('不能替换为其他指南的版本');
+
+  const collapsed = setSubguideExpanded(document, referenceNodeId, false);
+  const derivedNodeIds = new Set(collapsed.nodes
+    .filter((node) => node.source?.referenceNodeId === referenceNodeId)
+    .map((node) => node.id));
+  const nodes = collapsed.nodes
+    .filter((node) => !derivedNodeIds.has(node.id))
+    .map((node) => {
+      if (node.id !== referenceNodeId || node.type !== 'subguide') return node;
+      const {
+        expandedContinuationEdges: _expandedContinuationEdges,
+        sourceEntryNodeId: _sourceEntryNodeId,
+        sourceExitNodeIds: _sourceExitNodeIds,
+        ...data
+      } = node.data;
+      return {
+        ...node,
+        data: {
+          ...data,
+          guideVersionId: snapshot.id,
+          title: snapshot.title,
+          version: snapshot.version,
+          expanded: false,
+        },
+      };
+    });
+  const edges = collapsed.edges.filter((edge) => (
+    !derivedNodeIds.has(edge.source)
+    && !derivedNodeIds.has(edge.target)
+    && edge.sourceTrace?.referenceNodeId !== referenceNodeId
+  ));
+  const steps = collapsed.steps.filter((step) => (
+    !derivedNodeIds.has(step.nodeId) && step.source?.referenceNodeId !== referenceNodeId
+  ));
+  return reconcileSubguideEdges({ ...collapsed, nodes, edges, steps });
+}
+
 export function reconcileSubguideEdges(document: CanvasDocument): CanvasDocument {
   const edgesById = new Map(document.edges.map((edge) => [edge.id, edge]));
   const outgoingBySource = new Map<string, CanvasEdge[]>();

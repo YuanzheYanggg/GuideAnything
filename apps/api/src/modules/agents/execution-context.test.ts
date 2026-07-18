@@ -37,6 +37,22 @@ describe('loadAgentRunExecutionContext', () => {
     expect(() => loadAgentRunExecutionContext(database, runId)).toThrow(/访问权限/u);
   });
 
+  it('captures only active resource centers explicitly mounted to the business team', () => {
+    seedWorkspace(database, 'workspace-finance', 'owner-1');
+    database.prepare("UPDATE workspaces SET kind = 'FINANCE' WHERE id = 'workspace-finance'").run();
+    database.prepare(
+      `INSERT INTO workspace_resource_mounts (
+        id, consumer_workspace_id, provider_workspace_id, created_by, created_at, updated_at
+      ) VALUES ('mount-finance', 'workspace-1', 'workspace-finance', 'owner-1', ?, ?)`,
+    ).run('2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z');
+    const { runId } = seedWorkspaceRun(database);
+
+    expect(loadAgentRunExecutionContext(database, runId)).toMatchObject({
+      workspaceId: 'workspace-1',
+      sharedWorkspaceIds: ['workspace-finance'],
+    });
+  });
+
   it('rejects an archived workspace or conversation at execution time', () => {
     const first = seedWorkspaceRun(database);
     database.prepare("UPDATE workspaces SET status = 'ARCHIVED' WHERE id = 'workspace-1'").run();

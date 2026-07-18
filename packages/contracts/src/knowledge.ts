@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
 const IdSchema = z.string().min(1).max(200);
+const WorkspaceFolderIdSchema = IdSchema.refine(
+  (value) => !value.includes('/') && !value.includes('\\'),
+  'folder ID must be an opaque logical identifier',
+);
 const TimestampSchema = z.string().datetime();
 const SafeProductHrefSchema = z.string().min(1).max(1_000).refine((value) =>
   value.startsWith('/')
@@ -130,6 +134,7 @@ export const WorkspaceSourceV1Schema = z.object({
   revision: z.string().min(1).max(200),
   failureCode: z.string().regex(/^[A-Z0-9_]+$/).max(80).optional(),
   failureMessage: z.string().min(1).max(500).optional(),
+  folderId: WorkspaceFolderIdSchema.nullable().default(null),
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
 }).strict();

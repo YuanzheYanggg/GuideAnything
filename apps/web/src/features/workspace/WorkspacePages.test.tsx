@@ -8,8 +8,9 @@ import { AppearanceProvider } from '../theme/AppearanceToggle';
 import { ReservedModulePage } from './ReservedModulePage';
 import { WorkspaceDirectoryPage } from './WorkspaceDirectoryPage';
 import { WorkspaceOverviewPage } from './WorkspaceOverviewPage';
+import { WorkspaceOrganizationPage } from './WorkspaceOrganizationPage';
 import { WorkspaceShell } from './WorkspaceShell';
-import type { PersonalApi, WorkspaceApi, WorkspaceItemSummary, WorkspaceSummary } from './types';
+import type { PersonalApi, WorkspaceApi, WorkspaceFolder, WorkspaceItemSummary, WorkspaceSummary } from './types';
 
 const authorUser: AuthUser = {
   id: 'user-author', displayName: '王作者', email: 'author@guide.local', role: 'AUTHOR',
@@ -42,6 +43,7 @@ function renderWorkspaceRoutes(input: {
   initialPath: string;
   workspaces: WorkspaceSummary[];
   items?: WorkspaceItemSummary[];
+  folders?: WorkspaceFolder[];
   user?: AuthUser;
   create?: WorkspaceApi['create'];
 }) {
@@ -54,6 +56,8 @@ function renderWorkspaceRoutes(input: {
     })),
     listItems: vi.fn().mockResolvedValue(input.items ?? []),
     activity: vi.fn().mockResolvedValue([]),
+    listFolders: vi.fn().mockResolvedValue(input.folders ?? []), createFolder: vi.fn(), renameFolder: vi.fn(), deleteFolder: vi.fn(), moveItemToFolder: vi.fn(),
+    listResourceMounts: vi.fn().mockResolvedValue([]), createResourceMount: vi.fn(), deleteResourceMount: vi.fn(),
   };
   const personalApi = createEmptyPersonalApi();
   render(
@@ -64,6 +68,7 @@ function renderWorkspaceRoutes(input: {
             <Route path="/library" element={<h1>指南库</h1>} />
             <Route path="/workspaces" element={<WorkspaceDirectoryPage />} />
             <Route path="/workspaces/:workspaceId" element={<WorkspaceOverviewPage workspaceApi={workspaceApi} />} />
+            <Route path="/workspaces/:workspaceId/organize" element={<WorkspaceOrganizationPage />} />
             <Route path="/workspaces/:workspaceId/:module" element={<ReservedModulePage />} />
           </Route>
         </Routes>
@@ -165,6 +170,7 @@ describe('workspace pages', () => {
       description: '采购与供应商知识',
       iconKey: 'FileText',
       colorKey: 'materials',
+      kind: 'BUSINESS_TEAM',
     });
     expect(await screen.findByRole('heading', { name: '物料管理' })).toBeVisible();
   });
@@ -286,10 +292,53 @@ describe('workspace pages', () => {
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   });
 
+  it('organizes team resources with folders and explicit resource-center mounts', async () => {
+    const user = userEvent.setup();
+    const workspaces: WorkspaceSummary[] = [
+      { ...workspaceDefaults, id: 'workspace-team', name: '北美业务组', kind: 'BUSINESS_TEAM' },
+      { ...workspaceDefaults, id: 'workspace-finance', name: '财务资源中心', kind: 'FINANCE' },
+    ];
+    const folder = {
+      id: 'folder-sampling', workspaceId: 'workspace-team', parentId: null, name: '打样工序',
+      createdAt: workspaceDefaults.updatedAt, updatedAt: workspaceDefaults.updatedAt,
+    };
+    const { workspaceApi } = renderWorkspaceRoutes({
+      initialPath: '/workspaces/workspace-team/organize',
+      workspaces,
+      folders: [folder],
+      items: [{
+        id: 'item-guide', workspaceId: 'workspace-team', workspaceName: '北美业务组', folderId: null,
+        kind: 'GUIDE', entityId: 'guide-1', title: '客户打样流程', summary: '', updatedAt: workspaceDefaults.updatedAt,
+        favorite: false, permission: 'OWNER', canEdit: true,
+      }],
+    });
+    (workspaceApi.createFolder as ReturnType<typeof vi.fn>).mockResolvedValue(folder);
+    (workspaceApi.moveItemToFolder as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    (workspaceApi.listResourceMounts as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (workspaceApi.createResourceMount as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'mount-finance', consumerWorkspaceId: 'workspace-team', providerWorkspaceId: 'workspace-finance',
+      providerName: '财务资源中心', providerKind: 'FINANCE', createdAt: workspaceDefaults.updatedAt,
+    });
+
+    expect(await screen.findByRole('heading', { name: '整理工作区' })).toBeVisible();
+    expect(screen.getAllByText('打样工序').at(-1)).toBeVisible();
+    await user.type(screen.getByLabelText('新文件夹名称'), '新客户');
+    await user.click(screen.getByRole('button', { name: '新建文件夹' }));
+    expect(workspaceApi.createFolder).toHaveBeenCalledWith('workspace-team', { name: '新客户', parentId: null });
+
+    await user.selectOptions(screen.getByLabelText('移动 客户打样流程 到文件夹'), 'folder-sampling');
+    expect(workspaceApi.moveItemToFolder).toHaveBeenCalledWith('workspace-team', 'item-guide', 'folder-sampling');
+    await user.selectOptions(screen.getByLabelText('选择资源中心'), 'workspace-finance');
+    await user.click(screen.getByRole('button', { name: '挂载资源中心' }));
+    expect(workspaceApi.createResourceMount).toHaveBeenCalledWith('workspace-team', 'workspace-finance');
+  });
+
   it('renders a single alert when workspace loading fails', async () => {
     const workspaceApi: WorkspaceApi = {
       list: vi.fn().mockRejectedValue(new Error('工作区载入失败')),
       create: vi.fn(), get: vi.fn(), listItems: vi.fn(), activity: vi.fn(),
+      listFolders: vi.fn(), createFolder: vi.fn(), renameFolder: vi.fn(), deleteFolder: vi.fn(), moveItemToFolder: vi.fn(),
+      listResourceMounts: vi.fn(), createResourceMount: vi.fn(), deleteResourceMount: vi.fn(),
     };
     render(<AppearanceProvider><MemoryRouter initialEntries={['/workspaces']}><Routes>
       <Route element={<WorkspaceShell user={authorUser} workspaceApi={workspaceApi} personalApi={createEmptyPersonalApi()} onLogout={vi.fn()} />}>

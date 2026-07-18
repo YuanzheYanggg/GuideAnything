@@ -12,6 +12,7 @@ export interface WorkspaceSource {
   revision: string;
   failureCode?: string;
   failureMessage?: string;
+  folderId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -41,5 +42,5 @@ export interface SourcesApi {
   list: (workspaceId: string) => Promise<WorkspaceSourcesResult>;
   listFlowSnapshots: (workspaceId: string) => Promise<FlowSnapshotSummary[]>;
   santexwellStatus: () => Promise<KnowledgeHealth>;
-  upload: (workspaceId: string, file: File) => Promise<WorkspaceSource>;
+  upload: (workspaceId: string, file: File, folderId?: string) => Promise<WorkspaceSource>;
 }

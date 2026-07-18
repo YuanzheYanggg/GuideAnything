@@ -1,8 +1,11 @@
 import type {
   WorkspaceActivity,
+  WorkspaceFolder,
   WorkspaceItemKind,
   WorkspaceItemSummary,
+  WorkspaceKind,
   WorkspacePermission,
+  WorkspaceResourceMount,
   WorkspaceSummary,
 } from '@guideanything/contracts';
 import { randomUUID } from 'node:crypto';
@@ -14,6 +17,7 @@ export interface CreateWorkspaceInput {
   description: string;
   iconKey: string;
   colorKey: string;
+  kind?: WorkspaceKind;
 }
 
 export interface WorkspaceMember {
@@ -34,12 +38,13 @@ interface WorkspaceRow {
   owner_id: string;
   owner_name: string;
   permission: WorkspacePermission;
+  kind: WorkspaceKind;
   guide_count: number;
   updated_at: string;
 }
 
 const WORKSPACE_SUMMARY_SELECT = `
-  SELECT w.id, w.slug, w.name, w.description, w.icon_key, w.color_key,
+  SELECT w.id, w.slug, w.name, w.description, w.icon_key, w.color_key, w.kind,
          w.owner_id, owner.display_name AS owner_name, member.permission,
          COUNT(CASE WHEN item.kind = 'GUIDE' AND item.deleted_at IS NULL
                      AND (requester.role != 'LEARNER' OR (guide.status = 'PUBLISHED' AND guide.published_version_id IS NOT NULL))
@@ -64,9 +69,9 @@ export function createWorkspace(
   try {
     database.prepare(
       `INSERT INTO workspaces (
-        id, slug, name, description, icon_key, color_key, owner_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, input.slug, input.name, input.description, input.iconKey, input.colorKey, ownerId, now, now);
+        id, slug, name, description, icon_key, color_key, kind, owner_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, input.slug, input.name, input.description, input.iconKey, input.colorKey, input.kind ?? 'BUSINESS_TEAM', ownerId, now, now);
     database.prepare(
       `INSERT INTO workspace_members (workspace_id, user_id, permission, created_at)
        VALUES (?, ?, 'OWNER', ?)`,
@@ -87,8 +92,8 @@ export function ensureDefaultWorkspaces(
   const now = new Date().toISOString();
   const upsertWorkspace = database.prepare(
     `INSERT INTO workspaces (
-      id, slug, name, description, icon_key, color_key, owner_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, slug, name, description, icon_key, color_key, kind, owner_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (id) DO NOTHING`,
   );
   const upsertOwner = database.prepare(
@@ -104,6 +109,7 @@ export function ensureDefaultWorkspaces(
       workspace.description,
       workspace.iconKey,
       workspace.colorKey,
+      workspace.kind ?? 'BUSINESS_TEAM',
       ownerId,
       now,
       now,
@@ -180,7 +186,7 @@ export function listWorkspaceItems(
   kind?: WorkspaceItemKind,
 ): WorkspaceItemSummary[] {
   const rows = database.prepare(
-    `SELECT item.id, item.workspace_id, w.name AS workspace_name, item.kind, item.entity_id,
+    `SELECT item.id, item.workspace_id, w.name AS workspace_name, item.folder_id, item.kind, item.entity_id,
             item.title, item.summary, item.updated_at, item.deleted_at,
             deleted_by.display_name AS deleted_by_name, creator.display_name AS author_name,
             g.published_version_id, recent.last_viewed_at, recent.view_count,
@@ -207,6 +213,7 @@ export function listWorkspaceItems(
     id: string;
     workspace_id: string;
     workspace_name: string;
+    folder_id: string | null;
     kind: WorkspaceItemKind;
     entity_id: string;
     title: string;
@@ -227,6 +234,7 @@ export function listWorkspaceItems(
     id: row.id,
     workspaceId: row.workspace_id,
     workspaceName: row.workspace_name,
+    folderId: row.folder_id,
     kind: row.kind,
     entityId: row.entity_id,
     title: row.title,
@@ -243,6 +251,168 @@ export function listWorkspaceItems(
     lastViewedAt: row.last_viewed_at,
     viewCount: row.view_count ?? 0,
   }));
+}
+
+export function listWorkspaceFolders(database: DatabaseSync, workspaceId: string): WorkspaceFolder[] {
+  const rows = database.prepare(
+    `SELECT id, workspace_id, parent_id, name, created_at, updated_at
+     FROM workspace_folders
+     WHERE workspace_id = ?
+     ORDER BY parent_id IS NOT NULL, parent_id, name COLLATE NOCASE`,
+  ).all(workspaceId) as unknown as Array<{
+    id: string;
+    workspace_id: string;
+    parent_id: string | null;
+    name: string;
+    created_at: string;
+    updated_at: string;
+  }>;
+  return rows.map((row) => ({
+    id: row.id,
+    workspaceId: row.workspace_id,
+    parentId: row.parent_id,
+    name: row.name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export function getWorkspaceFolder(database: DatabaseSync, workspaceId: string, folderId: string): WorkspaceFolder | null {
+  return listWorkspaceFolders(database, workspaceId).find((folder) => folder.id === folderId) ?? null;
+}
+
+export function createWorkspaceFolder(
+  database: DatabaseSync,
+  input: { workspaceId: string; parentId: string | null; name: string; createdBy: string },
+): WorkspaceFolder {
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  database.prepare(
+    `INSERT INTO workspace_folders (id, workspace_id, parent_id, name, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, input.workspaceId, input.parentId, input.name, input.createdBy, now, now);
+  return getWorkspaceFolder(database, input.workspaceId, id)!;
+}
+
+export function renameWorkspaceFolder(
+  database: DatabaseSync,
+  input: { workspaceId: string; folderId: string; name: string },
+): WorkspaceFolder | null {
+  const result = database.prepare(
+    `UPDATE workspace_folders SET name = ?, updated_at = ?
+     WHERE id = ? AND workspace_id = ?`,
+  ).run(input.name, new Date().toISOString(), input.folderId, input.workspaceId);
+  if (result.changes === 0) return null;
+  return getWorkspaceFolder(database, input.workspaceId, input.folderId);
+}
+
+export function workspaceFolderHasContents(database: DatabaseSync, workspaceId: string, folderId: string): boolean {
+  return database.prepare(
+    `SELECT 1
+     WHERE EXISTS (SELECT 1 FROM workspace_folders WHERE workspace_id = ? AND parent_id = ?)
+        OR EXISTS (SELECT 1 FROM workspace_items WHERE workspace_id = ? AND folder_id = ? AND deleted_at IS NULL)`,
+  ).get(workspaceId, folderId, workspaceId, folderId) !== undefined;
+}
+
+export function deleteWorkspaceFolder(database: DatabaseSync, workspaceId: string, folderId: string): boolean {
+  const result = database.prepare(
+    `DELETE FROM workspace_folders WHERE id = ? AND workspace_id = ?`,
+  ).run(folderId, workspaceId);
+  return result.changes > 0;
+}
+
+export function moveWorkspaceItemToFolder(
+  database: DatabaseSync,
+  input: { workspaceId: string; itemId: string; folderId: string | null },
+): WorkspaceItemSummary | null {
+  const result = database.prepare(
+    `UPDATE workspace_items SET folder_id = ?, updated_at = ?
+     WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+  ).run(input.folderId, new Date().toISOString(), input.itemId, input.workspaceId);
+  if (result.changes === 0) return null;
+  return null;
+}
+
+interface ResourceMountRow {
+  id: string;
+  consumer_workspace_id: string;
+  provider_workspace_id: string;
+  provider_name: string;
+  provider_kind: Exclude<WorkspaceKind, 'BUSINESS_TEAM'>;
+  created_at: string;
+}
+
+function mapResourceMount(row: ResourceMountRow): WorkspaceResourceMount {
+  return {
+    id: row.id,
+    consumerWorkspaceId: row.consumer_workspace_id,
+    providerWorkspaceId: row.provider_workspace_id,
+    providerName: row.provider_name,
+    providerKind: row.provider_kind,
+    createdAt: row.created_at,
+  };
+}
+
+const RESOURCE_MOUNT_SELECT = `
+  SELECT mount.id, mount.consumer_workspace_id, mount.provider_workspace_id,
+         provider.name AS provider_name, provider.kind AS provider_kind, mount.created_at
+  FROM workspace_resource_mounts AS mount
+  JOIN workspaces AS provider ON provider.id = mount.provider_workspace_id
+`;
+
+export function listWorkspaceResourceMounts(database: DatabaseSync, consumerWorkspaceId: string): WorkspaceResourceMount[] {
+  const rows = database.prepare(
+    `${RESOURCE_MOUNT_SELECT}
+     WHERE mount.consumer_workspace_id = ? AND provider.status = 'ACTIVE'
+     ORDER BY provider.name COLLATE NOCASE`,
+  ).all(consumerWorkspaceId) as unknown as ResourceMountRow[];
+  return rows.map(mapResourceMount);
+}
+
+export function getWorkspaceResourceMount(
+  database: DatabaseSync,
+  consumerWorkspaceId: string,
+  mountId: string,
+): WorkspaceResourceMount | null {
+  const row = database.prepare(
+    `${RESOURCE_MOUNT_SELECT}
+     WHERE mount.consumer_workspace_id = ? AND mount.id = ?`,
+  ).get(consumerWorkspaceId, mountId) as unknown as ResourceMountRow | undefined;
+  return row ? mapResourceMount(row) : null;
+}
+
+export function createWorkspaceResourceMount(
+  database: DatabaseSync,
+  input: { consumerWorkspaceId: string; providerWorkspaceId: string; createdBy: string },
+): WorkspaceResourceMount {
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  database.prepare(
+    `INSERT INTO workspace_resource_mounts (
+      id, consumer_workspace_id, provider_workspace_id, created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, input.consumerWorkspaceId, input.providerWorkspaceId, input.createdBy, now, now);
+  return getWorkspaceResourceMount(database, input.consumerWorkspaceId, id)!;
+}
+
+export function deleteWorkspaceResourceMount(database: DatabaseSync, mountId: string): boolean {
+  const result = database.prepare('DELETE FROM workspace_resource_mounts WHERE id = ?').run(mountId);
+  return result.changes > 0;
+}
+
+export function listMountedResourceWorkspaceIds(database: DatabaseSync, consumerWorkspaceId: string): string[] {
+  const rows = database.prepare(
+    `SELECT mount.provider_workspace_id
+     FROM workspace_resource_mounts AS mount
+     JOIN workspaces AS consumer ON consumer.id = mount.consumer_workspace_id
+     JOIN workspaces AS provider ON provider.id = mount.provider_workspace_id
+     WHERE mount.consumer_workspace_id = ?
+       AND consumer.status = 'ACTIVE' AND consumer.kind = 'BUSINESS_TEAM'
+       AND provider.status = 'ACTIVE'
+       AND provider.kind IN ('FINANCE', 'TECHNICAL', 'FOLLOW_UP', 'PRODUCTION')
+     ORDER BY mount.provider_workspace_id`,
+  ).all(consumerWorkspaceId) as unknown as Array<{ provider_workspace_id: string }>;
+  return rows.map((row) => row.provider_workspace_id);
 }
 
 export function countWorkspaceItems(
@@ -384,6 +554,7 @@ function mapWorkspace(row: WorkspaceRow): WorkspaceSummary {
     description: row.description,
     iconKey: row.icon_key,
     colorKey: row.color_key,
+    kind: row.kind,
     ownerId: row.owner_id,
     ownerName: row.owner_name,
     permission: row.permission,

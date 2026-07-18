@@ -88,6 +88,104 @@ describe('database-backed Agent knowledge adapters', () => {
     expect(JSON.stringify(evidence)).not.toMatch(/private-storage-key|other-storage-key|\/Users\//u);
   });
 
+  it('retrieves mounted resource-center documents but excludes unmounted private centers', async () => {
+    seedWorkspace(database, 'workspace-finance', 'other-1', 'FINANCE', '财务资源中心');
+    seedWorkspace(database, 'workspace-private-finance', 'other-1', 'FINANCE');
+    database.prepare(
+      `INSERT INTO workspace_resource_mounts (
+        id, consumer_workspace_id, provider_workspace_id, created_by, created_at, updated_at
+      ) VALUES ('mount-finance', 'workspace-1', 'workspace-finance', 'owner-1', ?, ?)`,
+    ).run(CREATED_AT, CREATED_AT);
+    const finance = insertWorkspaceDocument({
+      database, workspaceId: 'workspace-finance', userId: 'other-1', title: '财务付款条款',
+      originalName: 'payment.md', mimeType: 'text/markdown', size: 42, storageKey: 'finance-private.md',
+      checksum: 'finance-r1', text: '付款期限为见提单副本后 30 天，请财务复核。',
+    });
+    insertWorkspaceDocument({
+      database, workspaceId: 'workspace-private-finance', userId: 'other-1', title: '私有付款条款',
+      originalName: 'private-payment.md', mimeType: 'text/markdown', size: 42, storageKey: 'private.md',
+      checksum: 'private-r1', text: '付款期限为 90 天，仅限未共享的私有中心。',
+    });
+    const context = seedRun({
+      database, sources: sources({ workspaceDocuments: true }), text: '付款期限如何约定？',
+    });
+    const decision = focusedDecision('WORKSPACE_DOCUMENT', context.sources, '付款期限');
+
+    expect(context).toMatchObject({ sharedWorkspaceIds: ['workspace-finance'] });
+    const evidence = await adapters().retriever.retrieve(request(context, decision, 3));
+
+    expect(evidence).toEqual([expect.objectContaining({
+      title: '财务资源中心 · 财务付款条款',
+      locator: expect.objectContaining({ workspaceId: 'workspace-finance', documentId: finance.documentId }),
+    })]);
+  });
+
+  it('retrieves only published flows from a mounted resource center', async () => {
+    seedWorkspace(database, 'workspace-finance', 'other-1', 'FINANCE');
+    database.prepare(
+      `INSERT INTO workspace_resource_mounts (
+        id, consumer_workspace_id, provider_workspace_id, created_by, created_at, updated_at
+      ) VALUES ('mount-finance', 'workspace-1', 'workspace-finance', 'owner-1', ?, ?)`,
+    ).run(CREATED_AT, CREATED_AT);
+    const published = seedPublishedFlow(database, flowDocument('财务已发布审批节点'), {
+      guideId: 'guide-finance-published',
+      workspaceId: 'workspace-finance',
+      ownerId: 'owner-1',
+      title: '财务已发布流程',
+    });
+    const draft = seedDraftFlow(database, flowDocument('财务草稿专属节点'), {
+      guideId: 'guide-finance-draft',
+      workspaceId: 'workspace-finance',
+      ownerId: 'owner-1',
+      title: '财务草稿流程',
+    });
+    const context = seedRun({
+      database,
+      sources: sources({ workspaceFlows: true }),
+      text: '查找财务审批流程。',
+    });
+
+    const publishedEvidence = await adapters().retriever.retrieve(
+      request(context, focusedDecision('WORKSPACE_FLOW', context.sources, '财务已发布审批节点'), 3),
+    );
+    const draftEvidence = await adapters().retriever.retrieve(
+      request(context, focusedDecision('WORKSPACE_FLOW', context.sources, '财务草稿专属节点'), 3),
+    );
+
+    expect(publishedEvidence).toEqual(expect.arrayContaining([expect.objectContaining({
+      source: 'WORKSPACE_FLOW',
+      locator: expect.objectContaining({ guideId: published.guideId, snapshotId: published.snapshotId }),
+    })]));
+    expect(draftEvidence).not.toEqual(expect.arrayContaining([expect.objectContaining({
+      locator: expect.objectContaining({ guideId: draft.guideId, snapshotId: draft.snapshotId }),
+    })]));
+  });
+
+  it('fails closed if a captured shared-resource mount is revoked or forged before retrieval', async () => {
+    seedWorkspace(database, 'workspace-finance', 'other-1', 'FINANCE');
+    database.prepare(
+      `INSERT INTO workspace_resource_mounts (
+        id, consumer_workspace_id, provider_workspace_id, created_by, created_at, updated_at
+      ) VALUES ('mount-finance', 'workspace-1', 'workspace-finance', 'owner-1', ?, ?)`,
+    ).run(CREATED_AT, CREATED_AT);
+    insertWorkspaceDocument({
+      database, workspaceId: 'workspace-finance', userId: 'other-1', title: '财务付款条款',
+      originalName: 'payment.md', mimeType: 'text/markdown', size: 42, storageKey: 'finance-private.md',
+      checksum: 'finance-r1', text: '付款期限为见提单副本后 30 天。',
+    });
+    const context = seedRun({
+      database, sources: sources({ workspaceDocuments: true }), text: '付款期限如何约定？',
+    });
+    const decision = focusedDecision('WORKSPACE_DOCUMENT', context.sources, '付款期限');
+    database.prepare("DELETE FROM workspace_resource_mounts WHERE id = 'mount-finance'").run();
+
+    await expect(adapters().retriever.retrieve(request(context, decision, 1)))
+      .rejects.toThrow(/共享|挂载|上下文/u);
+    const forged = { ...context, sharedWorkspaceIds: ['workspace-private-finance'] };
+    await expect(adapters().retriever.retrieve(request(forged, decision, 1)))
+      .rejects.toThrow(/共享|挂载|上下文/u);
+  });
+
   it('uses Santexwell only when both the immutable request and route enable it, and completes relativePath', async () => {
     seedSantexwell(database, {
       documentId: 'vault-document',
@@ -730,12 +828,18 @@ function seedUser(database: DatabaseSync, id: string): void {
   ).run(id, `${id}@guide.local`, id, CREATED_AT);
 }
 
-function seedWorkspace(database: DatabaseSync, id: string, ownerId: string): void {
+function seedWorkspace(
+  database: DatabaseSync,
+  id: string,
+  ownerId: string,
+  kind: 'BUSINESS_TEAM' | 'FINANCE' | 'TECHNICAL' | 'FOLLOW_UP' | 'PRODUCTION' = 'BUSINESS_TEAM',
+  name = '测试工作区',
+): void {
   database.prepare(
     `INSERT INTO workspaces (
-      id, slug, name, description, icon_key, color_key, owner_id, created_at, updated_at
-    ) VALUES (?, ?, '测试工作区', '', 'SquaresFour', 'general', ?, ?, ?)`,
-  ).run(id, id, ownerId, CREATED_AT, CREATED_AT);
+      id, slug, name, description, icon_key, color_key, kind, owner_id, created_at, updated_at
+    ) VALUES (?, ?, ?, '', 'SquaresFour', 'general', ?, ?, ?, ?)`,
+  ).run(id, id, name, kind, ownerId, CREATED_AT, CREATED_AT);
   database.prepare(
     `INSERT INTO workspace_members (workspace_id, user_id, permission, created_at)
      VALUES (?, ?, 'OWNER', ?)`,
@@ -862,15 +966,18 @@ function seedSessionAttachment(database: DatabaseSync, conversationId: string, i
   );
 }
 
-function seedDraftFlow(database: DatabaseSync, document: CanvasDocument) {
-  const guideId = 'guide-draft';
-  seedGuide(database, guideId, document);
+function seedDraftFlow(database: DatabaseSync, document: CanvasDocument, options: FlowSeedOptions = {}) {
+  const guideId = options.guideId ?? 'guide-draft';
+  const workspaceId = options.workspaceId ?? 'workspace-1';
+  const ownerId = options.ownerId ?? 'owner-1';
+  const title = options.title ?? '审批流程';
+  seedGuide(database, guideId, document, { workspaceId, ownerId, title });
   const snapshot = syncGuideFlowSnapshot(database, {
-    workspaceId: 'workspace-1',
+    workspaceId,
     workspaceItemId: `item-${guideId}`,
     guideId,
-    ownerId: 'owner-1',
-    title: '审批流程',
+    ownerId,
+    title,
     summary: '审批流程摘要',
     tags: ['审批'],
     origin: { kind: 'DRAFT', revision: 0 },
@@ -879,22 +986,25 @@ function seedDraftFlow(database: DatabaseSync, document: CanvasDocument) {
   return { guideId, snapshotId: snapshot.snapshotId };
 }
 
-function seedPublishedFlow(database: DatabaseSync, document: CanvasDocument) {
-  const guideId = 'guide-published';
-  seedGuide(database, guideId, document);
+function seedPublishedFlow(database: DatabaseSync, document: CanvasDocument, options: FlowSeedOptions = {}) {
+  const guideId = options.guideId ?? 'guide-published';
+  const workspaceId = options.workspaceId ?? 'workspace-1';
+  const ownerId = options.ownerId ?? 'owner-1';
+  const title = options.title ?? '审批流程';
+  seedGuide(database, guideId, document, { workspaceId, ownerId, title });
   const versionId = `version-${guideId}`;
   database.prepare(
     `INSERT INTO guide_versions (
       id, guide_id, version, title, summary, tags_json, document_json,
       search_text, published_by, published_at
-    ) VALUES (?, ?, 1, '审批流程', '审批流程摘要', '["审批"]', ?, '审批', 'owner-1', ?)`,
-  ).run(versionId, guideId, JSON.stringify(document), CREATED_AT);
+    ) VALUES (?, ?, 1, ?, '审批流程摘要', '["审批"]', ?, '审批', ?, ?)`,
+  ).run(versionId, guideId, title, JSON.stringify(document), ownerId, CREATED_AT);
   const snapshot = syncGuideFlowSnapshot(database, {
-    workspaceId: 'workspace-1',
+    workspaceId,
     workspaceItemId: `item-${guideId}`,
     guideId,
-    ownerId: 'owner-1',
-    title: '审批流程',
+    ownerId,
+    title,
     summary: '审批流程摘要',
     tags: ['审批'],
     origin: { kind: 'PUBLISHED', versionId, version: 1 },
@@ -903,26 +1013,42 @@ function seedPublishedFlow(database: DatabaseSync, document: CanvasDocument) {
   return { guideId, snapshotId: snapshot.snapshotId, versionId };
 }
 
-function seedGuide(database: DatabaseSync, guideId: string, document: CanvasDocument): void {
+interface FlowSeedOptions {
+  guideId?: string;
+  workspaceId?: string;
+  ownerId?: string;
+  title?: string;
+}
+
+function seedGuide(
+  database: DatabaseSync,
+  guideId: string,
+  document: CanvasDocument,
+  options: Required<Omit<FlowSeedOptions, 'guideId'>>,
+): void {
   database.prepare(
     `INSERT INTO guides (
       id, owner_id, title, summary, tags_json, status, visibility, revision,
       draft_document, created_at, updated_at
-    ) VALUES (?, 'owner-1', '审批流程', '审批流程摘要', '["审批"]', 'DRAFT', 'INTERNAL', 0, ?, ?, ?)`,
-  ).run(guideId, JSON.stringify(document), CREATED_AT, CREATED_AT);
+    ) VALUES (?, ?, ?, '审批流程摘要', '["审批"]', 'DRAFT', 'INTERNAL', 0, ?, ?, ?)`,
+  ).run(guideId, options.ownerId, options.title, JSON.stringify(document), CREATED_AT, CREATED_AT);
   database.prepare(
     `INSERT INTO workspace_items (
       id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
-    ) VALUES (?, 'workspace-1', 'GUIDE', ?, '审批流程', '', 'owner-1', ?, ?)`,
-  ).run(`item-${guideId}`, guideId, CREATED_AT, CREATED_AT);
+    ) VALUES (?, ?, 'GUIDE', ?, ?, '', ?, ?, ?)`,
+  ).run(`item-${guideId}`, options.workspaceId, guideId, options.title, options.ownerId, CREATED_AT, CREATED_AT);
 }
 
 function threeNodeDocument(): CanvasDocument {
+  return flowDocument('审批复核');
+}
+
+function flowDocument(middleLabel: string): CanvasDocument {
   const document: CanvasDocument = {
     schemaVersion: 1,
     nodes: [
       { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
-      { id: 'middle', type: 'process', position: { x: 240, y: 0 }, zIndex: 1, data: { label: '审批复核', shape: 'process' } },
+      { id: 'middle', type: 'process', position: { x: 240, y: 0 }, zIndex: 1, data: { label: middleLabel, shape: 'process' } },
       { id: 'end', type: 'end', position: { x: 480, y: 0 }, zIndex: 2, data: { label: '结束', shape: 'end' } },
     ],
     edges: [
@@ -932,7 +1058,7 @@ function threeNodeDocument(): CanvasDocument {
     viewport: { x: 0, y: 0, zoom: 1 },
     steps: [
       { id: 'step-start', order: 0, title: '开始', nodeId: 'start' },
-      { id: 'step-middle', order: 1, title: '审批复核', nodeId: 'middle' },
+      { id: 'step-middle', order: 1, title: middleLabel, nodeId: 'middle' },
       { id: 'step-end', order: 2, title: '结束', nodeId: 'end' },
     ],
     entryNodeId: 'start',

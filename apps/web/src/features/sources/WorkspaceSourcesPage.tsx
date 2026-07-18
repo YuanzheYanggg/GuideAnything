@@ -11,14 +11,17 @@ import {
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 
 import type { KnowledgeHealth } from '../knowledge/types';
+import type { WorkspaceApi, WorkspaceFolder } from '../workspace/types';
 import type { FlowSnapshotSummary, SourcesApi, WorkspaceSource, WorkspaceSourcesResult } from './types';
 
-export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
+export function WorkspaceSourcesPage({ api, workspaceApi }: { api: SourcesApi; workspaceApi: WorkspaceApi }) {
   const { workspaceId } = useParams();
   const [searchParams] = useSearchParams();
   const [sources, setSources] = useState<WorkspaceSourcesResult | null>(null);
   const [snapshots, setSnapshots] = useState<FlowSnapshotSummary[]>([]);
   const [vault, setVault] = useState<KnowledgeHealth | null>(null);
+  const [folders, setFolders] = useState<WorkspaceFolder[]>([]);
+  const [folderId, setFolderId] = useState('');
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
@@ -37,19 +40,20 @@ export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
     let active = true;
     setLoading(true);
     setError('');
-    Promise.all([api.list(workspaceId), api.listFlowSnapshots(workspaceId), api.santexwellStatus()])
-      .then(([nextSources, nextSnapshots, nextVault]) => {
+    Promise.all([api.list(workspaceId), api.listFlowSnapshots(workspaceId), api.santexwellStatus(), workspaceApi.listFolders(workspaceId)])
+      .then(([nextSources, nextSnapshots, nextVault, nextFolders]) => {
         if (!active) return;
         setSources(nextSources);
         setSnapshots(nextSnapshots);
         setVault(nextVault);
+        setFolders(nextFolders);
       })
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : '资料源载入失败');
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [api, workspaceId]);
+  }, [api, workspaceApi, workspaceId]);
 
   useEffect(() => {
     if (loading || !targetSource) return;
@@ -64,7 +68,9 @@ export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
     setUploading(true);
     setError('');
     try {
-      const created = await api.upload(workspaceId, file);
+      const created = folderId
+        ? await api.upload(workspaceId, file, folderId)
+        : await api.upload(workspaceId, file);
       setSources((current) => current ? { ...current, items: [created, ...current.items.filter((item) => item.sourceId !== created.sourceId)] } : current);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : '资料上传失败');
@@ -80,13 +86,13 @@ export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
   return <section className="workspace-sources page-stack">
     <header className="page-heading">
       <div><span className="page-kicker">WORKSPACE SOURCES</span><h1>资料源</h1><p>Agent 会先读取这里的流程快照和工作区文档，再按本轮开关决定是否补充 Santexwell。</p></div>
-      {sources.capabilities.canUploadPersistentSource ? <label className={`workspace-create-button source-upload-button${uploading ? ' is-busy' : ''}`}>
+      {sources.capabilities.canUploadPersistentSource ? <div className="source-upload-controls"><select aria-label="上传到文件夹" value={folderId} disabled={uploading} onChange={(event) => setFolderId(event.target.value)}><option value="">未归类</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folderPath(folder, new Map(folders.map((item) => [item.id, item])))}</option>)}</select><label className={`workspace-create-button source-upload-button${uploading ? ' is-busy' : ''}`}>
         <UploadSimple size={18} /><span>{uploading ? '正在处理…' : '上传资料'}</span>
         <input ref={inputRef} aria-label="上传工作区资料" type="file" accept=".md,.txt,.pdf,.docx" disabled={uploading} onChange={(event) => {
           const file = event.target.files?.[0];
           if (file) void upload(file);
         }} />
-      </label> : <span className="source-readonly-note">当前权限仅支持查看</span>}
+      </label></div> : <span className="source-readonly-note">当前权限仅支持查看</span>}
     </header>
 
     {error ? <p className="workspace-error" role="alert">{error}</p> : null}
@@ -126,6 +132,7 @@ export function WorkspaceSourcesPage({ api }: { api: SourcesApi }) {
             targeted={targeted}
             targetFragment={targeted ? targetFragment : undefined}
             targetRef={targeted ? targetRowRef : undefined}
+            folderName={source.folderId ? folderPath(folders.find((folder) => folder.id === source.folderId), new Map(folders.map((item) => [item.id, item]))) : undefined}
           />;
         })}
       </div>}
@@ -148,11 +155,13 @@ function SourceDocumentRow({
   targeted = false,
   targetFragment,
   targetRef,
+  folderName,
 }: {
   source: WorkspaceSource;
   targeted?: boolean;
   targetFragment?: string | undefined;
   targetRef?: React.RefObject<HTMLElement | null> | undefined;
+  folderName?: string | undefined;
 }) {
   const ready = source.status === 'READY' && source.parseStatus === 'READY';
   return <article
@@ -163,7 +172,7 @@ function SourceDocumentRow({
     data-target-fragment={targetFragment}
   >
     <span className="source-document-icon"><File size={20} /></span>
-    <div><strong>{source.title}</strong><span>{formatBytes(source.size)} · 更新于 {formatDateTime(source.updatedAt)}</span>{source.failureMessage ? <small>{source.failureMessage}</small> : null}</div>
+    <div><strong>{source.title}</strong><span>{folderName ? `${folderName} · ` : ''}{formatBytes(source.size)} · 更新于 {formatDateTime(source.updatedAt)}</span>{source.failureMessage ? <small>{source.failureMessage}</small> : null}</div>
     <span className={`source-state is-${source.status.toLowerCase()}`}>{ready ? <><CheckCircle size={14} />可检索</> : <><WarningCircle size={14} />{source.status === 'FAILED' ? '处理失败' : '处理中'}</>}</span>
   </article>;
 }
@@ -182,4 +191,19 @@ function formatDateTime(value: string) {
 function readLocatorParam(value: string | null): string | undefined {
   if (!value || value.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(value)) return undefined;
   return value;
+}
+
+function folderPath(folder: WorkspaceFolder | undefined, foldersById: Map<string, WorkspaceFolder>): string {
+  if (!folder) return '未归类';
+  const names = [folder.name];
+  const visited = new Set([folder.id]);
+  let parentId = folder.parentId;
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = foldersById.get(parentId);
+    if (!parent) break;
+    names.unshift(parent.name);
+    parentId = parent.parentId;
+  }
+  return names.join(' / ');
 }

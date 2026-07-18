@@ -4,6 +4,7 @@ import {
   KnowledgeDocumentV1Schema,
   KnowledgeHealthV1Schema,
   KnowledgeSearchHitV1Schema,
+  WorkspaceSourceV1Schema,
 } from './knowledge';
 
 describe('path-free knowledge DTOs', () => {
@@ -66,6 +67,19 @@ describe('path-free knowledge DTOs', () => {
     expect(KnowledgeHealthV1Schema.safeParse({
       status: 'DEGRADED', revision: null, indexedDocuments: 0, indexedFragments: 0,
       harnessRevision: null, harnessFileCount: 0, reasonCodes: ['/Users/private'], indexedAt: null,
+    }).success).toBe(false);
+  });
+
+  it('keeps a workspace document in an opaque logical folder', () => {
+    expect(WorkspaceSourceV1Schema.parse({
+      sourceId: 'source-1', documentId: 'document-1', title: '报价模板', originalName: '报价模板.md',
+      mimeType: 'text/markdown', size: 18, status: 'READY', parseStatus: 'READY', revision: 'r1',
+      folderId: 'folder-quotation', createdAt: '2026-07-18T00:00:00.000Z', updatedAt: '2026-07-18T00:00:00.000Z',
+    }).folderId).toBe('folder-quotation');
+    expect(WorkspaceSourceV1Schema.safeParse({
+      sourceId: 'source-1', documentId: 'document-1', title: '报价模板', originalName: '报价模板.md',
+      mimeType: 'text/markdown', size: 18, status: 'READY', parseStatus: 'READY', revision: 'r1',
+      folderId: '/private/folder', createdAt: '2026-07-18T00:00:00.000Z', updatedAt: '2026-07-18T00:00:00.000Z',
     }).success).toBe(false);
   });
 });

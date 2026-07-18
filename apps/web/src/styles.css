@@ -933,6 +933,25 @@ a.favorite-resource-item:hover { border-color: rgb(73 137 230 / .46); background
 .source-document-row strong { overflow: hidden; font-size: .84rem; text-overflow: ellipsis; white-space: nowrap; }
 .source-document-row span, .source-document-row small { color: var(--workspace-muted); font-size: .7rem; }
 .source-document-row small { color: #ed8694; }
+.source-upload-controls { display: flex; align-items: center; gap: 9px; }
+.source-upload-controls select { min-width: 132px; border: 1px solid var(--workspace-line-strong); border-radius: 8px; padding: 8px 10px; color: var(--workspace-text); background: rgb(7 12 20 / .76); font-size: .76rem; }
+.workspace-organization { max-width: 1_260px; }
+.organization-section { border-top: 1px solid var(--workspace-line); padding-top: 23px; }
+.organization-hint { max-width: 760px; margin: -2px 0 15px; color: var(--workspace-muted); font-size: .8rem; line-height: 1.55; }
+.organization-create-row { display: flex; align-items: center; gap: 9px; margin-bottom: 15px; }
+.organization-create-row input, .organization-create-row select, .organization-item select, .folder-row-actions input { min-width: 0; border: 1px solid var(--workspace-line-strong); border-radius: 8px; padding: 8px 10px; color: var(--workspace-text); background: rgb(7 12 20 / .76); font-size: .78rem; }
+.organization-create-row input { flex: 1 1 220px; }
+.organization-create-row select { flex: 1 1 190px; }
+.folder-list, .mount-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.folder-list li, .mount-list li, .organization-item { display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid var(--workspace-line); border-radius: 10px; padding: 10px 12px; background: rgb(255 255 255 / .022); }
+.folder-list li > div:first-child, .mount-list li > div, .organization-item > div { display: grid; gap: 3px; min-width: 0; }
+.folder-list strong, .mount-list strong, .organization-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .83rem; }
+.folder-list span, .mount-list span, .organization-item span, .organization-folder-label { color: var(--workspace-muted); font-size: .71rem; }
+.folder-row-actions { display: flex; align-items: center; gap: 7px; }
+.folder-row-actions input { width: min(240px, 32vw); }
+.organization-item-list { display: grid; gap: 7px; }
+.organization-item select { width: min(260px, 38vw); }
+.reference-update { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-left: 2px solid #4d92f9; margin: 8px 0; padding: 5px 0 5px 9px; color: var(--workspace-muted); font-size: .74rem; }
 
 @media (max-width: 1100px) {
   .knowledge-hero { grid-template-columns: 1fr; }
@@ -961,6 +980,7 @@ a.favorite-resource-item:hover { border-color: rgb(73 137 230 / .46); background
   .source-health-card > .source-state { grid-column: 2; }
   .source-document-row { grid-template-columns: auto minmax(0, 1fr); }
   .source-document-row > .source-state { grid-column: 2; }
+  .organization-create-row { flex-wrap: wrap; }
 }
 
 :root[data-theme="light"] .knowledge-hero { background: radial-gradient(circle at 85% 5%, rgb(49 116 245 / .15), transparent 20rem), linear-gradient(135deg, rgb(255 255 255 / .62), rgb(224 233 246 / .38)); }

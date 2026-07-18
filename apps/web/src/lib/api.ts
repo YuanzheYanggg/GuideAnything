@@ -7,14 +7,16 @@ import type { EditorApi, GuideDraftDetail, SearchPage } from '../features/editor
 import type { EditorialApi } from '../features/editorial/types';
 import type { KnowledgeApi, KnowledgeDocument, KnowledgeHealth, KnowledgeOverview, KnowledgeSearchHit } from '../features/knowledge/types';
 import type { SourcesApi, WorkspaceSource, WorkspaceSourcesResult, FlowSnapshotSummary } from '../features/sources/types';
-import type { GuideVersionSnapshot } from '@guideanything/contracts';
+import type { GuideReferenceUpdate, GuideVersionSnapshot } from '@guideanything/contracts';
 import type {
   CreateWorkspaceInput,
   PersonalApi,
   WorkspaceApi,
   WorkspaceActivity,
+  WorkspaceFolder,
   WorkspaceItemKind,
   WorkspaceItemSummary,
+  WorkspaceResourceMount,
   WorkspaceSummary,
 } from '../features/workspace/types';
 
@@ -70,7 +72,8 @@ export class ApiClient {
         body: JSON.stringify({ revision, ...changes }),
       })).guide,
       publishGuide: async (guideId) => (await this.request<{ version: GuideVersionSnapshot }>(`/guides/${guideId}/publish`, { method: 'POST' })).version,
-      search: async (query, offset = 0) => this.request<SearchPage>(`/search?q=${encodeURIComponent(query)}&limit=50&offset=${offset}`),
+      search: async (query, offset = 0, consumerWorkspaceId) => this.request<SearchPage>(`/search?q=${encodeURIComponent(query)}&limit=50&offset=${offset}${consumerWorkspaceId ? `&consumerWorkspaceId=${encodeURIComponent(consumerWorkspaceId)}` : ''}`),
+      referenceUpdates: async (guideId) => (await this.request<{ items: GuideReferenceUpdate[] }>(`/guides/${guideId}/reference-updates`)).items,
       getVersion: async (versionId) => (await this.request<{ version: GuideVersionSnapshot }>(`/versions/${versionId}`)).version,
       uploadMedia: async (file) => {
         const form = new FormData();
@@ -97,6 +100,39 @@ export class ApiClient {
       activity: async (id) => (await this.request<{ items: WorkspaceActivity[] }>(
         `/workspaces/${id}/activity`,
       )).items,
+      listFolders: async (id) => (await this.request<{ items: WorkspaceFolder[] }>(
+        `/workspaces/${encodeURIComponent(id)}/folders`,
+      )).items,
+      createFolder: async (id, input) => (await this.request<{ folder: WorkspaceFolder }>(
+        `/workspaces/${encodeURIComponent(id)}/folders`, { method: 'POST', body: JSON.stringify(input) },
+      )).folder,
+      renameFolder: async (id, folderId, name) => (await this.request<{ folder: WorkspaceFolder }>(
+        `/workspaces/${encodeURIComponent(id)}/folders/${encodeURIComponent(folderId)}`,
+        { method: 'PATCH', body: JSON.stringify({ name }) },
+      )).folder,
+      deleteFolder: async (id, folderId) => {
+        await this.request<void>(
+          `/workspaces/${encodeURIComponent(id)}/folders/${encodeURIComponent(folderId)}`,
+          { method: 'DELETE' },
+        );
+      },
+      moveItemToFolder: async (id, itemId, folderId) => (await this.request<{ item: WorkspaceItemSummary }>(
+        `/workspaces/${encodeURIComponent(id)}/items/${encodeURIComponent(itemId)}/folder`,
+        { method: 'PATCH', body: JSON.stringify({ folderId }) },
+      )).item,
+      listResourceMounts: async (id) => (await this.request<{ items: WorkspaceResourceMount[] }>(
+        `/workspaces/${encodeURIComponent(id)}/resource-mounts`,
+      )).items,
+      createResourceMount: async (id, providerWorkspaceId) => (await this.request<{ mount: WorkspaceResourceMount }>(
+        `/workspaces/${encodeURIComponent(id)}/resource-mounts`,
+        { method: 'POST', body: JSON.stringify({ providerWorkspaceId }) },
+      )).mount,
+      deleteResourceMount: async (id, mountId) => {
+        await this.request<void>(
+          `/workspaces/${encodeURIComponent(id)}/resource-mounts/${encodeURIComponent(mountId)}`,
+          { method: 'DELETE' },
+        );
+      },
     };
   }
 
@@ -151,8 +187,9 @@ export class ApiClient {
       santexwellStatus: async () => (await this.request<{ status: KnowledgeHealth }>(
         '/knowledge/santexwell/status',
       )).status,
-      upload: async (workspaceId, file) => {
+      upload: async (workspaceId, file, folderId) => {
         const form = new FormData();
+        if (folderId) form.append('folderId', folderId);
         form.append('file', file);
         return (await this.request<{ source: WorkspaceSource }>(
           `/workspaces/${encodeURIComponent(workspaceId)}/sources`,

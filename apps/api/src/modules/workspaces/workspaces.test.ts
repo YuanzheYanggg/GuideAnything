@@ -137,6 +137,150 @@ describe('workspace API', () => {
     await context.close();
   });
 
+  it('organizes business-team content into folders and mounts shared resource centers', async () => {
+    const context = await createTestContext();
+    const create = async (name: string, slug: string, kind: string) => context.app.inject({
+      method: 'POST',
+      url: '/api/workspaces',
+      headers: authorization(context.tokens.author),
+      payload: { name, slug, description: '', iconKey: 'SquaresFour', colorKey: 'general', kind },
+    });
+    const teamResponse = await create('北美业务组', 'north-america-sales', 'BUSINESS_TEAM');
+    const financeResponse = await create('财务资源中心', 'finance-center', 'FINANCE');
+    const productionResponse = await create('生产资源中心', 'production-center', 'PRODUCTION');
+    expect(teamResponse.statusCode).toBe(201);
+    expect(financeResponse.statusCode).toBe(201);
+    expect(teamResponse.json().workspace).toEqual(expect.objectContaining({ kind: 'BUSINESS_TEAM' }));
+    expect(financeResponse.json().workspace).toEqual(expect.objectContaining({ kind: 'FINANCE' }));
+    const teamId = teamResponse.json().workspace.id as string;
+    const financeId = financeResponse.json().workspace.id as string;
+    const productionId = productionResponse.json().workspace.id as string;
+
+    const rootFolder = await context.app.inject({
+      method: 'POST', url: `/api/workspaces/${teamId}/folders`, headers: authorization(context.tokens.author),
+      payload: { name: '打样工序' },
+    });
+    expect(rootFolder.statusCode).toBe(201);
+    const childFolder = await context.app.inject({
+      method: 'POST', url: `/api/workspaces/${teamId}/folders`, headers: authorization(context.tokens.author),
+      payload: { name: '新客户', parentId: rootFolder.json().folder.id },
+    });
+    expect(childFolder.statusCode).toBe(201);
+
+    const guide = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { workspaceId: teamId, title: '客户打样流程' },
+    });
+    const sourceItemId = 'source-item-folder-test';
+    const now = new Date().toISOString();
+    context.database.prepare(
+      `INSERT INTO workspace_items (
+        id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+      ) VALUES (?, ?, 'SOURCE', 'source-folder-test', '客户资料', '', ?, ?, ?)`,
+    ).run(sourceItemId, teamId, context.userIds.author, now, now);
+    const moveGuide = await context.app.inject({
+      method: 'PATCH', url: `/api/workspaces/${teamId}/items/${guide.json().guide.workspaceItemId}/folder`,
+      headers: authorization(context.tokens.author), payload: { folderId: childFolder.json().folder.id },
+    });
+    const moveSource = await context.app.inject({
+      method: 'PATCH', url: `/api/workspaces/${teamId}/items/${sourceItemId}/folder`,
+      headers: authorization(context.tokens.author), payload: { folderId: rootFolder.json().folder.id },
+    });
+    expect(moveGuide.statusCode).toBe(200);
+    expect(moveSource.statusCode).toBe(200);
+    const items = await context.app.inject({
+      method: 'GET', url: `/api/workspaces/${teamId}/items`, headers: authorization(context.tokens.author),
+    });
+    expect(items.json().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityId: guide.json().guide.id, folderId: childFolder.json().folder.id }),
+      expect.objectContaining({ id: sourceItemId, folderId: rootFolder.json().folder.id }),
+    ]));
+    const cannotDeleteRoot = await context.app.inject({
+      method: 'DELETE', url: `/api/workspaces/${teamId}/folders/${rootFolder.json().folder.id}`,
+      headers: authorization(context.tokens.author),
+    });
+    expect(cannotDeleteRoot.statusCode).toBe(400);
+
+    const mounted = await context.app.inject({
+      method: 'POST', url: `/api/workspaces/${teamId}/resource-mounts`, headers: authorization(context.tokens.author),
+      payload: { providerWorkspaceId: financeId },
+    });
+    expect(mounted.statusCode).toBe(201);
+    expect(mounted.json().mount).toEqual(expect.objectContaining({
+      consumerWorkspaceId: teamId, providerWorkspaceId: financeId, providerKind: 'FINANCE',
+    }));
+    const listedMounts = await context.app.inject({
+      method: 'GET', url: `/api/workspaces/${teamId}/resource-mounts`, headers: authorization(context.tokens.author),
+    });
+    expect(listedMounts.json().items).toEqual([expect.objectContaining({ providerWorkspaceId: financeId })]);
+    const duplicate = await context.app.inject({
+      method: 'POST', url: `/api/workspaces/${teamId}/resource-mounts`, headers: authorization(context.tokens.author),
+      payload: { providerWorkspaceId: financeId },
+    });
+    expect(duplicate.statusCode).toBe(400);
+    const wrongConsumer = await context.app.inject({
+      method: 'POST', url: `/api/workspaces/${productionId}/resource-mounts`, headers: authorization(context.tokens.author),
+      payload: { providerWorkspaceId: financeId },
+    });
+    expect(wrongConsumer.statusCode).toBe(400);
+
+    const deleted = await context.app.inject({
+      method: 'DELETE', url: `/api/workspaces/${teamId}/resource-mounts/${mounted.json().mount.id}`,
+      headers: authorization(context.tokens.author),
+    });
+    expect(deleted.statusCode).toBe(204);
+    await context.close();
+  });
+
+  it('lets a business-team owner mount a resource center they can edit without owning it', async () => {
+    const context = await createTestContext();
+    const team = seedTestWorkspace(context.database, context.userIds.author, {
+      id: 'workspace-team-shared-center', slug: 'team-shared-center', name: '欧洲业务组',
+    });
+    const finance = seedTestWorkspace(context.database, context.userIds.otherAuthor, {
+      id: 'workspace-finance-shared-center', slug: 'finance-shared-center', name: '公司财务中心',
+    });
+    context.database.prepare(`UPDATE workspaces SET kind = 'FINANCE' WHERE id = ?`).run(finance.id);
+    addTestWorkspaceMember(context.database, finance.id, context.userIds.author, 'EDIT');
+
+    const mounted = await context.app.inject({
+      method: 'POST',
+      url: `/api/workspaces/${team.id}/resource-mounts`,
+      headers: authorization(context.tokens.author),
+      payload: { providerWorkspaceId: finance.id },
+    });
+
+    expect(mounted.statusCode).toBe(201);
+    expect(mounted.json().mount).toEqual(expect.objectContaining({
+      consumerWorkspaceId: team.id,
+      providerWorkspaceId: finance.id,
+    }));
+    await context.close();
+  });
+
+  it('lets an editor organize folders but not manage resource mounts', async () => {
+    const context = await createTestContext();
+    const team = seedTestWorkspace(context.database, context.userIds.author, {
+      id: 'workspace-team-owner-guard', slug: 'team-owner-guard', name: '业务团队',
+    });
+    const finance = seedTestWorkspace(context.database, context.userIds.author, {
+      id: 'workspace-finance-owner-guard', slug: 'finance-owner-guard', name: '财务中心',
+    });
+    context.database.prepare(`UPDATE workspaces SET kind = 'FINANCE' WHERE id = ?`).run(finance.id);
+    addTestWorkspaceMember(context.database, team.id, context.userIds.editor, 'EDIT');
+    const folder = await context.app.inject({
+      method: 'POST', url: `/api/workspaces/${team.id}/folders`, headers: authorization(context.tokens.editor),
+      payload: { name: '不应创建' },
+    });
+    const mount = await context.app.inject({
+      method: 'POST', url: `/api/workspaces/${team.id}/resource-mounts`, headers: authorization(context.tokens.editor),
+      payload: { providerWorkspaceId: finance.id },
+    });
+    expect(folder.statusCode).toBe(201);
+    expect(mount.statusCode).toBe(403);
+    await context.close();
+  });
+
   it('enforces owner-only settings and member writes while members can read', async () => {
     const context = await createTestContext();
     const workspace = seedTestWorkspace(context.database, context.userIds.author, {

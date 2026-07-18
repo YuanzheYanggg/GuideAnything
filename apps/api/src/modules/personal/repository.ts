@@ -12,6 +12,7 @@ interface ItemSummaryRow {
   id: string;
   workspace_id: string;
   workspace_name: string;
+  folder_id: string | null;
   kind: WorkspaceItemKind;
   entity_id: string;
   title: string;
@@ -42,7 +43,7 @@ export interface WorkspaceItemRecord {
 }
 
 const ITEM_SUMMARY_SELECT = `
-  SELECT item.id, item.workspace_id, workspace.name AS workspace_name, item.kind, item.entity_id,
+  SELECT item.id, item.workspace_id, workspace.name AS workspace_name, item.folder_id, item.kind, item.entity_id,
          item.title, item.summary, item.updated_at, item.deleted_at,
          deleted_by.display_name AS deleted_by_name, guide_owner.display_name AS author_name,
          guide.published_version_id, recent.last_viewed_at, recent.view_count,
@@ -341,6 +342,7 @@ function mapItemSummary(row: ItemSummaryRow): WorkspaceItemSummary {
     id: row.id,
     workspaceId: row.workspace_id,
     workspaceName: row.workspace_name,
+    folderId: row.folder_id,
     kind: row.kind,
     entityId: row.entity_id,
     title: row.title,

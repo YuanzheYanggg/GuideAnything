@@ -22,6 +22,7 @@ import {
   searchKnowledgeInternal,
   type KnowledgeSearchScope,
 } from '../knowledge/repository';
+import { listMountedResourceWorkspaceIds } from '../workspaces/repository';
 import { sanitizeVaultControlledText } from '../knowledge/vault-text';
 import type { AgentKnowledgeAdapters } from './assembly';
 import type {
@@ -265,6 +266,7 @@ function searchScope(request: AgentRetrievalRequest, limit: number): KnowledgeSe
     return {
       sourceKinds,
       workspaceId: request.context.workspaceId!,
+      sharedWorkspaceIds: capturedSharedWorkspaceIds(request.context),
       userId: request.context.ownerId,
       limit,
     };
@@ -347,7 +349,12 @@ function canonicalEvidence(
   if (record.parse_status !== 'READY') throw new Error('知识文档当前不可用');
   const source = recordSourceKind(record);
   if (!sourceEnabled(context.sources, source)) throw new Error('证据来源未在本轮启用');
-  const title = safePublicText(record.document_title, 500);
+  const rawTitle = safePublicText(record.document_title, 500);
+  const title = source !== 'SANTEXWELL'
+    && record.source_workspace_name
+    && isSharedContextWorkspace(context, record.source_workspace_id ?? '')
+    ? `${safePublicText(record.source_workspace_name, 100)} · ${rawTitle}`
+    : rawTitle;
   const excerpt = safePublicText(record.content, PUBLIC_EXCERPT_LENGTH).replace(/\s+/gu, ' ').trim();
   if (!title || !excerpt) throw new Error('知识证据没有可安全公开的文本');
 
@@ -377,7 +384,7 @@ function canonicalEvidence(
     if (
       record.source_scope !== 'WORKSPACE'
       || record.source_kind !== 'WORKSPACE_DOCUMENT'
-      || record.source_workspace_id !== context.workspaceId
+      || !contextAllowsWorkspace(context, record.source_workspace_id)
       || !record.source_item_id
       || record.source_revision !== record.document_revision
     ) throw new Error('工作区资料的当前归属或版本无效');
@@ -440,7 +447,7 @@ function authoritativeFlowLocator(
   if (
     record.source_scope !== 'WORKSPACE'
     || record.source_kind !== 'WORKSPACE_FLOW'
-    || record.source_workspace_id !== context.workspaceId
+    || !contextAllowsWorkspace(context, record.source_workspace_id)
     || !record.flow_snapshot_id
   ) throw new Error('流程证据不属于当前工作区');
   if (untrustedLocator.kind !== 'WORKSPACE_FLOW') throw new Error('流程 locator 类型冲突');
@@ -467,7 +474,8 @@ function authoritativeFlowLocator(
   if (
     !row
     || row.guide_id !== guideId
-    || row.workspace_id !== context.workspaceId
+    || !contextAllowsWorkspace(context, row.workspace_id)
+    || (isSharedContextWorkspace(context, row.workspace_id) && row.origin_type !== 'PUBLISHED')
     || row.item_deleted_at !== null
     || row.guide_status === 'ARCHIVED'
   ) throw new Error('流程指南已经失效或不再属于当前工作区');
@@ -574,6 +582,7 @@ function requireFreshContext(
       || context.sources.sessionAttachments
       || !context.sources.santexwell
       || context.attachmentIds.length > 0
+      || capturedSharedWorkspaceIds(context).length > 0
     ) throw new Error('全局 Santexwell 上下文越权');
   } else {
     if (!context.workspaceId) throw new Error('工作区上下文缺少 workspaceId');
@@ -583,6 +592,10 @@ function requireFreshContext(
        WHERE workspace.id = ? AND workspace.status = 'ACTIVE' AND member.user_id = ?`,
     ).get(context.workspaceId, context.ownerId);
     if (!membership) throw new Error('用户已经失去工作区访问权限');
+    const currentSharedWorkspaceIds = listMountedResourceWorkspaceIds(database, context.workspaceId);
+    if (JSON.stringify(currentSharedWorkspaceIds) !== JSON.stringify(capturedSharedWorkspaceIds(context))) {
+      throw new Error('共享资源挂载已经变化，必须重新发起本次 Agent 运行');
+    }
   }
   if (new Set(context.attachmentIds).size !== context.attachmentIds.length) {
     throw new Error('运行附件 ID 不能重复');
@@ -604,6 +617,34 @@ function requireFreshContext(
   }
 }
 
+function capturedSharedWorkspaceIds(context: AgentRunExecutionContext): string[] {
+  const ids = context.sharedWorkspaceIds ?? [];
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string' || !id)) {
+    throw new Error('共享资源工作区上下文无效');
+  }
+  if (new Set(ids).size !== ids.length) throw new Error('共享资源工作区上下文包含重复项');
+  if (context.workspaceId && ids.includes(context.workspaceId)) {
+    throw new Error('共享资源工作区不能包含当前业务团队');
+  }
+  return ids;
+}
+
+function contextAllowsWorkspace(
+  context: AgentRunExecutionContext,
+  candidateWorkspaceId: string | null,
+): boolean {
+  return candidateWorkspaceId !== null
+    && (candidateWorkspaceId === context.workspaceId || capturedSharedWorkspaceIds(context).includes(candidateWorkspaceId));
+}
+
+function isSharedContextWorkspace(
+  context: AgentRunExecutionContext,
+  candidateWorkspaceId: string,
+): boolean {
+  return candidateWorkspaceId !== context.workspaceId
+    && capturedSharedWorkspaceIds(context).includes(candidateWorkspaceId);
+}
+
 function loadEvidenceRecord(database: DatabaseSync, fragmentId: string): EvidenceRecord | null {
   const row = database.prepare(
     `SELECT fragment.id AS fragment_id, fragment.heading, fragment.content,
@@ -614,6 +655,7 @@ function loadEvidenceRecord(database: DatabaseSync, fragmentId: string): Evidenc
             document.revision AS document_revision, document.parse_status,
             source.scope AS source_scope, source.kind AS source_kind,
             source.workspace_id AS source_workspace_id,
+            source_workspace.name AS source_workspace_name,
             source.conversation_id AS source_conversation_id,
             source.created_by AS source_created_by, source.status AS source_status,
             source.revision AS source_revision,
@@ -626,6 +668,7 @@ function loadEvidenceRecord(database: DatabaseSync, fragmentId: string): Evidenc
      FROM knowledge_fragments AS fragment
      JOIN knowledge_documents AS document ON document.id = fragment.document_id
      JOIN knowledge_sources AS source ON source.id = document.source_id
+     LEFT JOIN workspaces AS source_workspace ON source_workspace.id = source.workspace_id
      LEFT JOIN workspace_items AS item
        ON item.kind = 'SOURCE' AND item.entity_id = source.id AND item.deleted_at IS NULL
      LEFT JOIN conversation_attachments AS attachment ON attachment.source_id = source.id
@@ -868,6 +911,7 @@ interface EvidenceDatabaseRow {
   source_scope: 'GLOBAL' | 'WORKSPACE' | 'SESSION';
   source_kind: 'SANTEXWELL_VAULT' | 'WORKSPACE_DOCUMENT' | 'WORKSPACE_FLOW' | 'SESSION_ATTACHMENT';
   source_workspace_id: string | null;
+  source_workspace_name: string | null;
   source_conversation_id: string | null;
   source_created_by: string | null;
   source_status: string;

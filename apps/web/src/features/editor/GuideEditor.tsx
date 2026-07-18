@@ -1,6 +1,6 @@
-import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgePresentation, FlowLane, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgePresentation, FlowLane, FlowStage, GuideReferenceUpdate, GuideVersionSnapshot } from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
-import { duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, moveRouteSegment, reconcileSubguideEdges, routeCanvasEdges, setSubguideExpanded, snapNodeForStraightRoute, type HierarchyLayoutResult, type NodeAlignmentSnap, type OrthogonalRoute, type Point } from '@guideanything/canvas-core';
+import { duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, moveRouteSegment, reconcileSubguideEdges, replaceSubguideReference, routeCanvasEdges, setSubguideExpanded, snapNodeForStraightRoute, type HierarchyLayoutResult, type NodeAlignmentSnap, type OrthogonalRoute, type Point } from '@guideanything/canvas-core';
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -76,7 +76,8 @@ export interface EditorApi {
   getGuide: (guideId: string) => Promise<GuideDraftDetail>;
   saveGuide: (guideId: string, revision: number, changes: { title: string; summary: string; tags: string[]; document: CanvasDocument }) => Promise<GuideDraftDetail>;
   publishGuide: (guideId: string) => Promise<GuideVersionSnapshot>;
-  search: (query: string, offset?: number) => Promise<SearchPage>;
+  search: (query: string, offset?: number, consumerWorkspaceId?: string) => Promise<SearchPage>;
+  referenceUpdates: (guideId: string) => Promise<GuideReferenceUpdate[]>;
   getVersion: (versionId: string) => Promise<GuideVersionSnapshot>;
   uploadMedia: (file: File) => Promise<{ id: string; url: string; kind: 'IMAGE' | 'VIDEO' }>;
 }
@@ -131,6 +132,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const [referenceResults, setReferenceResults] = useState<SearchItem[]>([]);
   const [referenceSearching, setReferenceSearching] = useState(false);
   const [referenceError, setReferenceError] = useState('');
+  const [referenceUpdates, setReferenceUpdates] = useState<GuideReferenceUpdate[]>([]);
   const [layoutPreview, setLayoutPreview] = useState<HierarchyLayoutResult | null>(null);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
   const [creationMenu, setCreationMenu] = useState<{ sourceId: string; sourceHandle?: string; position: { x: number; y: number } } | null>(null);
@@ -190,6 +192,11 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       historyRef.current = new HistoryStack(normalized, 80);
       if (personalApi) void personalApi.recordRecent(loaded.workspaceItemId, { mode: 'edit', guideId: loaded.id });
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '指南载入失败'));
+    api.referenceUpdates(guideId).then((items) => {
+      if (active) setReferenceUpdates(items);
+    }).catch(() => {
+      if (active) setReferenceUpdates([]);
+    });
     return () => { active = false; };
   }, [api, guideId, personalApi]);
 
@@ -264,7 +271,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
         const items: SearchItem[] = [];
         try {
           while (active) {
-            const page = await api.search(query, offset);
+            const page = await api.search(query, offset, guide?.workspaceId);
             if (!active) return;
             items.push(...page.items);
             setReferenceResults([...items]);
@@ -280,7 +287,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       void loadAll();
     }, query ? 180 : 0);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [api, referenceOpen, referenceQuery]);
+  }, [api, guide?.workspaceId, referenceOpen, referenceQuery]);
 
   const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
     if (layoutPreview) return;
@@ -771,6 +778,21 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     else commit(expandSubguide(document, selected, await api.getVersion(selected.data.guideVersionId)));
   };
 
+  const upgradeReference = async () => {
+    if (!document || layoutPreview) return;
+    const selected = document.nodes.find((node) => node.id === selectedIds[0]);
+    if (!selected || selected.type !== 'subguide') return;
+    const update = referenceUpdates.find((item) => item.referenceNodeId === selected.id);
+    if (!update) return;
+    try {
+      const latest = await api.getVersion(update.latestVersionId);
+      commit(replaceSubguideReference(document, selected.id, latest));
+      setReferenceUpdates((items) => items.filter((item) => item.referenceNodeId !== selected.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法采用子指南的新版本');
+    }
+  };
+
   const updateSelectedNode = (next: CanvasNode) => {
     if (!document || layoutPreview) return;
     commit({ ...document, nodes: document.nodes.map((node) => node.id === next.id ? next : node) });
@@ -834,6 +856,9 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
 
   if (!guide || !document) return <main className="center-state">{error ? <p className="error-message" role="alert">{error}</p> : <><span className="spinner" /><p>正在载入画布…</p></>}</main>;
   const selectedNode = document.nodes.find((node) => node.id === selectedIds[0]);
+  const selectedReferenceUpdate = selectedNode?.type === 'subguide'
+    ? referenceUpdates.find((item) => item.referenceNodeId === selectedNode.id)
+    : undefined;
   const primaryNodes = document.nodes.filter(isPrimaryFlowNode);
   const annotationEditorNode = document.nodes.find((node): node is CanvasNode<'image'> => node.id === annotationEditorNodeId && node.type === 'image') ?? null;
   const stages = [...(document.stages ?? [])].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
@@ -960,7 +985,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       <aside className="inspector" aria-label="属性与教学步骤">
         <div><span className="eyebrow">GUIDE DETAILS</span><label>摘要<textarea value={summary} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setSummary(event.target.value); setSaveState('未保存'); }} /></label><label>标签<input value={tags.join('，')} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTags(event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean)); setSaveState('未保存'); }} /></label></div>
         <hr />
-        {selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} lanes={lanes} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} onAddStep={addStep} onEditAnnotations={() => setAnnotationEditorNodeId(selectedNode.type === 'image' ? selectedNode.id : null)} api={api} locked={Boolean(layoutPreview)} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
+        {selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} lanes={lanes} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} {...(selectedReferenceUpdate ? { referenceUpdate: selectedReferenceUpdate } : {})} onUpgradeReference={() => void upgradeReference()} onAddStep={addStep} onEditAnnotations={() => setAnnotationEditorNodeId(selectedNode.type === 'image' ? selectedNode.id : null)} api={api} locked={Boolean(layoutPreview)} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
         <hr />
         <div className="step-summary"><div><span className="eyebrow">LESSON PATH</span><strong>{document.steps.length} 个教学步骤</strong></div>{[...document.steps].sort((a, b) => a.order - b.order).map((step, index) => <div className="step-row" key={step.id}><span>{index + 1}</span><p>{step.title}</p></div>)}</div>
       </aside>
@@ -1053,7 +1078,7 @@ function isInlineEditableFlowNode(node: CanvasNode): node is CanvasNode<'start' 
   return ['start', 'end', 'process', 'decision', 'data'].includes(node.type);
 }
 
-function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleReference, onAddStep, onEditAnnotations, api, locked }: { node: CanvasNode; primaryNodes: CanvasNode[]; stages: FlowStage[]; lanes: FlowLane[]; onChange: (node: CanvasNode) => void; onToggleReference: () => void; onAddStep: () => void; onEditAnnotations: () => void; api: EditorApi; locked: boolean }) {
+function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleReference, referenceUpdate, onUpgradeReference, onAddStep, onEditAnnotations, api, locked }: { node: CanvasNode; primaryNodes: CanvasNode[]; stages: FlowStage[]; lanes: FlowLane[]; onChange: (node: CanvasNode) => void; onToggleReference: () => void; referenceUpdate?: GuideReferenceUpdate; onUpgradeReference: () => void; onAddStep: () => void; onEditAnnotations: () => void; api: EditorApi; locked: boolean }) {
   const updateData = (data: CanvasNode['data']) => onChange({ ...node, data } as CanvasNode);
   const flowData = ['start', 'end', 'process', 'decision', 'data'].includes(node.type) ? node.data as CanvasNode<'process'>['data'] : null;
   return <fieldset className="node-inspector" disabled={locked}><div className="inspector-node-heading"><span>{node.type.toUpperCase()}</span><code>{node.id.slice(0, 18)}</code></div>
@@ -1061,7 +1086,7 @@ function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleRe
     {node.type === 'markdown' ? <label>Markdown<textarea rows={12} value={node.data.markdown} onChange={(event) => updateData({ markdown: event.target.value })} /></label> : null}
     {node.type === 'image' ? <><label>图片地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>替代文字<input value={node.data.alt} onChange={(event) => updateData({ ...node.data, alt: event.target.value })} /></label><label>图片说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><button className="secondary-button" type="button" onClick={onEditAnnotations} aria-label="编辑图片标注">编辑图片标注（{node.data.annotations?.length ?? 0}）</button><label className="upload-label">上传图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
     {node.type === 'video' ? <><label>视频地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>视频说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><div className="keypoint-editor">{node.data.keypoints.map((point, index) => <div key={point.id}><input aria-label={`关键点 ${index + 1} 标题`} value={point.title} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, title: event.target.value } : item) })} /><input type="number" min="0" aria-label={`关键点 ${index + 1} 秒数`} value={point.timeSeconds} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, timeSeconds: Number(event.target.value) } : item) })} /></div>)}<button type="button" onClick={() => updateData({ ...node.data, keypoints: [...node.data.keypoints, { id: uniqueId('keypoint'), title: '新关键点', timeSeconds: 0 }] })}>添加视频关键点</button></div><label className="upload-label">上传视频<input type="file" accept="video/mp4,video/webm" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
-    {node.type === 'subguide' ? <><div className="pinned-version"><strong>{node.data.title}</strong><span>固定版本 v{node.data.version}</span></div><button className="secondary-button" type="button" onClick={onToggleReference} aria-label={node.data.expanded ? '折叠子指南' : '展开子指南'}>{node.data.expanded ? '折叠子指南' : '展开子指南'}</button></> : null}
+    {node.type === 'subguide' ? <><div className="pinned-version"><strong>{node.data.title}</strong><span>固定版本 v{node.data.version}</span></div>{referenceUpdate ? <div className="reference-update"><span>发现 v{referenceUpdate.latestVersion}（当前 v{referenceUpdate.currentVersion}）</span><button className="secondary-button" type="button" onClick={onUpgradeReference} aria-label={`采用 ${referenceUpdate.latestTitle} v${referenceUpdate.latestVersion}`}>采用 v{referenceUpdate.latestVersion}</button></div> : null}<button className="secondary-button" type="button" onClick={onToggleReference} aria-label={node.data.expanded ? '折叠子指南' : '展开子指南'}>{node.data.expanded ? '折叠子指南' : '展开子指南'}</button></> : null}
     {isPrimaryFlowNode(node) ? <><label>所属业务阶段<select value={node.stageId ?? ''} onChange={(event) => onChange({ ...node, stageId: event.target.value || undefined })}><option value="">未分阶段</option>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.title}</option>)}</select></label><label>责任泳道<select value={node.laneId ?? ''} onChange={(event) => onChange({ ...node, laneId: event.target.value || undefined })}><option value="">未分配责任</option>{lanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.title}</option>)}</select></label></> : null}
     {isContentNode(node) ? <><p className="node-inspector-hint">资料可通过画布连线被多个节点引用。</p><label>旧版层级挂靠（兼容）<select value={node.contentParentId ?? ''} onChange={(event) => onChange({ ...node, contentParentId: event.target.value || undefined })}><option value="">未挂靠</option>{primaryNodes.map((primary) => <option key={primary.id} value={primary.id}>{nodeLabel(primary)}</option>)}</select></label></> : null}
     <button className="secondary-button" type="button" onClick={onAddStep}>加入教学步骤</button>

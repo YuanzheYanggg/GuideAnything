@@ -23,6 +23,7 @@ import { WorkspaceSourcesPage } from './features/sources/WorkspaceSourcesPage';
 import { AppearanceProvider } from './features/theme/AppearanceToggle';
 import { WorkspaceDirectoryPage } from './features/workspace/WorkspaceDirectoryPage';
 import { WorkspaceOverviewPage } from './features/workspace/WorkspaceOverviewPage';
+import { WorkspaceOrganizationPage } from './features/workspace/WorkspaceOrganizationPage';
 import { WorkspaceShell } from './features/workspace/WorkspaceShell';
 import { apiClient } from './lib/api';
 
@@ -75,8 +76,9 @@ function AppContent() {
       <Route path="/knowledge/santexwell/documents/:documentId" element={<SantexwellKnowledgePage api={knowledgeApi} agentApi={agentApi} />} />
       <Route path="/workspaces" element={<WorkspaceDirectoryPage />} />
       <Route path="/workspaces/:workspaceId" element={<WorkspaceOverviewPage workspaceApi={workspaceApi} />} />
+      <Route path="/workspaces/:workspaceId/organize" element={<WorkspaceOrganizationPage />} />
       <Route path="/workspaces/:workspaceId/guides" element={<LibraryRoute user={user} />} />
-      <Route path="/workspaces/:workspaceId/sources" element={<WorkspaceSourcesPage api={sourcesApi} />} />
+      <Route path="/workspaces/:workspaceId/sources" element={<WorkspaceSourcesPage api={sourcesApi} workspaceApi={workspaceApi} />} />
       <Route path="/workspaces/:workspaceId/knowledge-evolution" element={<WorkspaceEditorialPage api={editorialApi} />} />
       <Route path="/workspaces/:workspaceId/agents" element={<WorkspaceAgentsPage api={agentApi} />} />
       <Route path="/workspaces/:workspaceId/artifacts" element={<WorkspaceArtifactsPage api={artifactsApi} />} />

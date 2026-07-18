@@ -16,7 +16,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { CanonicalFrontmatter, ParsedMarkdownFragment, ParsedWikiLink } from './markdown';
-import { getWorkspacePermission } from '../workspaces/repository';
+import { getWorkspacePermission, listMountedResourceWorkspaceIds } from '../workspaces/repository';
 import { buildSearchText, compileFtsQuery, isSingleCjkQuery, normalizeKnowledgeText } from './search-text';
 import { sanitizeVaultControlledList, sanitizeVaultControlledText } from './vault-text';
 
@@ -81,6 +81,8 @@ export interface CanonicalDocumentInput {
 export interface KnowledgeSearchScope {
   sourceKinds: Array<'SANTEXWELL' | 'WORKSPACE_DOCUMENT' | 'WORKSPACE_FLOW' | 'SESSION_ATTACHMENT'>;
   workspaceId?: string;
+  /** Explicit provider workspaces mounted to workspaceId; never a global scope. */
+  sharedWorkspaceIds?: readonly string[];
   conversationId?: string;
   userId?: string;
   userRole?: string;
@@ -465,6 +467,7 @@ export function insertWorkspaceDocument(input: {
   database: DatabaseSync;
   workspaceId: string;
   userId: string;
+  folderId?: string;
   title: string;
   originalName: string;
   mimeType: string;
@@ -508,9 +511,9 @@ export function insertWorkspaceDocument(input: {
     if (ready) insertWorkspaceFragments(input.database, documentId, input.title, revision, input.text!, now);
     input.database.prepare(
       `INSERT INTO workspace_items (
-        id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
-      ) VALUES (?, ?, 'SOURCE', ?, ?, '', ?, ?, ?)`,
-    ).run(workspaceItemId, input.workspaceId, sourceId, input.title, input.userId, now, now);
+        id, workspace_id, folder_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, 'SOURCE', ?, ?, '', ?, ?, ?)`,
+    ).run(workspaceItemId, input.workspaceId, input.folderId ?? null, sourceId, input.title, input.userId, now, now);
     input.database.exec('COMMIT');
   } catch (error) {
     input.database.exec('ROLLBACK');
@@ -528,6 +531,7 @@ export function insertWorkspaceDocument(input: {
     revision,
     ...(input.failureCode ? { failureCode: input.failureCode } : {}),
     ...(input.failureCode ? { failureMessage: publicFailureMessage(input.failureCode) } : {}),
+    folderId: input.folderId ?? null,
     createdAt: now,
     updatedAt: now,
   });
@@ -536,9 +540,11 @@ export function insertWorkspaceDocument(input: {
 export function listWorkspaceSources(database: DatabaseSync, workspaceId: string): WorkspaceSourceV1[] {
   const rows = database.prepare(
     `SELECT s.id, s.status, s.revision, s.created_at, s.updated_at,
-            d.id AS document_id, d.title, d.parse_status, d.metadata_json
+            d.id AS document_id, d.title, d.parse_status, d.metadata_json, item.folder_id
      FROM knowledge_sources s
      JOIN knowledge_documents d ON d.source_id = s.id
+     LEFT JOIN workspace_items item
+       ON item.workspace_id = s.workspace_id AND item.kind = 'SOURCE' AND item.entity_id = s.id
      WHERE s.workspace_id = ? AND s.kind = 'WORKSPACE_DOCUMENT'
      ORDER BY s.updated_at DESC`,
   ).all(workspaceId) as unknown as Array<{
@@ -551,6 +557,7 @@ export function listWorkspaceSources(database: DatabaseSync, workspaceId: string
     document_id: string;
     parse_status: WorkspaceSourceV1['parseStatus'];
     metadata_json: string;
+    folder_id: string | null;
   }>;
   return rows.map((row) => {
     const metadata = parseMetadata(row.metadata_json);
@@ -566,6 +573,7 @@ export function listWorkspaceSources(database: DatabaseSync, workspaceId: string
       revision: row.revision,
       ...(metadata.failureCode ? { failureCode: metadata.failureCode } : {}),
       ...(metadata.failureCode ? { failureMessage: publicFailureMessage(metadata.failureCode) } : {}),
+      folderId: row.folder_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     });
@@ -700,8 +708,9 @@ function sqlCandidateScope(scope: KnowledgeSearchScope): {
   const predicates: string[] = [];
   const parameters: Array<string | number> = [];
   if (scope.workspaceId !== undefined) {
-    predicates.push('s.workspace_id = ?');
-    parameters.push(scope.workspaceId);
+    const workspaceIds = scopedWorkspaceIds(scope);
+    predicates.push(`s.workspace_id IN (${workspaceIds.map(() => '?').join(', ')})`);
+    parameters.push(...workspaceIds);
   }
   if (scope.conversationId !== undefined) {
     predicates.push('s.conversation_id = ?');
@@ -718,6 +727,26 @@ function sqlCandidateScope(scope: KnowledgeSearchScope): {
   }
 
   if (scope.userId) {
+    const sharedWorkspaceIds = scopedSharedWorkspaceIds(scope);
+    const mountedAccess = scope.workspaceId && sharedWorkspaceIds.length > 0
+      ? `
+      OR (
+        s.workspace_id IN (${sharedWorkspaceIds.map(() => '?').join(', ')})
+        AND EXISTS (
+          SELECT 1
+          FROM workspace_resource_mounts AS mount
+          JOIN workspaces AS consumer ON consumer.id = mount.consumer_workspace_id
+          JOIN workspaces AS provider ON provider.id = mount.provider_workspace_id
+          JOIN workspace_members AS consumer_member
+            ON consumer_member.workspace_id = consumer.id AND consumer_member.user_id = ?
+          WHERE mount.consumer_workspace_id = ?
+            AND mount.provider_workspace_id = s.workspace_id
+            AND consumer.status = 'ACTIVE' AND consumer.kind = 'BUSINESS_TEAM'
+            AND provider.status = 'ACTIVE'
+            AND provider.kind IN ('FINANCE', 'TECHNICAL', 'FOLLOW_UP', 'PRODUCTION')
+        )
+      )`
+      : '';
     predicates.push(`(
       s.kind NOT IN ('WORKSPACE_DOCUMENT', 'WORKSPACE_FLOW')
       OR EXISTS (
@@ -729,8 +758,22 @@ function sqlCandidateScope(scope: KnowledgeSearchScope): {
         WHERE authorized_workspace.id = s.workspace_id
           AND authorized_workspace.status = 'ACTIVE'
       )
+      ${mountedAccess}
     )`);
     parameters.push(scope.userId);
+    if (mountedAccess) parameters.push(...sharedWorkspaceIds, scope.userId, scope.workspaceId!);
+    const currentWorkspaceDraftAccess = scope.workspaceId
+      ? `
+            OR (
+              s.workspace_id = ?
+              AND (
+                authorized_guide.owner_id = ?
+                OR authorized_collaborator.user_id IS NOT NULL
+              )
+            )`
+      : `
+            OR authorized_guide.owner_id = ?
+            OR authorized_collaborator.user_id IS NOT NULL`;
     predicates.push(`(
       s.kind <> 'WORKSPACE_FLOW'
       OR EXISTS (
@@ -743,12 +786,14 @@ function sqlCandidateScope(scope: KnowledgeSearchScope): {
         WHERE authorized_snapshot.id = d.flow_snapshot_id
           AND (
             authorized_snapshot.origin_type = 'PUBLISHED'
-            OR authorized_guide.owner_id = ?
-            OR authorized_collaborator.user_id IS NOT NULL
+            ${currentWorkspaceDraftAccess}
           )
       )
     )`);
-    parameters.push(scope.userId, scope.userId);
+    parameters.push(
+      scope.userId,
+      ...(scope.workspaceId ? [scope.workspaceId, scope.userId] : [scope.userId]),
+    );
   } else {
     predicates.push("s.kind NOT IN ('WORKSPACE_DOCUMENT', 'WORKSPACE_FLOW')");
   }
@@ -818,7 +863,7 @@ function appendOptionalJsonPredicate(
 function documentMatchesScope(database: DatabaseSync, row: SearchRow, scope: KnowledgeSearchScope): boolean {
   const metadata = parseMetadata(row.metadata_json);
   if (!scope.sourceKinds.includes(metadata.sourceKind)) return false;
-  if (scope.workspaceId !== undefined && row.workspace_id !== scope.workspaceId) return false;
+  if (scope.workspaceId !== undefined && !scopedWorkspaceIds(scope).includes(row.workspace_id ?? '')) return false;
   if (scope.conversationId !== undefined && row.conversation_id !== scope.conversationId) return false;
   if (scope.pageTypes && (!metadata.pageType || !scope.pageTypes.includes(metadata.pageType))) return false;
   if (scope.statuses && (!metadata.status || !scope.statuses.includes(metadata.status))) return false;
@@ -828,7 +873,7 @@ function documentMatchesScope(database: DatabaseSync, row: SearchRow, scope: Kno
   if (scope.minimumAttention !== undefined && (metadata.sourceProfile?.attention ?? -1) < scope.minimumAttention) return false;
   if (metadata.sourceKind === 'WORKSPACE_DOCUMENT' || metadata.sourceKind === 'WORKSPACE_FLOW') {
     if (!scope.userId || !row.workspace_id
-      || getWorkspacePermission(database, row.workspace_id, scope.userId) === null) return false;
+      || !canReadWorkspaceEvidence(database, row.workspace_id, scope)) return false;
   }
   if (metadata.sourceKind === 'SESSION_ATTACHMENT') return canReadSessionAttachment(database, row, scope);
   if (metadata.sourceKind === 'WORKSPACE_FLOW') return canReadFlow(database, row.id, scope);
@@ -859,6 +904,20 @@ function canReadSessionAttachment(database: DatabaseSync, row: SearchRow, scope:
 
 function canReadFlow(database: DatabaseSync, documentId: string, scope: KnowledgeSearchScope): boolean {
   if (!scope.userId) return false;
+  const source = database.prepare(
+    `SELECT source.workspace_id
+     FROM knowledge_documents AS document
+     JOIN knowledge_sources AS source ON source.id = document.source_id
+     WHERE document.id = ?`,
+  ).get(documentId) as { workspace_id: string | null } | undefined;
+  if (!source?.workspace_id || !canReadWorkspaceEvidence(database, source.workspace_id, scope)) return false;
+  const canReadDraft = source.workspace_id === scope.workspaceId;
+  const draftAccess = canReadDraft
+    ? 'OR guide.owner_id = ? OR collaborator.user_id IS NOT NULL'
+    : '';
+  const parameters = canReadDraft
+    ? [scope.userId, documentId, scope.userId]
+    : [scope.userId, documentId];
   return Boolean(database.prepare(
     `SELECT 1
      FROM knowledge_documents d
@@ -868,10 +927,31 @@ function canReadFlow(database: DatabaseSync, documentId: string, scope: Knowledg
        ON collaborator.guide_id = guide.id AND collaborator.user_id = ?
      WHERE d.id = ? AND (
        snapshot.origin_type = 'PUBLISHED'
-       OR guide.owner_id = ?
-       OR collaborator.user_id IS NOT NULL
+       ${draftAccess}
      )`,
-  ).get(scope.userId, documentId, scope.userId));
+  ).get(...parameters));
+}
+
+function scopedSharedWorkspaceIds(scope: KnowledgeSearchScope): string[] {
+  if (!scope.workspaceId) return [];
+  return [...new Set((scope.sharedWorkspaceIds ?? [])
+    .filter((workspaceId) => workspaceId && workspaceId !== scope.workspaceId))];
+}
+
+function scopedWorkspaceIds(scope: KnowledgeSearchScope): string[] {
+  return scope.workspaceId ? [scope.workspaceId, ...scopedSharedWorkspaceIds(scope)] : [];
+}
+
+function canReadWorkspaceEvidence(
+  database: DatabaseSync,
+  sourceWorkspaceId: string,
+  scope: KnowledgeSearchScope,
+): boolean {
+  if (!scope.userId) return false;
+  if (getWorkspacePermission(database, sourceWorkspaceId, scope.userId) !== null) return true;
+  if (!scope.workspaceId || !scopedSharedWorkspaceIds(scope).includes(sourceWorkspaceId)) return false;
+  if (getWorkspacePermission(database, scope.workspaceId, scope.userId) === null) return false;
+  return listMountedResourceWorkspaceIds(database, scope.workspaceId).includes(sourceWorkspaceId);
 }
 
 interface SearchCandidate {

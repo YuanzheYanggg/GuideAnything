@@ -50,7 +50,10 @@ export async function registerKnowledgeRoutes(
     if (!params) return;
     const file = await request.file();
     if (!file) throw httpError(400, 'DOCUMENT_REQUIRED', '请选择要上传的资料文件');
-    return reply.code(201).send({ source: await service.uploadWorkspaceSource(request.authUser!, params.id, file) });
+    const folderId = multipartTextField(file, 'folderId');
+    return reply.code(201).send({
+      source: await service.uploadWorkspaceSource(request.authUser!, params.id, file, folderId),
+    });
   });
 
   app.get('/api/workspaces/:id/flow-snapshots', { preHandler: app.authenticateRequest }, async (request, reply) => {
@@ -58,6 +61,17 @@ export async function registerKnowledgeRoutes(
     if (!params) return;
     return { items: service.flowSnapshots(request.authUser!, params.id) };
   });
+}
+
+function multipartTextField(file: { fields?: Record<string, unknown> }, name: string): string | undefined {
+  const field = file.fields?.[name];
+  if (!field || typeof field !== 'object' || Array.isArray(field)) return undefined;
+  const value = (field as { value?: unknown }).value;
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0 || value.length > 200) {
+    throw httpError(400, 'VALIDATION_ERROR', '资料文件夹格式不正确');
+  }
+  return value;
 }
 
 function parseOrReply<T extends z.ZodType>(schema: T, input: unknown, reply: FastifyReply): z.infer<T> | null {

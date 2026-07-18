@@ -9,6 +9,7 @@ const SearchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).max(100_000).default(0),
   workspaceId: z.string().min(1).max(200).optional(),
+  consumerWorkspaceId: z.string().min(1).max(200).optional(),
 });
 
 export async function registerSearchRoutes(app: FastifyInstance, database: DatabaseSync): Promise<void> {
@@ -24,6 +25,7 @@ export async function registerSearchRoutes(app: FastifyInstance, database: Datab
       input.data.limit,
       input.data.offset,
       input.data.workspaceId,
+      input.data.consumerWorkspaceId,
     );
   });
 }

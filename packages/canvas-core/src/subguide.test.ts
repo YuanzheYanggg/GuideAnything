@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CanvasDocumentSchema, type CanvasDocument, type CanvasEdge, type CanvasNode, type GuideVersionSnapshot } from '@guideanything/contracts';
 
-import { expandSubguide, reconcileSubguideEdges, setSubguideExpanded } from './subguide';
+import { expandSubguide, reconcileSubguideEdges, replaceSubguideReference, setSubguideExpanded } from './subguide';
 
 const host: CanvasDocument = {
   schemaVersion: 1,
@@ -183,6 +183,39 @@ describe('expandSubguide', () => {
 
     const reopened = setSubguideExpanded(collapsed, 'ref-1', true);
     expect(reopened.nodes.find(isDerived)?.hidden).toBe(false);
+  });
+
+  it('replaces a pinned reference only after removing its obsolete derived snapshot', () => {
+    const expanded = expandSubguide(hostWithContinuation, hostWithContinuation.nodes[0] as CanvasNode<'subguide'>, snapshot);
+    const nextSnapshot: GuideVersionSnapshot = {
+      ...snapshot,
+      id: 'source-version-v2',
+      version: 2,
+      title: '采购检查（新版）',
+      document: {
+        ...snapshot.document,
+        nodes: [{
+          id: 'source-v2-start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0,
+          data: { label: '新版开始', shape: 'start' },
+        }],
+        edges: [],
+        steps: [],
+        entryNodeId: 'source-v2-start',
+        exitNodeIds: ['source-v2-start'],
+      },
+    };
+
+    const replaced = replaceSubguideReference(expanded, 'ref-1', nextSnapshot);
+
+    expect(replaced.nodes.find((node) => node.id === 'ref-1')).toEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        guideVersionId: 'source-version-v2', version: 2, title: '采购检查（新版）', expanded: false,
+      }),
+    }));
+    expect(replaced.nodes.some(isDerived)).toBe(false);
+    expect(replaced.edges.some((edge) => edge.sourceTrace?.referenceNodeId === 'ref-1')).toBe(false);
+    expect(replaced.edges.find((edge) => edge.id === 'reference-host-out')?.hidden).not.toBe(true);
+    expect(replaced.steps.some((step) => step.source?.referenceNodeId === 'ref-1')).toBe(false);
   });
 
   it('hides and reveals a manual cross-edge that touches a derived node', () => {

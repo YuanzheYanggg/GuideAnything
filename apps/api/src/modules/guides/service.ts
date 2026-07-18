@@ -1,8 +1,8 @@
-import type { CanvasDocument } from '@guideanything/contracts';
+import type { CanvasDocument, GuideReferenceUpdate } from '@guideanything/contracts';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { httpError } from '../../lib/http-error';
-import { getWorkspacePermission } from '../workspaces/repository';
+import { getWorkspaceFolder, getWorkspacePermission, listMountedResourceWorkspaceIds } from '../workspaces/repository';
 import {
   recordFlowIndexFailure,
   syncGuideFlowSnapshot,
@@ -27,13 +27,16 @@ export class GuideService {
 
   create(
     user: { id: string; role: string },
-    input: { workspaceId: string; title: string; summary: string; tags: string[] },
+    input: { workspaceId: string; folderId?: string; title: string; summary: string; tags: string[] },
   ) {
     if (!['AUTHOR', 'EDITOR'].includes(user.role)) throw httpError(403, 'FORBIDDEN', '只有作者或编辑者可以创建指南');
     const permission = getWorkspacePermission(this.database, input.workspaceId, user.id);
     if (!permission) throw httpError(404, 'WORKSPACE_NOT_FOUND', '工作区不存在');
     if (!['OWNER', 'EDIT'].includes(permission)) {
       throw httpError(403, 'FORBIDDEN', '只有工作区所有者或编辑者可以创建指南');
+    }
+    if (input.folderId && !getWorkspaceFolder(this.database, input.workspaceId, input.folderId)) {
+      throw httpError(400, 'FOLDER_NOT_FOUND', '目标文件夹不存在或不属于当前工作区');
     }
     const { workspaceId, ...guideInput } = input;
     return createGuide(this.database, user.id, workspaceId, guideInput);
@@ -103,6 +106,47 @@ export class GuideService {
     const version = getVersion(this.database, versionId);
     if (!version) throw httpError(404, 'VERSION_NOT_FOUND', '发布版本不存在');
     return version;
+  }
+
+  referenceUpdates(user: { id: string; role: string }, guideId: string): GuideReferenceUpdate[] {
+    this.requireEditAccess(user, guideId);
+    const host = getGuide(this.database, guideId)!;
+    const mountedWorkspaceIds = new Set(listMountedResourceWorkspaceIds(this.database, host.workspaceId));
+    const updates: GuideReferenceUpdate[] = [];
+    for (const node of host.document.nodes) {
+      if (node.type !== 'subguide' || node.source) continue;
+      const latest = this.database.prepare(
+        `SELECT version.id, version.version, version.title, item.workspace_id
+         FROM guide_versions AS version
+         JOIN guides AS source_guide ON source_guide.id = version.guide_id
+         JOIN workspace_items AS item
+           ON item.kind = 'GUIDE' AND item.entity_id = source_guide.id AND item.deleted_at IS NULL
+         JOIN workspaces AS workspace ON workspace.id = item.workspace_id AND workspace.status = 'ACTIVE'
+         WHERE version.guide_id = ? AND source_guide.status != 'ARCHIVED'
+         ORDER BY version.version DESC
+         LIMIT 1`,
+      ).get(node.data.guideId) as {
+        id: string;
+        version: number;
+        title: string;
+        workspace_id: string;
+      } | undefined;
+      if (!latest || latest.version <= node.data.version) continue;
+      const availableInHost = latest.workspace_id === host.workspaceId
+        || mountedWorkspaceIds.has(latest.workspace_id);
+      if (!availableInHost && !canSeeGuideMetadata(this.database, node.data.guideId, user)) continue;
+      updates.push({
+        referenceNodeId: node.id,
+        sourceGuideId: node.data.guideId,
+        currentVersionId: node.data.guideVersionId,
+        currentVersion: node.data.version,
+        currentTitle: node.data.title,
+        latestVersionId: latest.id,
+        latestVersion: latest.version,
+        latestTitle: latest.title,
+      });
+    }
+    return updates;
   }
 
   private requireEditAccess(user: { id: string; role: string }, guideId: string): void {

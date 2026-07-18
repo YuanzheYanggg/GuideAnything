@@ -1,14 +1,20 @@
 import type {
   WorkspaceActivity,
+  WorkspaceFolder,
   WorkspaceItemKind,
   WorkspaceItemSummary,
+  WorkspaceKind,
+  WorkspaceResourceMount,
   WorkspaceSummary,
 } from '@guideanything/contracts';
 
 export type {
   WorkspaceActivity,
+  WorkspaceFolder,
   WorkspaceItemKind,
   WorkspaceItemSummary,
+  WorkspaceKind,
+  WorkspaceResourceMount,
   WorkspaceSummary,
 } from '@guideanything/contracts';
 
@@ -18,6 +24,7 @@ export interface CreateWorkspaceInput {
   description: string;
   iconKey: string;
   colorKey: string;
+  kind?: WorkspaceKind;
 }
 
 export interface WorkspaceApi {
@@ -29,6 +36,14 @@ export interface WorkspaceApi {
   }>;
   listItems: (id: string, kind?: WorkspaceItemKind) => Promise<WorkspaceItemSummary[]>;
   activity: (id: string) => Promise<WorkspaceActivity[]>;
+  listFolders: (id: string) => Promise<WorkspaceFolder[]>;
+  createFolder: (id: string, input: { name: string; parentId: string | null }) => Promise<WorkspaceFolder>;
+  renameFolder: (id: string, folderId: string, name: string) => Promise<WorkspaceFolder>;
+  deleteFolder: (id: string, folderId: string) => Promise<void>;
+  moveItemToFolder: (id: string, itemId: string, folderId: string | null) => Promise<WorkspaceItemSummary>;
+  listResourceMounts: (id: string) => Promise<WorkspaceResourceMount[]>;
+  createResourceMount: (id: string, providerWorkspaceId: string) => Promise<WorkspaceResourceMount>;
+  deleteResourceMount: (id: string, mountId: string) => Promise<void>;
 }
 
 export interface PersonalApi {

@@ -5,7 +5,7 @@ import { extname, join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { httpError } from '../../lib/http-error';
-import { getWorkspacePermission } from '../workspaces/repository';
+import { getWorkspaceFolder, getWorkspacePermission } from '../workspaces/repository';
 import { DocumentExtractionError, extractWorkspaceDocument, sanitizeUploadName } from './extractor';
 import { listReadableFlowSnapshots } from './flow-indexer';
 import {
@@ -65,8 +65,12 @@ export class KnowledgeService {
     user: { id: string; role: string },
     workspaceId: string,
     file: MultipartFile,
+    folderId?: string,
   ) {
     this.requirePersistentUpload(user, workspaceId);
+    if (folderId && !getWorkspaceFolder(this.database, workspaceId, folderId)) {
+      throw httpError(400, 'FOLDER_NOT_FOUND', '目标文件夹不存在或不属于当前工作区');
+    }
     const bytes = await readUpload(file, MAX_UPLOAD_BYTES);
     let displayName: string;
     try {
@@ -108,6 +112,7 @@ export class KnowledgeService {
         database: this.database,
         workspaceId,
         userId: user.id,
+        ...(folderId ? { folderId } : {}),
         title: displayName,
         originalName: displayName,
         mimeType: file.mimetype,

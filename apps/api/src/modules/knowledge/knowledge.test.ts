@@ -290,6 +290,31 @@ describe('knowledge routes, uploads, and flow synchronization', () => {
     })).toEqual([]);
   });
 
+  it('assigns an uploaded document to a logical folder without changing its physical storage key', async () => {
+    const folder = await context.app.inject({
+      method: 'POST', url: `/api/workspaces/${workspaceId}/folders`, headers: authorization(context.tokens.author),
+      payload: { name: '打样资料' },
+    });
+    expect(folder.statusCode).toBe(201);
+    const uploaded = await uploadMarkdown(
+      context, context.tokens.editor, workspaceId, '打样要求.md', folder.json().folder.id,
+    );
+    expect(uploaded.statusCode).toBe(201);
+    expect(uploaded.json().source).toMatchObject({ folderId: folder.json().folder.id });
+    const listed = await context.app.inject({
+      method: 'GET', url: `/api/workspaces/${workspaceId}/sources`, headers: authorization(context.tokens.editor),
+    });
+    expect(listed.json().items).toEqual([expect.objectContaining({
+      sourceId: uploaded.json().source.sourceId,
+      folderId: folder.json().folder.id,
+    })]);
+    const storage = context.database.prepare(
+      `SELECT json_extract(config_json, '$.storageKey') AS storage_key
+       FROM knowledge_sources WHERE id = ?`,
+    ).get(uploaded.json().source.sourceId) as { storage_key: string };
+    expect(storage.storage_key).toMatch(/^[0-9a-f-]+\.md$/u);
+  });
+
   it('rechecks persistent upload permission after streaming and extraction', async () => {
     const service = new KnowledgeService(context.database, join(root, 'uploads'));
     const stream = Readable.from((async function* () {
@@ -427,9 +452,18 @@ describe('knowledge routes, uploads, and flow synchronization', () => {
   });
 });
 
-async function uploadMarkdown(context: TestContext, token: string, workspaceId: string, filename: string) {
+async function uploadMarkdown(
+  context: TestContext,
+  token: string,
+  workspaceId: string,
+  filename: string,
+  folderId?: string,
+) {
   const boundary = 'guideanything-boundary';
   const body = Buffer.from(
+    (folderId
+      ? `--${boundary}\r\nContent-Disposition: form-data; name="folderId"\r\n\r\n${folderId}\r\n`
+      : '') +
     `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
     'Content-Type: text/markdown\r\n\r\n# 花式纱资料\n正文\r\n' +
     `--${boundary}--\r\n`,

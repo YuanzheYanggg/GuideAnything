@@ -22,6 +22,10 @@ export function mockAuthenticatedWorkspaceApi(input: {
     })),
     listItems: vi.fn().mockResolvedValue([]),
     activity: vi.fn().mockResolvedValue([]),
+    listFolders: vi.fn().mockResolvedValue([]),
+    createFolder: vi.fn(), renameFolder: vi.fn(), deleteFolder: vi.fn(), moveItemToFolder: vi.fn(),
+    listResourceMounts: vi.fn().mockResolvedValue([]),
+    createResourceMount: vi.fn(), deleteResourceMount: vi.fn(),
   });
   vi.spyOn(ApiClient.prototype, 'personalApi').mockReturnValue({
     listFavorites: vi.fn().mockResolvedValue(input.favorites ?? []),

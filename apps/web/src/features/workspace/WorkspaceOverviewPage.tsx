@@ -5,6 +5,7 @@ import {
   BookOpen,
   ChatCircleDots,
   Database,
+  Folders,
   Lightbulb,
   Star,
 } from '@phosphor-icons/react';
@@ -79,6 +80,9 @@ function ModuleGrid({ counts, workspace }: { counts: Counts; workspace: Workspac
   const modules = [
     ...moduleDefinitions,
     ...(workspace.permission === 'OWNER' || workspace.permission === 'EDIT'
+      ? [{ key: 'ORGANIZE', label: '整理工作区', route: 'organize', icon: Folders }]
+      : []),
+    ...(workspace.permission === 'OWNER' || workspace.permission === 'EDIT'
       ? [{ key: 'EDITORIAL', label: '知识演进', route: 'knowledge-evolution', icon: Lightbulb }]
       : []),
   ];
@@ -99,7 +103,7 @@ function ModuleGrid({ counts, workspace }: { counts: Counts; workspace: Workspac
 
 function moduleCount(counts: Counts, key: string): number | undefined {
   if (key === 'ARTIFACT') return counts.ARTIFACT + counts.CONVERSATION;
-  if (key === 'EDITORIAL') return undefined;
+  if (key === 'EDITORIAL' || key === 'ORGANIZE') return undefined;
   return counts[key as WorkspaceItemKind];
 }
 

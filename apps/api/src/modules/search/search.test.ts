@@ -174,6 +174,42 @@ describe('published guide search', () => {
     expect(archived.statusCode).toBe(200);
     expect(archived.json().items).toEqual([]);
   });
+
+  it('finds only explicitly mounted resource-center guides for a business-team reference search', async () => {
+    const financeWorkspaceId = 'workspace-search-finance';
+    seedTestWorkspace(context.database, context.userIds.otherAuthor, {
+      id: financeWorkspaceId, slug: 'search-finance', name: '财务资源中心',
+    });
+    context.database.prepare("UPDATE workspaces SET kind = 'FINANCE' WHERE id = ?").run(financeWorkspaceId);
+    context.database.prepare(
+      `INSERT INTO workspace_resource_mounts (
+        id, consumer_workspace_id, provider_workspace_id, created_by, created_at, updated_at
+      ) VALUES ('mount-search-finance', ?, ?, ?, ?, ?)`,
+    ).run(workspaceId, financeWorkspaceId, context.userIds.author, '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z');
+    const financeGuide = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.otherAuthor),
+      payload: { workspaceId: financeWorkspaceId, title: '付款条款', summary: '', tags: ['财务'] },
+    });
+    const financeGuideId = financeGuide.json().guide.id as string;
+    await context.app.inject({
+      method: 'POST', url: `/api/guides/${financeGuideId}/publish`, headers: authorization(context.tokens.otherAuthor),
+    });
+
+    const plain = await context.app.inject({
+      method: 'GET', url: '/api/search?q=%E4%BB%98%E6%AC%BE', headers: authorization(context.tokens.author),
+    });
+    const mounted = await context.app.inject({
+      method: 'GET',
+      url: `/api/search?q=%E4%BB%98%E6%AC%BE&consumerWorkspaceId=${workspaceId}`,
+      headers: authorization(context.tokens.author),
+    });
+
+    expect(plain.json().items).toEqual([]);
+    expect(mounted.statusCode).toBe(200);
+    expect(mounted.json().items).toEqual([expect.objectContaining({
+      guideId: financeGuideId, workspaceId: financeWorkspaceId,
+    })]);
+  });
 });
 
 async function search(context: TestContext, query: string) {

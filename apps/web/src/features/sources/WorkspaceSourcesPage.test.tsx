@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { WorkspaceSourcesPage } from './WorkspaceSourcesPage';
 import type { SourcesApi } from './types';
+import type { WorkspaceApi } from '../workspace/types';
 
 function api(canUpload = true): SourcesApi {
   return {
@@ -34,9 +35,17 @@ function api(canUpload = true): SourcesApi {
   };
 }
 
-function renderPage(sourcesApi: SourcesApi, initialPath = '/workspaces/workspace-1/sources') {
+function workspaceApi(): WorkspaceApi {
+  return {
+    list: vi.fn().mockResolvedValue([]), create: vi.fn(), get: vi.fn(), listItems: vi.fn(), activity: vi.fn(),
+    listFolders: vi.fn().mockResolvedValue([]), createFolder: vi.fn(), renameFolder: vi.fn(), deleteFolder: vi.fn(), moveItemToFolder: vi.fn(),
+    listResourceMounts: vi.fn().mockResolvedValue([]), createResourceMount: vi.fn(), deleteResourceMount: vi.fn(),
+  };
+}
+
+function renderPage(sourcesApi: SourcesApi, initialPath = '/workspaces/workspace-1/sources', organizationApi = workspaceApi()) {
   render(<MemoryRouter initialEntries={[initialPath]}><Routes>
-    <Route path="/workspaces/:workspaceId/sources" element={<WorkspaceSourcesPage api={sourcesApi} />} />
+    <Route path="/workspaces/:workspaceId/sources" element={<WorkspaceSourcesPage api={sourcesApi} workspaceApi={organizationApi} />} />
   </Routes></MemoryRouter>);
 }
 
@@ -62,6 +71,23 @@ describe('WorkspaceSourcesPage', () => {
 
     expect(sourcesApi.upload).toHaveBeenCalledWith('workspace-1', file);
     expect(await screen.findByText('补充说明.md')).toBeVisible();
+  });
+
+  it('sends the selected logical folder with a new upload', async () => {
+    const user = userEvent.setup();
+    const sourcesApi = api(true);
+    const organizationApi = workspaceApi();
+    (organizationApi.listFolders as ReturnType<typeof vi.fn>).mockResolvedValue([{
+      id: 'folder-sampling', workspaceId: 'workspace-1', parentId: null, name: '打样工序',
+      createdAt: '2026-07-18T00:00:00.000Z', updatedAt: '2026-07-18T00:00:00.000Z',
+    }]);
+    renderPage(sourcesApi, '/workspaces/workspace-1/sources', organizationApi);
+
+    await user.selectOptions(await screen.findByLabelText('上传到文件夹'), 'folder-sampling');
+    const file = new File(['# 打样要求'], '打样要求.md', { type: 'text/markdown' });
+    await user.upload(screen.getByLabelText('上传工作区资料'), file);
+
+    expect(sourcesApi.upload).toHaveBeenCalledWith('workspace-1', file, 'folder-sampling');
   });
 
   it('keeps VIEW users read-only', async () => {

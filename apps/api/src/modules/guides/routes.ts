@@ -9,6 +9,7 @@ import { GuideService } from './service';
 const IdParamsSchema = z.object({ id: z.string().min(1).max(200) });
 const CreateGuideSchema = z.object({
   workspaceId: z.string().min(1).max(200),
+  folderId: z.string().min(1).max(200).optional(),
   title: z.string().trim().min(1).max(200),
   summary: z.string().trim().max(2_000).default(''),
   tags: z.array(z.string().trim().min(1).max(50)).max(20).default([]),
@@ -32,7 +33,13 @@ export async function registerGuideRoutes(app: FastifyInstance, database: Databa
   app.post('/api/guides', { preHandler: app.authenticateRequest }, async (request, reply) => {
     const input = parseOrReply(CreateGuideSchema, request.body, reply);
     if (!input) return;
-    const guide = service.create(request.authUser!, input);
+    const guide = service.create(request.authUser!, {
+      workspaceId: input.workspaceId,
+      title: input.title,
+      summary: input.summary,
+      tags: input.tags,
+      ...(input.folderId === undefined ? {} : { folderId: input.folderId }),
+    });
     return reply.code(201).send({ guide });
   });
 
@@ -50,6 +57,12 @@ export async function registerGuideRoutes(app: FastifyInstance, database: Databa
     const params = parseOrReply(IdParamsSchema, request.params, reply);
     if (!params) return;
     return { guide: service.readDraft(request.authUser!, params.id) };
+  });
+
+  app.get('/api/guides/:id/reference-updates', { preHandler: app.authenticateRequest }, async (request, reply) => {
+    const params = parseOrReply(IdParamsSchema, request.params, reply);
+    if (!params) return;
+    return { items: service.referenceUpdates(request.authUser!, params.id) };
   });
 
   app.patch('/api/guides/:id', { preHandler: app.authenticateRequest }, async (request, reply) => {

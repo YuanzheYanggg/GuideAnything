@@ -66,6 +66,8 @@ export interface AgentRunExecutionContext {
   ownerId: string;
   scope: 'GLOBAL_SANTEXWELL' | 'WORKSPACE';
   workspaceId: string | null;
+  /** Captured provider workspaces explicitly mounted to this business team. */
+  sharedWorkspaceIds?: string[];
   planVersion: number;
   status: AgentRunStatusV1;
   text: string;

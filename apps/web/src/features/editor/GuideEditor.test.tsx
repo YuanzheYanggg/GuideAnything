@@ -355,11 +355,11 @@ describe('GuideEditor', () => {
     await user.click(screen.getByRole('button', { name: '插入子指南' }));
     expect(await screen.findByText('库存盘点流程')).toBeVisible();
     expect(await screen.findByText('物料主数据检查')).toBeVisible();
-    expect(search).toHaveBeenNthCalledWith(1, '', 0);
-    expect(search).toHaveBeenNthCalledWith(2, '', 1);
+    expect(search).toHaveBeenNthCalledWith(1, '', 0, 'workspace-sales');
+    expect(search).toHaveBeenNthCalledWith(2, '', 1, 'workspace-sales');
 
     await user.type(screen.getByRole('searchbox', { name: '搜索可复用指南' }), '物料');
-    await waitFor(() => expect(search).toHaveBeenLastCalledWith('物料', 0));
+    await waitFor(() => expect(search).toHaveBeenLastCalledWith('物料', 0, 'workspace-sales'));
     expect(screen.queryByText('库存盘点流程')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '插入 物料主数据检查' })).toBeVisible();
   });
@@ -1101,6 +1101,40 @@ describe('GuideEditor', () => {
       ]) }),
     })));
   });
+
+  it('adopts a newer pinned subguide version only when the editor chooses it', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{
+        id: 'subguide-version-source', type: 'subguide', position: { x: 0, y: 0 }, zIndex: 0,
+        data: { guideId: 'guide-source', guideVersionId: 'version-source', title: '物料主数据检查', version: 1, expanded: false },
+      }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const newerVersion: GuideVersionSnapshot = { ...sourceVersion, id: 'version-source-v2', version: 2, title: '物料主数据检查（新版）' };
+    const api = createApi({ document });
+    (api.referenceUpdates as ReturnType<typeof vi.fn>).mockResolvedValue([{
+      referenceNodeId: 'subguide-version-source', sourceGuideId: 'guide-source',
+      currentVersionId: 'version-source', currentVersion: 1, currentTitle: '物料主数据检查',
+      latestVersionId: 'version-source-v2', latestVersion: 2, latestTitle: '物料主数据检查（新版）',
+    }]);
+    (api.getVersion as ReturnType<typeof vi.fn>).mockResolvedValue(newerVersion);
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
+    await user.click(screen.getByRole('button', { name: '选择流程节点 物料主数据检查' }));
+    await user.click(await screen.findByRole('button', { name: '采用 物料主数据检查（新版） v2' }));
+
+    expect(api.getVersion).toHaveBeenCalledWith('version-source-v2');
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ nodes: [expect.objectContaining({
+        id: 'subguide-version-source',
+        data: expect.objectContaining({ guideVersionId: 'version-source-v2', version: 2, expanded: false }),
+      })] }),
+    })));
+  });
 });
 
 function createApi(overrides: { document?: CanvasDocument } = {}): EditorApi & Record<string, ReturnType<typeof vi.fn>> {
@@ -1110,6 +1144,7 @@ function createApi(overrides: { document?: CanvasDocument } = {}): EditorApi & R
     saveGuide: vi.fn().mockResolvedValue({ ...guide, revision: 1 }),
     publishGuide: vi.fn().mockResolvedValue(sourceVersion),
     search: vi.fn().mockResolvedValue({ items: [{ versionId: 'version-source', guideId: 'guide-source', workspaceId: 'workspace-materials', workspaceItemId: 'item-guide-source', workspaceName: '物料管理', favorite: false, canManageLifecycle: false, title: '物料主数据检查', summary: '', tags: ['物料'], version: 1, authorName: '王作者' }], nextOffset: null }),
+    referenceUpdates: vi.fn().mockResolvedValue([]),
     getVersion: vi.fn().mockResolvedValue(sourceVersion),
     uploadMedia: vi.fn(),
   };

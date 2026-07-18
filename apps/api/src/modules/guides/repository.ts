@@ -62,7 +62,7 @@ export function createGuide(
   database: DatabaseSync,
   ownerId: string,
   workspaceId: string,
-  input: { title: string; summary: string; tags: string[] },
+  input: { title: string; summary: string; tags: string[]; folderId?: string },
 ): GuideDraft {
   const id = randomUUID();
   const workspaceItemId = randomUUID();
@@ -78,9 +78,9 @@ export function createGuide(
     ).run(id, ownerId, input.title, input.summary, JSON.stringify(input.tags), JSON.stringify(document), now, now);
     database.prepare(
       `INSERT INTO workspace_items (
-        id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
-      ) VALUES (?, ?, 'GUIDE', ?, ?, ?, ?, ?, ?)`,
-    ).run(workspaceItemId, workspaceId, id, input.title, input.summary, ownerId, now, now);
+        id, workspace_id, folder_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, 'GUIDE', ?, ?, ?, ?, ?, ?)`,
+    ).run(workspaceItemId, workspaceId, input.folderId ?? null, id, input.title, input.summary, ownerId, now, now);
     recordActivity(database, {
       workspaceId,
       actorId: ownerId,
