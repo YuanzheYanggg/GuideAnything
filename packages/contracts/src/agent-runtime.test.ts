@@ -15,6 +15,7 @@ import {
   SourceOptionsV1Schema,
   TaskFindingV1Schema,
 } from './agent-runtime';
+import { GuideDigestDraftV1Schema } from './guide-digest';
 
 describe('agent runtime contracts', () => {
   it('bounds source options and route budgets', () => {
@@ -924,6 +925,7 @@ describe('agent runtime contracts', () => {
       ['DEEP_ROUTER', 'ROUTE_DECISION'],
       ['FOCUSED_WORKER', 'TASK_FINDING'],
       ['FOCUSED_WORKER', 'ANSWER'],
+      ['FOCUSED_WORKER', 'GUIDE_DIGEST'],
       ['DEEP_WORKER', 'TASK_FINDING'],
       ['DEEP_WORKER', 'ANSWER'],
       ['REDUCER', 'ANSWER'],
@@ -939,6 +941,10 @@ describe('agent runtime contracts', () => {
       ['FOCUSED_WORKER', 'ROUTE_DECISION'],
       ['DEEP_WORKER', 'ROUTE_DECISION'],
       ['REDUCER', 'TASK_FINDING'],
+      ['ROUTER', 'GUIDE_DIGEST'],
+      ['DEEP_ROUTER', 'GUIDE_DIGEST'],
+      ['DEEP_WORKER', 'GUIDE_DIGEST'],
+      ['REDUCER', 'GUIDE_DIGEST'],
     ] as const) {
       expect(BridgeRequestV1Schema.safeParse({ ...base, role, outputKind }).success).toBe(false);
     }
@@ -959,8 +965,36 @@ describe('agent runtime contracts', () => {
       type: 'TASK_FINDING',
       payload: { finding: validRouteDecision('DIRECT') },
     }).success).toBe(false);
+    const digest = validGuideDigest();
+    expect(BridgeEventV1Schema.parse({
+      ...eventBase,
+      type: 'GUIDE_DIGEST',
+      payload: { digest },
+    })).toMatchObject({ type: 'GUIDE_DIGEST', payload: { digest } });
+    expect(BridgeEventV1Schema.safeParse({
+      ...eventBase,
+      type: 'GUIDE_DIGEST',
+      payload: { digest, answer: {} },
+    }).success).toBe(false);
+    expect(BridgeEventV1Schema.safeParse({
+      ...eventBase,
+      type: 'GUIDE_DIGEST',
+      payload: { digest: { ...digest, unexpected: true } },
+    }).success).toBe(false);
   });
 });
+
+function validGuideDigest() {
+  return GuideDigestDraftV1Schema.parse({
+    schemaVersion: 1,
+    shortSummary: '仅基于当前流程快照生成的摘要。',
+    scope: { audiences: [], businessObjects: [], systems: [] },
+    stageSections: [],
+    keyRules: [],
+    tagSuggestions: [],
+    gaps: [{ code: 'MISSING_ENTRY', message: '快照缺少入口。', sourceIds: [] }],
+  });
+}
 
 function santexwellFinding() {
   return {

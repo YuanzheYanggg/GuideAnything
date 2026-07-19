@@ -2,6 +2,8 @@ import {
   AgentInternalAnswerV1Schema,
   BridgeEventV1Schema,
   BridgeRunRequestV1Schema,
+  FlowKnowledgeSnapshotV2Schema,
+  GuideDigestDraftV1Schema,
   RouteDecisionV1Schema,
   RouteTaskV1Schema,
   SourceOptionsV1Schema,
@@ -11,6 +13,8 @@ import {
   type BridgeEventV1,
   type BridgeRunRequestV1,
   type EvidenceSourceV1,
+  type FlowKnowledgeSnapshotV2,
+  type GuideDigestDraftV1,
   type RouteDecisionV1,
   type RouteTaskV1,
   type SourceOptionsV1,
@@ -47,6 +51,10 @@ const ReducerContextSchema = z.object({
   findings: z.array(TaskFindingV1Schema),
 }).passthrough();
 
+const GuideDigestContextSchema = z.object({
+  snapshot: FlowKnowledgeSnapshotV2Schema,
+}).passthrough();
+
 /**
  * Local-development runtime used for deterministic integration tests and UI
  * demos. It never retrieves data: it can only route over declared sources and
@@ -62,7 +70,7 @@ export class DeterministicFakeAgentRuntimeClient implements AgentRuntimeClient {
     const request = BridgeRunRequestV1Schema.parse(untrustedRequest);
     assertAvailable(request.runId, this.#cancelled, signal);
     try {
-      yield bridgeEvent(request, 1, 'COMMENTARY', { text: '正在按本地只读策略处理已授权上下文。' });
+      yield bridgeEvent(request, 1, 'COMMENTARY', { text: 'Fake Runtime：正在按本地只读策略验证协议。' });
       assertAvailable(request.runId, this.#cancelled, signal);
       const envelope = parsePromptEnvelope(request.prompt);
       let sequence = 2;
@@ -73,6 +81,10 @@ export class DeterministicFakeAgentRuntimeClient implements AgentRuntimeClient {
       } else if (request.outputKind === 'TASK_FINDING') {
         yield bridgeEvent(request, sequence, 'TASK_FINDING', {
           finding: taskFinding(envelope.retrievedContext),
+        });
+      } else if (request.outputKind === 'GUIDE_DIGEST') {
+        yield bridgeEvent(request, sequence, 'GUIDE_DIGEST', {
+          digest: guideDigest(envelope.retrievedContext),
         });
       } else {
         const answer = finalAnswer(request, envelope.retrievedContext);
@@ -230,6 +242,39 @@ function finalAnswer(
     artifacts: [],
     suggestedQuestions: [],
   });
+}
+
+function guideDigest(untrustedContext: unknown): GuideDigestDraftV1 {
+  const { snapshot } = GuideDigestContextSchema.parse(untrustedContext);
+  const anchorId = firstDigestAnchor(snapshot);
+  return GuideDigestDraftV1Schema.parse({
+    schemaVersion: 1,
+    shortSummary: 'Fake Runtime 协议占位结果，不代表内容质量。',
+    scope: {
+      audiences: snapshot.lanes.filter((lane) => lane.kind === 'ROLE').slice(0, 50).map((lane) => lane.title),
+      businessObjects: [],
+      systems: snapshot.lanes.filter((lane) => lane.kind === 'SYSTEM').slice(0, 50).map((lane) => lane.title),
+    },
+    stageSections: [],
+    keyRules: [],
+    tagSuggestions: [],
+    gaps: anchorId === undefined
+      ? [{ code: 'MISSING_ENTRY', message: 'Fake Runtime 协议占位：快照没有可引用锚点。', sourceIds: [] }]
+      : [{
+          code: 'INCOMPLETE_DESCRIPTION',
+          message: 'Fake Runtime 协议占位：未执行内容质量生成。',
+          sourceIds: [anchorId],
+        }],
+  });
+}
+
+function firstDigestAnchor(snapshot: FlowKnowledgeSnapshotV2): string | undefined {
+  return snapshot.nodes[0]?.id
+    ?? snapshot.stages[0]?.id
+    ?? snapshot.resources[0]?.id
+    ?? snapshot.relations[0]?.id
+    ?? snapshot.learningPath[0]?.id
+    ?? snapshot.lanes[0]?.id;
 }
 
 function focusedAnswerFinding(untrustedContext: unknown): TaskFindingV1 {

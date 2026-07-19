@@ -3,6 +3,7 @@ import {
   AgentInternalAnswerV1Schema,
   BridgeEventV1Schema,
   BridgeRunRequestV1Schema,
+  GuideDigestDraftV1Schema,
   RouteDecisionV1Schema,
   TaskFindingV1Schema,
   type AgentInternalAnswerV1,
@@ -10,6 +11,7 @@ import {
   type BridgeModelRoleV1,
   type BridgeOutputKindV1,
   type BridgeRunRequestV1,
+  type GuideDigestDraftV1,
   type RouteDecisionV1,
   type TaskFindingV1,
 } from '@guideanything/contracts';
@@ -58,11 +60,15 @@ export const ROUTE_DECISION_JSON_SCHEMA = Object.freeze(
 export const TASK_FINDING_JSON_SCHEMA = Object.freeze(
   makeCodexOutputSchema(z.toJSONSchema(TaskFindingV1Schema, { target: 'draft-7' })) as object,
 );
+export const GUIDE_DIGEST_JSON_SCHEMA = Object.freeze(
+  makeCodexOutputSchema(z.toJSONSchema(GuideDigestDraftV1Schema, { target: 'draft-7' })) as object,
+);
 
 const OUTPUT_SCHEMA_BY_KIND: Readonly<Record<BridgeOutputKindV1, object>> = Object.freeze({
   ROUTE_DECISION: ROUTE_DECISION_JSON_SCHEMA,
   TASK_FINDING: TASK_FINDING_JSON_SCHEMA,
   ANSWER: AGENT_INTERNAL_ANSWER_JSON_SCHEMA,
+  GUIDE_DIGEST: GUIDE_DIGEST_JSON_SCHEMA,
 });
 
 export interface CodexRpc {
@@ -111,7 +117,7 @@ interface RunContext {
   readonly queue: AsyncEventQueue<BridgeEventV1>;
   readonly itemPhases: Map<string, 'commentary' | 'final_answer' | null>;
   sequence: number;
-  structuredOutput: RouteDecisionV1 | TaskFindingV1 | AgentInternalAnswerV1 | null;
+  structuredOutput: RouteDecisionV1 | TaskFindingV1 | AgentInternalAnswerV1 | GuideDigestDraftV1 | null;
   terminal: boolean;
   cancelRequested: boolean;
   steerInFlight: boolean;
@@ -640,6 +646,8 @@ export class CodexRuntime {
       this.#push(context, 'ROUTE_DECISION', { decision: context.structuredOutput });
     } else if (context.outputKind === 'TASK_FINDING') {
       this.#push(context, 'TASK_FINDING', { finding: context.structuredOutput });
+    } else if (context.outputKind === 'GUIDE_DIGEST') {
+      this.#push(context, 'GUIDE_DIGEST', { digest: context.structuredOutput });
     } else {
       this.#push(context, 'FINAL_ANSWER', { answer: context.structuredOutput });
     }
@@ -880,21 +888,24 @@ function removeStructuredOutputNullPlaceholders(value: unknown): unknown {
 function parseStructuredOutput(
   outputKind: BridgeOutputKindV1,
   value: unknown,
-): RouteDecisionV1 | TaskFindingV1 | AgentInternalAnswerV1 {
+): RouteDecisionV1 | TaskFindingV1 | AgentInternalAnswerV1 | GuideDigestDraftV1 {
   if (outputKind === 'ROUTE_DECISION') return RouteDecisionV1Schema.parse(value);
   if (outputKind === 'TASK_FINDING') return TaskFindingV1Schema.parse(value);
+  if (outputKind === 'GUIDE_DIGEST') return GuideDigestDraftV1Schema.parse(value);
   return AgentInternalAnswerV1Schema.parse(value);
 }
 
 function invalidOutputCode(outputKind: BridgeOutputKindV1): string {
   if (outputKind === 'ROUTE_DECISION') return 'INVALID_ROUTE_DECISION';
   if (outputKind === 'TASK_FINDING') return 'INVALID_TASK_FINDING';
+  if (outputKind === 'GUIDE_DIGEST') return 'INVALID_GUIDE_DIGEST_OUTPUT';
   return 'INVALID_FINAL_ANSWER';
 }
 
 function missingOutputCode(outputKind: BridgeOutputKindV1): string {
   if (outputKind === 'ROUTE_DECISION') return 'ROUTE_DECISION_MISSING';
   if (outputKind === 'TASK_FINDING') return 'TASK_FINDING_MISSING';
+  if (outputKind === 'GUIDE_DIGEST') return 'GUIDE_DIGEST_MISSING';
   return 'FINAL_ANSWER_MISSING';
 }
 

@@ -216,10 +216,13 @@ function assertExpectedOutput(
     ? 'ROUTE_DECISION'
     : request.outputKind === 'TASK_FINDING'
       ? 'TASK_FINDING'
-      : 'FINAL_ANSWER';
+      : request.outputKind === 'GUIDE_DIGEST'
+        ? 'GUIDE_DIGEST'
+        : 'FINAL_ANSWER';
   const structured = event.type === 'ROUTE_DECISION'
     || event.type === 'TASK_FINDING'
-    || event.type === 'FINAL_ANSWER';
+    || event.type === 'FINAL_ANSWER'
+    || event.type === 'GUIDE_DIGEST';
   if (
     event.type === 'STRUCTURED_OUTPUT_DELTA'
     && (request.outputKind !== 'ANSWER' || alreadyReceived)

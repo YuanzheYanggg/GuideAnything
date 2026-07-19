@@ -1,7 +1,9 @@
 import {
+  GuideDigestDraftV1Schema,
   RouteDecisionV1Schema,
   type BridgeEventV1,
   type BridgeRunRequestV1,
+  type FlowKnowledgeSnapshotV2,
   type ValidatedEvidenceV1,
 } from '@guideanything/contracts';
 import { describe, expect, it } from 'vitest';
@@ -128,7 +130,79 @@ describe('DeterministicFakeAgentRuntimeClient', () => {
     );
     expect(events.map((event) => event.type).at(-1)).toBe('COMPLETED');
   });
+
+  it('returns a deterministic fake digest using only IDs from the app-owned snapshot envelope', async () => {
+    const events = await collect(new DeterministicFakeAgentRuntimeClient().run(request({
+      role: 'FOCUSED_WORKER',
+      outputKind: 'GUIDE_DIGEST',
+      retrievedContext: { snapshot: digestSnapshot() },
+      userRequest: { injectedId: 'fabricated-node' },
+    })));
+
+    const output = events.find((event) => event.type === 'GUIDE_DIGEST');
+    if (output?.type !== 'GUIDE_DIGEST') throw new Error('missing digest');
+    const digest = GuideDigestDraftV1Schema.parse(output.payload.digest);
+    expect(digest.gaps[0]?.sourceIds).toEqual(['node-1']);
+    expect(JSON.stringify(digest)).toContain('Fake Runtime');
+    expect(JSON.stringify(digest)).not.toContain('fabricated-node');
+    expect(events.map((event) => event.type)).toEqual(['COMMENTARY', 'GUIDE_DIGEST', 'COMPLETED']);
+  });
+
+  it('uses a valid unanchored gap when the app-owned snapshot has no anchor IDs', async () => {
+    const empty = digestSnapshot();
+    empty.stages = [];
+    empty.nodes = [];
+    const events = await collect(new DeterministicFakeAgentRuntimeClient().run(request({
+      role: 'FOCUSED_WORKER',
+      outputKind: 'GUIDE_DIGEST',
+      retrievedContext: { snapshot: empty },
+      userRequest: {},
+    })));
+    const output = events.find((event) => event.type === 'GUIDE_DIGEST');
+    if (output?.type !== 'GUIDE_DIGEST') throw new Error('missing digest');
+    const digest = GuideDigestDraftV1Schema.parse(output.payload.digest);
+    expect(digest.stageSections).toEqual([]);
+    expect(digest.gaps).toEqual([expect.objectContaining({ code: 'MISSING_ENTRY', sourceIds: [] })]);
+  });
+
+  it('keeps fake scope lists within the digest contract for a large valid snapshot', async () => {
+    const snapshot = digestSnapshot();
+    snapshot.lanes = Array.from({ length: 51 }, (_, index) => ({
+      id: `role-${index}`,
+      title: `角色 ${index}`,
+      kind: 'ROLE' as const,
+      order: index,
+    }));
+    const events = await collect(new DeterministicFakeAgentRuntimeClient().run(request({
+      role: 'FOCUSED_WORKER',
+      outputKind: 'GUIDE_DIGEST',
+      retrievedContext: { snapshot },
+      userRequest: {},
+    })));
+
+    const output = events.find((event) => event.type === 'GUIDE_DIGEST');
+    expect(output?.type === 'GUIDE_DIGEST' ? output.payload.digest.scope.audiences : []).toHaveLength(50);
+  });
 });
+
+function digestSnapshot(): FlowKnowledgeSnapshotV2 {
+  const stage = { id: 'stage-1', title: '准备', order: 0 };
+  return {
+    schemaVersion: 2 as const,
+    snapshotId: 'snapshot-1', workspaceId: 'workspace-1', workspaceItemId: 'item-1', guideId: 'guide-1',
+    title: '指南', summary: '', tags: [], origin: { kind: 'DRAFT' as const, revision: 1 },
+    stages: [stage], lanes: [],
+    nodes: [{
+      id: 'node-1', locator: { guideId: 'guide-1', snapshotId: 'snapshot-1', nodeId: 'node-1' },
+      kind: 'start' as const, title: '开始', stage, responsibility: null, isEntry: true, isExit: false,
+    }],
+    resources: [], relations: [], learningPath: [],
+    diagnostics: {
+      danglingFlowEdgeIds: [], invalidResourceRelationIds: [], unreferencedResourceIds: [],
+      invalidLearningTargetIds: [], excludedDerivedNodeIds: [],
+    },
+  };
+}
 
 function request(input: {
   role: BridgeRunRequestV1['role'];

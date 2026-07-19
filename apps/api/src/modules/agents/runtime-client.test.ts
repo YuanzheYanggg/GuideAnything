@@ -137,6 +137,35 @@ describe('HttpAgentRuntimeClient', () => {
       .rejects.toMatchObject({ code: 'BRIDGE_OUTPUT_KIND_INVALID' });
   });
 
+  it('accepts exactly one GUIDE_DIGEST output and rejects mismatched or duplicate outputs', async () => {
+    const digestRequest = {
+      ...request,
+      role: 'FOCUSED_WORKER' as const,
+      outputKind: 'GUIDE_DIGEST' as const,
+      prompt: '生成指南摘要。',
+    };
+    const digest = guideDigest();
+    const digestEvent = {
+      requestId: 'request-1', runId: 'run-1', sequence: 1,
+      type: 'GUIDE_DIGEST', payload: { digest },
+    };
+    const completed = {
+      requestId: 'request-1', runId: 'run-1', sequence: 2, type: 'COMPLETED', payload: {},
+    };
+
+    await expect(collect(clientForEvents([digestEvent, completed]).run(digestRequest)))
+      .resolves.toHaveLength(2);
+    await expect(collect(clientForEvents([
+      { ...digestEvent, type: 'FINAL_ANSWER', payload: { answer: internalAnswer() } },
+      completed,
+    ]).run(digestRequest))).rejects.toMatchObject({ code: 'BRIDGE_OUTPUT_KIND_INVALID' });
+    await expect(collect(clientForEvents([
+      digestEvent,
+      { ...digestEvent, sequence: 2 },
+      { ...completed, sequence: 3 },
+    ]).run(digestRequest))).rejects.toMatchObject({ code: 'BRIDGE_OUTPUT_KIND_INVALID' });
+  });
+
   it('sends schema-validated cancel and steer commands without callers supplying credentials', async () => {
     const requestBodies: string[] = [];
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -179,6 +208,22 @@ function bridgeEvents(): BridgeEventV1[] {
       type: 'FAILED', payload: { code: 'TEST_FAILURE', message: '测试终止。', retryable: true },
     }),
   ];
+}
+
+function guideDigest() {
+  return {
+    schemaVersion: 1,
+    shortSummary: 'Fake Runtime 协议摘要。',
+    scope: { audiences: [], businessObjects: [], systems: [] },
+    stageSections: [], keyRules: [], tagSuggestions: [], gaps: [],
+  };
+}
+
+function internalAnswer() {
+  return {
+    mode: 'ANSWER', conclusion: '结论', sections: [], evidence: [], flowFeedback: [],
+    evidenceStatus: 'INSUFFICIENT', artifacts: [], suggestedQuestions: [],
+  };
 }
 
 function clientForEvents(events: readonly unknown[]): HttpAgentRuntimeClient {

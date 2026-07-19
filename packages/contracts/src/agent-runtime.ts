@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { FlowLocatorV1Schema } from './flow-knowledge';
+import { GuideDigestDraftV1Schema } from './guide-digest';
 
 const IdV1Schema = z.string().min(1).max(200);
 const OpaqueReferenceIdV1Schema = IdV1Schema.refine(
@@ -783,6 +784,7 @@ export const BridgeOutputKindV1Schema = z.enum([
   'ROUTE_DECISION',
   'TASK_FINDING',
   'ANSWER',
+  'GUIDE_DIGEST',
 ]);
 
 export const BridgeRunRequestV1Schema = z.object({
@@ -801,7 +803,11 @@ export const BridgeRunRequestV1Schema = z.object({
     ? request.outputKind === 'ROUTE_DECISION'
     : request.role === 'REDUCER'
       ? request.outputKind === 'ANSWER'
-      : request.outputKind === 'TASK_FINDING' || request.outputKind === 'ANSWER';
+      : request.role === 'FOCUSED_WORKER'
+        ? request.outputKind === 'TASK_FINDING'
+          || request.outputKind === 'ANSWER'
+          || request.outputKind === 'GUIDE_DIGEST'
+        : request.outputKind === 'TASK_FINDING' || request.outputKind === 'ANSWER';
   if (!valid) {
     context.addIssue({
       code: 'custom',
@@ -867,6 +873,11 @@ export const BridgeEventV1Schema = z.discriminatedUnion('type', [
     ...BridgeEventBaseV1Shape,
     type: z.literal('FINAL_ANSWER'),
     payload: z.object({ answer: AgentInternalAnswerV1Schema }).strict(),
+  }).strict(),
+  z.object({
+    ...BridgeEventBaseV1Shape,
+    type: z.literal('GUIDE_DIGEST'),
+    payload: z.object({ digest: GuideDigestDraftV1Schema }).strict(),
   }).strict(),
   z.object({
     ...BridgeEventBaseV1Shape,

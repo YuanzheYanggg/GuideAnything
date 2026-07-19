@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   AgentInternalAnswerV1Schema,
+  GuideDigestDraftV1Schema,
   RouteDecisionV1Schema,
   TaskFindingV1Schema,
   type BridgeEventV1,
@@ -14,6 +15,7 @@ import {
   AGENT_INTERNAL_ANSWER_JSON_SCHEMA,
   CodexRuntime,
   CodexRuntimeError,
+  GUIDE_DIGEST_JSON_SCHEMA,
   ROUTE_DECISION_JSON_SCHEMA,
   TASK_FINDING_JSON_SCHEMA,
   type CodexRpc,
@@ -136,6 +138,16 @@ const VALID_TASK_FINDING = {
   validatedEvidence: [],
   conflicts: [],
   gaps: ['未提供相关证据。'],
+};
+
+const VALID_GUIDE_DIGEST = {
+  schemaVersion: 1 as const,
+  shortSummary: '仅基于当前快照生成的摘要。',
+  scope: { audiences: [], businessObjects: [], systems: [] },
+  stageSections: [],
+  keyRules: [],
+  tagSuggestions: [],
+  gaps: [{ code: 'MISSING_ENTRY' as const, message: '快照缺少入口。', sourceIds: [] }],
 };
 
 function config(overrides: Record<string, string | undefined> = {}): RuntimeBridgeConfig {
@@ -512,6 +524,50 @@ describe('CodexRuntime thread and turn safety', () => {
       expect.objectContaining({ type: 'COMPLETED' }),
     ]));
     expect(findingEvents.some(({ type }) => type === 'STRUCTURED_OUTPUT_DELTA')).toBe(false);
+
+    const digestRuntime = await initializedRuntime();
+    const digestHandle = await startHandle(
+      digestRuntime.runtime,
+      digestRuntime.rpc,
+      digestRuntime.runtimeConfig,
+      runRequest({ outputKind: 'GUIDE_DIGEST' }),
+    );
+    const digestTurn = digestRuntime.rpc.requests.find(({ method }) => method === 'turn/start')?.params as Record<string, unknown>;
+    expect(digestTurn.outputSchema).toEqual(GUIDE_DIGEST_JSON_SCHEMA);
+    expect(findObjectsWithOptionalProperties(GUIDE_DIGEST_JSON_SCHEMA)).toEqual([]);
+    expect(restoreCodexUnionKeywords(GUIDE_DIGEST_JSON_SCHEMA)).toEqual(
+      z.toJSONSchema(GuideDigestDraftV1Schema, { target: 'draft-7' }),
+    );
+    emitFinal(digestRuntime.rpc, 'thread-1', 'turn-1', VALID_GUIDE_DIGEST);
+    digestRuntime.rpc.emit('turn/completed', {
+      threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] },
+    });
+    const digestEvents = await collectEvents(digestHandle);
+    expect(digestEvents.map(({ type }) => type)).toEqual(['THREAD_BOUND', 'GUIDE_DIGEST', 'COMPLETED']);
+    expect(digestEvents[1]).toMatchObject({ type: 'GUIDE_DIGEST', payload: { digest: VALID_GUIDE_DIGEST } });
+  });
+
+  it.each([
+    ['schema-invalid digest', { ...VALID_GUIDE_DIGEST, unexpected: true }],
+    ['answer-shaped digest', VALID_ANSWER],
+  ])('fails GUIDE_DIGEST closed for %s without emitting an answer', async (_label, output) => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const handle = await startHandle(
+      runtime,
+      rpc,
+      runtimeConfig,
+      runRequest({ outputKind: 'GUIDE_DIGEST' }),
+    );
+    emitFinal(rpc, 'thread-1', 'turn-1', output);
+    rpc.emit('turn/completed', {
+      threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] },
+    });
+
+    const events = await collectEvents(handle);
+    expect(events.at(-1)).toMatchObject({
+      type: 'FAILED', payload: { code: 'INVALID_GUIDE_DIGEST_OUTPUT' },
+    });
+    expect(events.some(({ type }) => type === 'FINAL_ANSWER')).toBe(false);
   });
 
   it('rejects a valid answer payload when a route decision was requested', async () => {

@@ -7,7 +7,12 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import type { AgentRuntimeClient } from './runtime-client';
-import { AgentInvocationError, runFinalAnswer, runRouteDecision } from './typed-runtime';
+import {
+  AgentInvocationError,
+  invokeGuideDigestRuntime,
+  runFinalAnswer,
+  runRouteDecision,
+} from './typed-runtime';
 
 const answer: AgentInternalAnswerV1 = {
   mode: 'ANSWER',
@@ -50,7 +55,41 @@ describe('typed runtime answer previews', () => {
   });
 });
 
-function request<TOutput extends 'ANSWER' | 'ROUTE_DECISION'>(
+describe('invokeGuideDigestRuntime', () => {
+  const digest = {
+    schemaVersion: 1 as const,
+    shortSummary: 'Fake Runtime 协议摘要。',
+    scope: { audiences: [], businessObjects: [], systems: [] },
+    stageSections: [], keyRules: [], tagSuggestions: [], gaps: [],
+  };
+
+  it('returns the single typed digest output after completion', async () => {
+    await expect(invokeGuideDigestRuntime(runtime([
+      event(1, 'COMMENTARY', { text: 'private' }),
+      event(2, 'GUIDE_DIGEST', { digest }),
+      event(3, 'COMPLETED', {}),
+    ]), request('GUIDE_DIGEST'))).resolves.toEqual(digest);
+  });
+
+  it.each([
+    ['missing', [event(1, 'COMPLETED', {})], 'BRIDGE_OUTPUT_MISSING'],
+    ['duplicate', [
+      event(1, 'GUIDE_DIGEST', { digest }),
+      event(2, 'GUIDE_DIGEST', { digest }),
+    ], 'BRIDGE_OUTPUT_KIND_INVALID'],
+    ['mismatched', [event(1, 'FINAL_ANSWER', { answer })], 'BRIDGE_OUTPUT_KIND_INVALID'],
+    ['bridge failure', [event(1, 'FAILED', {
+      code: 'INVALID_GUIDE_DIGEST_OUTPUT', message: 'invalid', retryable: false,
+    })], 'INVALID_GUIDE_DIGEST_OUTPUT'],
+  ] as const)('rejects %s terminal output and preserves the code', async (_case, events, code) => {
+    await expect(invokeGuideDigestRuntime(
+      runtime(events),
+      request('GUIDE_DIGEST'),
+    )).rejects.toMatchObject({ code });
+  });
+});
+
+function request<TOutput extends 'ANSWER' | 'ROUTE_DECISION' | 'GUIDE_DIGEST'>(
   outputKind: TOutput,
 ): BridgeRunRequestV1 & { outputKind: TOutput } {
   return {
@@ -58,7 +97,7 @@ function request<TOutput extends 'ANSWER' | 'ROUTE_DECISION'>(
     requestId: 'request-1',
     runId: 'run-1',
     planVersion: 1,
-    role: outputKind === 'ANSWER' ? 'FOCUSED_WORKER' : 'ROUTER',
+    role: outputKind === 'ROUTE_DECISION' ? 'ROUTER' : 'FOCUSED_WORKER',
     reasoningEffort: 'MEDIUM',
     outputKind,
     prompt: 'prompt',

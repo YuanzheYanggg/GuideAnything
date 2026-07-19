@@ -1,10 +1,12 @@
 import {
   AgentInternalAnswerV1Schema,
+  GuideDigestDraftV1Schema,
   RouteDecisionV1Schema,
   TaskFindingV1Schema,
   type AgentInternalAnswerV1,
   type BridgeEventV1,
   type BridgeRunRequestV1,
+  type GuideDigestDraftV1,
   type RouteDecisionV1,
   type TaskFindingV1,
 } from '@guideanything/contracts';
@@ -70,8 +72,20 @@ export async function runFinalAnswer(
   );
 }
 
+export async function invokeGuideDigestRuntime(
+  runtime: AgentRuntimeClient,
+  request: BridgeRunRequestV1,
+): Promise<GuideDigestDraftV1> {
+  return consumeTypedOutput(
+    runtime,
+    request,
+    'GUIDE_DIGEST',
+    (event) => GuideDigestDraftV1Schema.parse(event.payload.digest),
+  );
+}
+
 async function consumeTypedOutput<
-  TType extends 'ROUTE_DECISION' | 'TASK_FINDING' | 'FINAL_ANSWER',
+  TType extends 'ROUTE_DECISION' | 'TASK_FINDING' | 'FINAL_ANSWER' | 'GUIDE_DIGEST',
   TResult,
 >(
   runtime: AgentRuntimeClient,
