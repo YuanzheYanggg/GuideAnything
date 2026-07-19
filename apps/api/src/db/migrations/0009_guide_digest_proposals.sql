@@ -18,7 +18,7 @@ CREATE TABLE guide_digest_proposals (
       AND failure_code NOT GLOB '*[^A-Z0-9_]*'
     )
   ),
-  supersedes_proposal_id TEXT REFERENCES guide_digest_proposals(id) ON DELETE CASCADE,
+  supersedes_proposal_id TEXT REFERENCES guide_digest_proposals(id) ON DELETE RESTRICT,
   applied_revision INTEGER CHECK (applied_revision >= 0),
   selected_summary INTEGER CHECK (selected_summary IN (0, 1)),
   accepted_tags_json TEXT CHECK (
@@ -37,7 +37,7 @@ CREATE TABLE guide_digest_proposals (
       AND json_valid(draft_json)
       AND json_type(draft_json) = 'object'
       AND markdown IS NOT NULL
-      AND length(markdown) > 0
+      AND length(trim(markdown)) > 0
       AND failure_code IS NULL
       AND applied_revision IS NULL
       AND selected_summary IS NULL
@@ -48,7 +48,7 @@ CREATE TABLE guide_digest_proposals (
       AND json_valid(draft_json)
       AND json_type(draft_json) = 'object'
       AND markdown IS NOT NULL
-      AND length(markdown) > 0
+      AND length(trim(markdown)) > 0
       AND failure_code IS NULL
       AND applied_revision IS NOT NULL
       AND selected_summary IS NOT NULL
@@ -130,7 +130,7 @@ END;
 
 CREATE TABLE guide_digest_audit_events (
   id TEXT PRIMARY KEY,
-  proposal_id TEXT NOT NULL REFERENCES guide_digest_proposals(id) ON DELETE CASCADE,
+  proposal_id TEXT NOT NULL REFERENCES guide_digest_proposals(id) ON DELETE RESTRICT,
   guide_id TEXT NOT NULL REFERENCES guides(id) ON DELETE CASCADE,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   actor_id TEXT NOT NULL REFERENCES users(id),
@@ -161,6 +161,12 @@ END;
 
 CREATE TRIGGER guide_digest_audit_events_immutable
 BEFORE UPDATE ON guide_digest_audit_events
+BEGIN
+  SELECT RAISE(ABORT, 'guide digest audit event is immutable');
+END;
+
+CREATE TRIGGER guide_digest_audit_events_delete_immutable
+BEFORE DELETE ON guide_digest_audit_events
 BEGIN
   SELECT RAISE(ABORT, 'guide digest audit event is immutable');
 END;

@@ -239,6 +239,7 @@ describe('database migrations', () => {
       'guide_digest_audit_events_proposal_created_idx',
       'guide_digest_audit_events_scope_insert',
       'guide_digest_audit_events_immutable',
+      'guide_digest_audit_events_delete_immutable',
     ]));
 
     const strictByTable = new Map(
@@ -316,6 +317,15 @@ describe('database migrations', () => {
     );
 
     expect(() => insert.run('invalid-draft', 'DRAFT', null, null, null, now, now)).toThrow();
+    expect(() => database!.prepare(
+      `INSERT INTO guide_digest_proposals (
+        id, guide_id, workspace_id, base_snapshot_id, base_revision, bundle_revision,
+        renderer_version, generation_metadata_json, status, draft_json, markdown,
+        failure_code, created_by, created_at, updated_at
+      ) VALUES ('whitespace-markdown', 'digest-guide', 'workspace-one', 'digest-snapshot', 7, 2,
+        'renderer-v1', '{}', 'DRAFT', '{"schemaVersion":1}', '   ', NULL,
+        'user-one', ?, ?)`,
+    ).run(now, now)).toThrow();
     insert.run('digest-proposal', 'DRAFT', '{"schemaVersion":1}', '# 摘要', null, now, now);
     expect(() => insert.run('duplicate-draft', 'DRAFT', '{"schemaVersion":1}', '# 重复', null, now, now)).toThrow();
     expect(() => database!.prepare(
@@ -323,6 +333,38 @@ describe('database migrations', () => {
     ).run()).toThrow(/immutable/i);
     expect(() => insert.run('unsafe-failure', 'FAILED', null, null, 'raw model output', now, now)).toThrow();
     expect(() => insert.run('safe-failure', 'FAILED', null, null, 'SCHEMA_INVALID', now, now)).not.toThrow();
+
+    database.prepare(
+      `INSERT INTO guide_digest_audit_events (
+        id, proposal_id, guide_id, workspace_id, actor_id, event, metadata_json, created_at
+      ) VALUES ('digest-audit', 'safe-failure', 'digest-guide', 'workspace-one',
+        'user-one', 'VALIDATION_FAILED', '{}', ?)`,
+    ).run(now);
+    expect(() => database!.prepare(
+      `UPDATE guide_digest_audit_events SET metadata_json = '{"changed":true}' WHERE id = 'digest-audit'`,
+    ).run()).toThrow(/immutable/i);
+    expect(() => database!.prepare(
+      `DELETE FROM guide_digest_audit_events WHERE id = 'digest-audit'`,
+    ).run()).toThrow(/immutable/i);
+    expect(() => database!.prepare(
+      `DELETE FROM guide_digest_proposals WHERE id = 'safe-failure'`,
+    ).run()).toThrow();
+
+    database.prepare(
+      `UPDATE guide_digest_proposals SET status = 'STALE' WHERE id = 'digest-proposal'`,
+    ).run();
+    database.prepare(
+      `INSERT INTO guide_digest_proposals (
+        id, guide_id, workspace_id, base_snapshot_id, base_revision, bundle_revision,
+        renderer_version, generation_metadata_json, status, draft_json, markdown,
+        failure_code, supersedes_proposal_id, created_by, created_at, updated_at
+      ) VALUES ('successor-proposal', 'digest-guide', 'workspace-one', 'digest-snapshot', 7, 1,
+        'renderer-v1', '{}', 'DRAFT', '{"schemaVersion":1}', '# 后继摘要', NULL,
+        'digest-proposal', 'user-one', ?, ?)`,
+    ).run(now, now);
+    expect(() => database!.prepare(
+      `DELETE FROM guide_digest_proposals WHERE id = 'digest-proposal'`,
+    ).run()).toThrow();
 
     database.prepare(
       `INSERT INTO guides (

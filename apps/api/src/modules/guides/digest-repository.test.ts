@@ -40,7 +40,7 @@ describe('guide digest repository', () => {
       baseRevision: 4,
       bundleRevision: 1,
       rendererVersion: 'guide-digest-markdown-v1',
-      generationMetadata: { runtime: 'fake', attempt: 1 },
+      generationMetadata: generationMetadata(),
       status: 'DRAFT',
       draft: draft(),
       markdown: '# 指南摘要',
@@ -65,7 +65,8 @@ describe('guide digest repository', () => {
         metadata: {
           bundleRevision: 1,
           rendererVersion: 'guide-digest-markdown-v1',
-          supersedesProposalId: null,
+          supersededProposalId: null,
+          attemptCount: 1,
         },
       }),
     ]);
@@ -88,7 +89,8 @@ describe('guide digest repository', () => {
           bundleRevision: 1,
           rendererVersion: 'guide-digest-markdown-v1',
           failureCode: 'SCHEMA_INVALID',
-          supersedesProposalId: null,
+          supersededProposalId: null,
+          attemptCount: 1,
         },
       }),
     ]);
@@ -97,13 +99,10 @@ describe('guide digest repository', () => {
     })).toThrow(/failure code/i);
   });
 
-  it('rejects only a DRAFT and writes sanitized audit metadata', () => {
+  it('rejects only a DRAFT and writes allowlisted scalar audit metadata', () => {
     const proposal = createGuideDigestProposal(database, generatedInput());
     const rejected = rejectGuideDigestProposal(database, 'guide-one', proposal.id, 'user-one', {
       reasonCode: 'USER_REJECTED',
-      prompt: 'never persist this',
-      nested: { hiddenReasoning: 'never persist this either', kept: true },
-      raw_model_output: 'never persist this',
     });
 
     expect(rejected.status).toBe('REJECTED');
@@ -111,11 +110,46 @@ describe('guide digest repository', () => {
     expect(rejected.markdown).toBe(proposal.markdown);
     expect(listGuideDigestAuditEvents(database, 'guide-one', proposal.id).at(-1)).toMatchObject({
       event: 'REJECTED',
-      metadata: { reasonCode: 'USER_REJECTED', nested: { kept: true } },
+      metadata: { reasonCode: 'USER_REJECTED' },
     });
-    expect(JSON.stringify(listGuideDigestAuditEvents(database, 'guide-one', proposal.id))).not.toContain('never persist');
     expect(() => rejectGuideDigestProposal(database, 'guide-one', proposal.id, 'user-one'))
       .toThrow(expect.objectContaining({ code: 'GUIDE_DIGEST_INVALID_STATE' }));
+  });
+
+  it.each([
+    ['rawOutput', { rawOutput: 'raw model output' }],
+    ['reasoning', { reasoning: 'hidden reasoning' }],
+    ['completion', { completion: 'model completion' }],
+    ['modelResponse', { modelResponse: 'model response' }],
+    ['unknown key', { runtime: 'fake' }],
+    ['nested object', { runtimeMode: { value: 'fake' } }],
+    ['nested array', { attemptCount: [1] }],
+    ['unbounded string', { runtimeMode: 'x'.repeat(201) }],
+    ['undefined value', { runtimeMode: undefined }],
+  ])('rejects unsafe generation metadata: %s', (_label, generationMetadata) => {
+    expect(() => createGuideDigestProposal(database, {
+      ...generatedInput(), generationMetadata,
+    })).toThrow(/generation metadata/i);
+    expect(listGuideDigestProposals(database, 'guide-one')).toEqual([]);
+  });
+
+  it.each([
+    ['rawOutput', { rawOutput: 'raw model output' }],
+    ['reasoning', { reasoning: 'hidden reasoning' }],
+    ['completion', { completion: 'model completion' }],
+    ['modelResponse', { modelResponse: 'model response' }],
+    ['unknown key', { arbitrary: true }],
+    ['nested object', { reasonCode: { code: 'USER_REJECTED' } }],
+    ['nested array', { reasonCode: ['USER_REJECTED'] }],
+    ['unbounded string', { reasonCode: 'x'.repeat(201) }],
+    ['undefined value', { reasonCode: undefined }],
+  ])('rejects unsafe audit metadata before changing state: %s', (_label, auditMetadata) => {
+    const proposal = createGuideDigestProposal(database, generatedInput());
+    expect(() => rejectGuideDigestProposal(
+      database, 'guide-one', proposal.id, 'user-one', auditMetadata,
+    )).toThrow(/audit metadata/i);
+    expect(getGuideDigestProposal(database, 'guide-one', proposal.id)?.status).toBe('DRAFT');
+    expect(listGuideDigestAuditEvents(database, 'guide-one', proposal.id)).toHaveLength(1);
   });
 
   it('marks only a DRAFT stale and preserves immutable generated content', () => {
@@ -158,9 +192,9 @@ describe('guide digest repository', () => {
       event: 'APPLIED',
       metadata: {
         appliedRevision: 5,
-        selectedSummary: true,
+        summaryApplied: true,
         acceptedTagCount: 2,
-        acceptedMarkdown: false,
+        markdownAccepted: false,
       },
     });
   });
@@ -219,7 +253,19 @@ function generationIdentity() {
     baseRevision: 4,
     bundleRevision: 1,
     rendererVersion: 'guide-digest-markdown-v1',
-    generationMetadata: { runtime: 'fake', attempt: 1 },
+    generationMetadata: generationMetadata(),
+  } as const;
+}
+
+function generationMetadata() {
+  return {
+    modelRole: 'FOCUSED_WORKER',
+    reasoningEffort: 'MEDIUM',
+    outputSchemaVersion: 1,
+    attemptCount: 1,
+    repairAttempted: false,
+    truncatedResourceCount: 0,
+    runtimeMode: 'fake',
   } as const;
 }
 

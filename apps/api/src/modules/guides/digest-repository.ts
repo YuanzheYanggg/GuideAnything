@@ -14,11 +14,39 @@ export type GuideDigestAuditEventType =
   | 'MARKED_STALE'
   | 'APPLIED';
 
-type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+type JsonValue = null | boolean | number | string;
 type JsonObject = { [key: string]: JsonValue };
 
 const AcceptedTagsSchema = z.array(z.string().trim().min(1).max(50)).max(20)
   .refine((tags) => new Set(tags).size === tags.length, 'accepted tags must be unique');
+const MetadataScalarSchema = z.union([
+  z.string().max(200),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+]);
+const GenerationMetadataSchema = z.object({
+  modelRole: MetadataScalarSchema.optional(),
+  reasoningEffort: MetadataScalarSchema.optional(),
+  outputSchemaVersion: MetadataScalarSchema.optional(),
+  attemptCount: MetadataScalarSchema.optional(),
+  repairAttempted: MetadataScalarSchema.optional(),
+  truncatedResourceCount: MetadataScalarSchema.optional(),
+  runtimeMode: MetadataScalarSchema.optional(),
+}).strict();
+const AuditMetadataSchema = z.object({
+  reasonCode: MetadataScalarSchema.optional(),
+  failureCode: MetadataScalarSchema.optional(),
+  baseRevision: MetadataScalarSchema.optional(),
+  appliedRevision: MetadataScalarSchema.optional(),
+  summaryApplied: MetadataScalarSchema.optional(),
+  acceptedTagCount: MetadataScalarSchema.optional(),
+  markdownAccepted: MetadataScalarSchema.optional(),
+  supersededProposalId: MetadataScalarSchema.optional(),
+  bundleRevision: MetadataScalarSchema.optional(),
+  rendererVersion: MetadataScalarSchema.optional(),
+  attemptCount: MetadataScalarSchema.optional(),
+}).strict();
 
 interface ProposalRow {
   id: string;
@@ -254,11 +282,11 @@ export function applyGuideDigestProposal(
     acceptedTags,
     acceptedMarkdown: input.acceptedMarkdown,
     auditMetadata: {
-      appliedRevision: input.appliedRevision,
-      selectedSummary: input.selectedSummary,
-      acceptedTagCount: acceptedTags.length,
-      acceptedMarkdown: input.acceptedMarkdown,
       ...(input.auditMetadata ?? {}),
+      appliedRevision: input.appliedRevision,
+      summaryApplied: input.selectedSummary,
+      acceptedTagCount: acceptedTags.length,
+      markdownAccepted: input.acceptedMarkdown,
     },
   });
 }
@@ -294,7 +322,7 @@ function insertProposal(database: DatabaseSync, input: InsertProposalInput): Gui
   const id = randomUUID();
   const createdAt = new Date().toISOString();
   const supersedesProposalId = input.supersedesProposalId ?? null;
-  const generationMetadata = sanitizeMetadata(input.generationMetadata);
+  const generationMetadata = parseGenerationMetadata(input.generationMetadata);
   database.prepare(
     `INSERT INTO guide_digest_proposals (
       id, guide_id, workspace_id, base_snapshot_id, base_revision, bundle_revision,
@@ -327,12 +355,20 @@ function insertProposal(database: DatabaseSync, input: InsertProposalInput): Gui
     actorId: input.createdBy,
     event: input.status === 'DRAFT' ? 'GENERATED' : 'VALIDATION_FAILED',
     metadata: input.status === 'DRAFT'
-      ? { bundleRevision: input.bundleRevision, rendererVersion: input.rendererVersion, supersedesProposalId }
+      ? {
+          bundleRevision: input.bundleRevision,
+          rendererVersion: input.rendererVersion,
+          supersededProposalId: supersedesProposalId,
+          ...(generationMetadata.attemptCount === undefined
+            ? {} : { attemptCount: generationMetadata.attemptCount }),
+        }
       : {
           bundleRevision: input.bundleRevision,
           rendererVersion: input.rendererVersion,
           failureCode: input.failureCode!,
-          supersedesProposalId,
+          supersededProposalId: supersedesProposalId,
+          ...(generationMetadata.attemptCount === undefined
+            ? {} : { attemptCount: generationMetadata.attemptCount }),
         },
     createdAt,
   });
@@ -365,6 +401,7 @@ function transitionDraft(
       `cannot transition guide digest proposal from ${current.status}`,
     );
   }
+  const auditMetadata = parseAuditMetadata(input.auditMetadata);
   const updatedAt = new Date().toISOString();
   const result = database.prepare(
     `UPDATE guide_digest_proposals
@@ -390,7 +427,7 @@ function transitionDraft(
     workspaceId: current.workspace_id,
     actorId,
     event: input.event,
-    metadata: sanitizeMetadata(input.auditMetadata),
+    metadata: auditMetadata,
     createdAt: updatedAt,
   });
   return getGuideDigestProposal(database, guideId, proposalId)!;
@@ -404,7 +441,7 @@ function recordAuditEvent(
     workspaceId: string;
     actorId: string;
     event: GuideDigestAuditEventType;
-    metadata: Record<string, unknown> | JsonObject;
+    metadata: Record<string, unknown>;
     createdAt: string;
   },
 ): void {
@@ -419,7 +456,7 @@ function recordAuditEvent(
     input.workspaceId,
     input.actorId,
     input.event,
-    JSON.stringify(sanitizeMetadata(input.metadata)),
+    JSON.stringify(parseAuditMetadata(input.metadata)),
     input.createdAt,
   );
 }
@@ -463,7 +500,7 @@ function mapProposal(row: ProposalRow): GuideDigestProposal {
     baseRevision: row.base_revision,
     bundleRevision: row.bundle_revision,
     rendererVersion: row.renderer_version,
-    generationMetadata: parseJsonObject(row.generation_metadata_json),
+    generationMetadata: parseGenerationMetadata(parseJsonObject(row.generation_metadata_json)),
     status: row.status,
     draft: row.draft_json === null ? null : GuideDigestDraftV1Schema.parse(JSON.parse(row.draft_json)),
     markdown: row.markdown,
@@ -489,59 +526,46 @@ function mapAuditEvent(row: AuditRow): GuideDigestAuditEvent {
     workspaceId: row.workspace_id,
     actorId: row.actor_id,
     event: row.event,
-    metadata: parseJsonObject(row.metadata_json),
+    metadata: parseAuditMetadata(parseJsonObject(row.metadata_json)),
     createdAt: row.created_at,
   };
 }
 
-function parseJsonObject(value: string): JsonObject {
+function parseJsonObject(value: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(value);
   if (!isPlainObject(parsed)) throw new Error('persisted metadata must be a JSON object');
-  return sanitizeMetadata(parsed);
+  return parsed;
 }
 
-function sanitizeMetadata(value: Record<string, unknown>): JsonObject {
-  const sanitized = sanitizeJsonValue(value);
-  if (!isPlainObject(sanitized)) throw new Error('metadata must be a JSON object');
-  return sanitized;
+function parseGenerationMetadata(value: Record<string, unknown>): JsonObject {
+  const result = GenerationMetadataSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error('generation metadata contains an unknown, nested, or invalid value');
+  }
+  return definedMetadata(result.data, 'generation metadata');
 }
 
-function sanitizeJsonValue(value: unknown): JsonValue | undefined {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('metadata numbers must be finite');
-    return value;
+function parseAuditMetadata(value: Record<string, unknown>): JsonObject {
+  const result = AuditMetadataSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error('audit metadata contains an unknown, nested, or invalid value');
   }
-  if (Array.isArray(value)) {
-    return value.map((item) => {
-      const sanitized = sanitizeJsonValue(item);
-      if (sanitized === undefined) throw new Error('metadata arrays must contain JSON values');
-      return sanitized;
-    });
+  return definedMetadata(result.data, 'audit metadata');
+}
+
+function definedMetadata(
+  value: Record<string, JsonValue | undefined>,
+  label: string,
+): JsonObject {
+  const result: JsonObject = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item === undefined) throw new Error(`${label} contains an undefined value`);
+    result[key] = item;
   }
-  if (isPlainObject(value)) {
-    const result: JsonObject = {};
-    for (const [key, item] of Object.entries(value)) {
-      if (isForbiddenAuditKey(key)) continue;
-      const sanitized = sanitizeJsonValue(item);
-      if (sanitized !== undefined) result[key] = sanitized;
-    }
-    return result;
-  }
-  if (value === undefined) return undefined;
-  throw new Error('metadata must contain only JSON values');
+  return result;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     && Object.getPrototypeOf(value) === Object.prototype;
-}
-
-function isForbiddenAuditKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
-  return normalized.includes('prompt')
-    || normalized.includes('hiddenreasoning')
-    || normalized.includes('chainofthought')
-    || normalized.includes('rawmodeloutput')
-    || normalized === 'modeloutput';
 }
