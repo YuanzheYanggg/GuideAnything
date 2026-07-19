@@ -173,6 +173,83 @@ describe('guide digest bundle', () => {
     })).toThrow('current snapshot');
   });
 
+  it('rejects continuity with a missing or unknown snapshot-diff collection', () => {
+    const currentSnapshot = snapshot({ snapshotId: 'snapshot-186', revision: 186 });
+    const previousSnapshot = snapshot({ snapshotId: 'snapshot-181', revision: 181 });
+    const snapshotDiff = buildGuideDigestSnapshotDiff(previousSnapshot, currentSnapshot);
+    const { nodes: _nodes, ...missingNodes } = snapshotDiff;
+
+    for (const malformedDiff of [
+      missingNodes,
+      { ...snapshotDiff, unexpected: true },
+    ]) {
+      expect(() => buildGuideDigestPrompt(currentSnapshot, {
+        continuity: {
+          baselineProposalId: 'proposal-181',
+          baselineRevision: 181,
+          previousDigest: digestDraft(),
+          snapshotDiff: malformedDiff as unknown as typeof snapshotDiff,
+        },
+      })).toThrow();
+    }
+  });
+
+  it('rejects continuity with a malformed nested snapshot-diff value', () => {
+    const currentSnapshot = snapshot({ snapshotId: 'snapshot-186', revision: 186 });
+    const previousSnapshot = snapshot({ snapshotId: 'snapshot-181', revision: 181 });
+    const snapshotDiff = buildGuideDigestSnapshotDiff(previousSnapshot, currentSnapshot);
+
+    expect(() => buildGuideDigestPrompt(currentSnapshot, {
+      continuity: {
+        baselineProposalId: 'proposal-181',
+        baselineRevision: 181,
+        previousDigest: digestDraft(),
+        snapshotDiff: {
+          ...snapshotDiff,
+          nodes: {
+            ...snapshotDiff.nodes,
+            updated: [{
+              id: 'node-1',
+              before: { ...previousSnapshot.nodes[0]!, unexpected: true },
+              after: currentSnapshot.nodes[0]!,
+            }],
+          },
+        } as unknown as typeof snapshotDiff,
+      },
+    })).toThrow();
+  });
+
+  it('rejects continuity whose baseline revision does not match the diff source revision', () => {
+    const currentSnapshot = snapshot({ snapshotId: 'snapshot-186', revision: 186 });
+    const previousSnapshot = snapshot({ snapshotId: 'snapshot-181', revision: 181 });
+
+    expect(() => buildGuideDigestPrompt(currentSnapshot, {
+      continuity: {
+        baselineProposalId: 'proposal-181',
+        baselineRevision: 180,
+        previousDigest: digestDraft(),
+        snapshotDiff: buildGuideDigestSnapshotDiff(previousSnapshot, currentSnapshot),
+      },
+    })).toThrow('baseline revision');
+  });
+
+  it('rejects continuity when the current snapshot is not a draft', () => {
+    const currentSnapshot = snapshot({
+      snapshotId: 'snapshot-186',
+      origin: { kind: 'PUBLISHED', versionId: 'version-186', version: 186 },
+    });
+    const previousSnapshot = snapshot({ snapshotId: 'snapshot-181', revision: 181 });
+
+    expect(() => buildGuideDigestPrompt(currentSnapshot, {
+      continuity: {
+        baselineProposalId: 'proposal-181',
+        baselineRevision: 181,
+        previousDigest: digestDraft(),
+        snapshotDiff: buildGuideDigestSnapshotDiff(previousSnapshot, currentSnapshot),
+      },
+    })).toThrow('current draft snapshot');
+  });
+
   it('rejects non-normalized snapshot fields instead of leaking URLs, paths, or bytes', () => {
     const unsafe = {
       ...snapshot(),
@@ -256,7 +333,11 @@ function locator(nodeId: string, snapshotId = 'snapshot-id') {
   return { guideId: 'guide-id', snapshotId, nodeId };
 }
 
-function snapshot(overrides: { snapshotId?: string; revision?: number } = {}): FlowKnowledgeSnapshotV2 {
+function snapshot(overrides: {
+  snapshotId?: string;
+  revision?: number;
+  origin?: FlowKnowledgeSnapshotV2['origin'];
+} = {}): FlowKnowledgeSnapshotV2 {
   const snapshotId = overrides.snapshotId ?? 'snapshot-id';
   const stage = { id: 'stage-1', title: '准备', order: 0 };
   const lane = { id: 'lane-1', title: '版师', kind: 'ROLE' as const, order: 0 };
@@ -269,7 +350,7 @@ function snapshot(overrides: { snapshotId?: string; revision?: number } = {}): F
     title: '打样流程',
     summary: '摘要',
     tags: ['打样'],
-    origin: { kind: 'DRAFT', revision: overrides.revision ?? 3 },
+    origin: overrides.origin ?? { kind: 'DRAFT', revision: overrides.revision ?? 3 },
     stages: [stage],
     lanes: [lane],
     nodes: [{

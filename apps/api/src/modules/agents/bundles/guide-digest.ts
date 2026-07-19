@@ -3,16 +3,18 @@ import {
   FlowKnowledgeSnapshotV2Schema,
   type FlowKnowledgeResourceV2,
   type FlowKnowledgeSnapshotV2,
-  type GuideDigestDraftV1,
 } from '@guideanything/contracts';
 import { Buffer } from 'node:buffer';
+import { z } from 'zod';
 
 import {
   GuideDigestIdManifestTooLargeError,
   buildGuideDigestIdManifest,
   type GuideDigestIdManifest,
 } from '../../guides/digest-renderer';
-import type { GuideDigestSnapshotDiffV1 } from '../../guides/digest-continuity';
+import {
+  GuideDigestSnapshotDiffV1Schema,
+} from '../../guides/digest-continuity';
 
 export const GUIDE_DIGEST_BUNDLE = {
   id: 'guideanything-guide-digest',
@@ -54,12 +56,14 @@ export interface GuideDigestPromptOptions {
   continuity?: GuideDigestContinuityContext;
 }
 
-export interface GuideDigestContinuityContext {
-  baselineProposalId: string;
-  baselineRevision: number;
-  previousDigest: GuideDigestDraftV1;
-  snapshotDiff: GuideDigestSnapshotDiffV1;
-}
+export const GuideDigestContinuityContextSchema = z.object({
+  baselineProposalId: z.string().trim().min(1).max(200),
+  baselineRevision: z.number().int().min(0),
+  previousDigest: GuideDigestDraftV1Schema,
+  snapshotDiff: GuideDigestSnapshotDiffV1Schema,
+}).strict();
+
+export type GuideDigestContinuityContext = z.infer<typeof GuideDigestContinuityContextSchema>;
 
 export interface GuideDigestInputEnvelope {
   snapshot: FlowKnowledgeSnapshotV2;
@@ -242,47 +246,22 @@ function normalizeRepairNote(value: string | undefined): string | undefined {
 
 function validateGuideDigestContinuity(
   snapshot: FlowKnowledgeSnapshotV2,
-  continuity: GuideDigestContinuityContext,
+  continuity: unknown,
 ): GuideDigestContinuityContext {
-  if (!continuity || typeof continuity !== 'object') {
-    throw new Error('continuity 必须是对象');
-  }
-  if (typeof continuity.baselineProposalId !== 'string' || !continuity.baselineProposalId.trim()) {
-    throw new Error('continuity.baselineProposalId 必须是非空字符串');
-  }
-  if (!Number.isSafeInteger(continuity.baselineRevision) || continuity.baselineRevision < 0) {
-    throw new Error('continuity.baselineRevision 必须是非负安全整数');
-  }
-  const previousDigest = GuideDigestDraftV1Schema.parse(continuity.previousDigest);
-  const snapshotDiff = continuity.snapshotDiff;
-  if (!snapshotDiff || typeof snapshotDiff !== 'object' || snapshotDiff.schemaVersion !== 1) {
-    throw new Error('continuity.snapshotDiff 必须是 GuideDigestSnapshotDiffV1');
-  }
-  if (
-    typeof snapshotDiff.fromSnapshotId !== 'string'
-    || !snapshotDiff.fromSnapshotId.trim()
-    || typeof snapshotDiff.toSnapshotId !== 'string'
-    || !snapshotDiff.toSnapshotId.trim()
-    || !Number.isSafeInteger(snapshotDiff.fromRevision)
-    || snapshotDiff.fromRevision < 0
-    || !Number.isSafeInteger(snapshotDiff.toRevision)
-    || snapshotDiff.toRevision < 0
-  ) {
-    throw new Error('continuity.snapshotDiff endpoint 无效');
-  }
+  const parsed = GuideDigestContinuityContextSchema.parse(continuity);
   if (snapshot.origin.kind !== 'DRAFT') {
     throw new Error('continuity requires a current draft snapshot');
   }
   if (
-    snapshotDiff.toSnapshotId !== snapshot.snapshotId
-    || snapshotDiff.toRevision !== snapshot.origin.revision
+    parsed.snapshotDiff.toSnapshotId !== snapshot.snapshotId
+    || parsed.snapshotDiff.toRevision !== snapshot.origin.revision
   ) {
     throw new Error('continuity.snapshotDiff must identify the current snapshot');
   }
-  if (snapshotDiff.fromRevision !== continuity.baselineRevision) {
+  if (parsed.snapshotDiff.fromRevision !== parsed.baselineRevision) {
     throw new Error('continuity baseline revision must match snapshotDiff.fromRevision');
   }
-  return { ...continuity, previousDigest };
+  return parsed;
 }
 
 function compareCodePoints(left: string, right: string): number {

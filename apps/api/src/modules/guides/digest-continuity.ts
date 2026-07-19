@@ -1,7 +1,14 @@
 import {
+  FlowKnowledgeLaneV1Schema,
+  FlowKnowledgeLearningStepV2Schema,
+  FlowKnowledgeNodeV2Schema,
+  FlowKnowledgeRelationV2Schema,
+  FlowKnowledgeResourceV2Schema,
   FlowKnowledgeSnapshotV2Schema,
+  FlowKnowledgeStageV1Schema,
   type FlowKnowledgeSnapshotV2,
 } from '@guideanything/contracts';
+import { z } from 'zod';
 
 export interface GuideDigestValueChange<T> {
   before: T;
@@ -20,25 +27,49 @@ export interface GuideDigestCollectionDiff<T extends { id: string }> {
   updated: Array<GuideDigestUpdatedValue<T>>;
 }
 
-export interface GuideDigestSnapshotDiffV1 {
-  schemaVersion: 1;
-  fromSnapshotId: string;
-  fromRevision: number;
-  toSnapshotId: string;
-  toRevision: number;
-  metadata: {
-    title?: GuideDigestValueChange<string>;
-    summary?: GuideDigestValueChange<string>;
-    tags?: GuideDigestValueChange<string[]>;
-  };
-  stages: GuideDigestCollectionDiff<FlowKnowledgeSnapshotV2['stages'][number]>;
-  lanes: GuideDigestCollectionDiff<FlowKnowledgeSnapshotV2['lanes'][number]>;
-  nodes: GuideDigestCollectionDiff<FlowKnowledgeSnapshotV2['nodes'][number]>;
-  resources: GuideDigestCollectionDiff<FlowKnowledgeSnapshotV2['resources'][number]>;
-  relations: GuideDigestCollectionDiff<FlowKnowledgeSnapshotV2['relations'][number]>;
-  learningPath: GuideDigestCollectionDiff<FlowKnowledgeSnapshotV2['learningPath'][number]>;
-  affectedSourceIds: string[];
+const GuideDigestIdV1Schema = z.string().min(1).max(200);
+const GuideDigestRevisionV1Schema = z.number().int().min(0);
+
+function guideDigestValueChangeSchema<T extends z.ZodType>(valueSchema: T) {
+  return z.object({
+    before: valueSchema,
+    after: valueSchema,
+  }).strict();
 }
+
+function guideDigestCollectionDiffSchema<T extends z.ZodType>(valueSchema: T) {
+  return z.object({
+    added: z.array(valueSchema),
+    removed: z.array(valueSchema),
+    updated: z.array(z.object({
+      id: GuideDigestIdV1Schema,
+      before: valueSchema,
+      after: valueSchema,
+    }).strict()),
+  }).strict();
+}
+
+export const GuideDigestSnapshotDiffV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  fromSnapshotId: GuideDigestIdV1Schema,
+  fromRevision: GuideDigestRevisionV1Schema,
+  toSnapshotId: GuideDigestIdV1Schema,
+  toRevision: GuideDigestRevisionV1Schema,
+  metadata: z.object({
+    title: guideDigestValueChangeSchema(z.string()).optional(),
+    summary: guideDigestValueChangeSchema(z.string()).optional(),
+    tags: guideDigestValueChangeSchema(z.array(z.string())).optional(),
+  }).strict(),
+  stages: guideDigestCollectionDiffSchema(FlowKnowledgeStageV1Schema),
+  lanes: guideDigestCollectionDiffSchema(FlowKnowledgeLaneV1Schema),
+  nodes: guideDigestCollectionDiffSchema(FlowKnowledgeNodeV2Schema),
+  resources: guideDigestCollectionDiffSchema(FlowKnowledgeResourceV2Schema),
+  relations: guideDigestCollectionDiffSchema(FlowKnowledgeRelationV2Schema),
+  learningPath: guideDigestCollectionDiffSchema(FlowKnowledgeLearningStepV2Schema),
+  affectedSourceIds: z.array(GuideDigestIdV1Schema),
+}).strict();
+
+export type GuideDigestSnapshotDiffV1 = z.infer<typeof GuideDigestSnapshotDiffV1Schema>;
 
 type Resource = FlowKnowledgeSnapshotV2['resources'][number];
 type Relation = FlowKnowledgeSnapshotV2['relations'][number];
