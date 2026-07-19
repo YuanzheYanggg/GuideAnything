@@ -1,5 +1,6 @@
 export * from './clipboard';
 export * from './flow-knowledge';
+export * from './flow-knowledge-compat';
 export * from './flow-proposal';
 export * from './history';
 export * from './hierarchy';

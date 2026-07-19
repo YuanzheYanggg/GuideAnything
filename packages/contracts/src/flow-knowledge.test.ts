@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FlowKnowledgeAttachmentV1Schema,
+  FlowKnowledgeSnapshotSchema,
   FlowKnowledgeSnapshotV1Schema,
+  FlowKnowledgeSnapshotV2Schema,
   FlowLocatorV1Schema,
   FlowSnapshotOriginV1Schema,
 } from './flow-knowledge';
@@ -152,6 +154,45 @@ describe('flow knowledge contracts', () => {
       annotations: [],
     }).success).toBe(false);
   });
+
+  it('parses normalized V2 semantic graph data without canvas position', () => {
+    const parsed = FlowKnowledgeSnapshotV2Schema.parse(snapshotV2());
+
+    expect(parsed.stages[0]).toEqual({ id: 'stage-1', title: '准备', order: 0 });
+    expect(parsed.lanes[0]).toEqual({ id: 'lane-1', title: '订单员', kind: 'ROLE', order: 0 });
+    expect(parsed.nodes.map((node) => node.id)).toEqual(['start', 'finish']);
+    expect(parsed.resources.map((resource) => resource.id)).toEqual(['note']);
+    expect(parsed.relations.map((relation) => relation.kind)).toEqual([
+      'FLOW',
+      'USES_RESOURCE',
+      'RESOURCE_REFERENCE',
+    ]);
+    expect(parsed.learningPath.map((step) => step.order)).toEqual([0, 1]);
+  });
+
+  it('rejects invalid normalized V2 graphs and unsupported versions', () => {
+    const base = snapshotV2();
+
+    expect(FlowKnowledgeSnapshotV2Schema.safeParse({
+      ...base,
+      nodes: [base.nodes[0], { ...base.nodes[0] }],
+    }).success).toBe(false);
+    expect(FlowKnowledgeSnapshotV2Schema.safeParse({
+      ...base,
+      relations: [{ kind: 'FLOW', id: 'flow-missing', sourceNodeId: 'start', targetNodeId: 'missing' }],
+    }).success).toBe(false);
+    expect(FlowKnowledgeSnapshotV2Schema.safeParse({
+      ...base,
+      learningPath: [{ id: 'step-missing', order: 0, targetNodeId: 'missing' }],
+    }).success).toBe(false);
+    expect(FlowKnowledgeSnapshotV2Schema.safeParse({ ...base, unexpected: true }).success).toBe(false);
+    expect(FlowKnowledgeSnapshotSchema.safeParse({ ...base, schemaVersion: 3 }).success).toBe(false);
+  });
+
+  it('parses both persisted V1 and normalized V2 snapshots through the version union', () => {
+    expect(FlowKnowledgeSnapshotSchema.parse(snapshot()).schemaVersion).toBe(1);
+    expect(FlowKnowledgeSnapshotSchema.parse(snapshotV2()).schemaVersion).toBe(2);
+  });
 });
 
 function locator(nodeId: string) {
@@ -198,5 +239,66 @@ function snapshot(overrides: Record<string, unknown> = {}) {
       danglingExitNodeIds: [],
     },
     ...overrides,
+  };
+}
+
+function snapshotV2() {
+  return {
+    schemaVersion: 2,
+    snapshotId: 'snapshot-1',
+    workspaceId: 'workspace-1',
+    workspaceItemId: 'item-1',
+    guideId: 'guide-1',
+    title: '订单处理',
+    summary: '从接单到完成。',
+    tags: ['订单'],
+    origin: { kind: 'DRAFT', revision: 7 },
+    stages: [{ id: 'stage-1', title: '准备', order: 0 }],
+    lanes: [{ id: 'lane-1', title: '订单员', kind: 'ROLE', order: 0 }],
+    nodes: [
+      {
+        id: 'start',
+        locator: locator('start'),
+        kind: 'start',
+        title: '开始',
+        stage: { id: 'stage-1', title: '准备', order: 0 },
+        responsibility: { id: 'lane-1', title: '订单员', kind: 'ROLE', order: 0 },
+        isEntry: true,
+        isExit: false,
+      },
+      {
+        id: 'finish',
+        locator: locator('finish'),
+        kind: 'end',
+        title: '完成',
+        stage: { id: 'stage-1', title: '准备', order: 0 },
+        responsibility: { id: 'lane-1', title: '订单员', kind: 'ROLE', order: 0 },
+        isEntry: false,
+        isExit: true,
+      },
+    ],
+    resources: [{
+      id: 'note',
+      locator: locator('note'),
+      kind: 'MARKDOWN',
+      order: 0,
+      markdown: '核对订单字段。',
+    }],
+    relations: [
+      { kind: 'FLOW', id: 'flow-1', sourceNodeId: 'start', targetNodeId: 'finish' },
+      { kind: 'USES_RESOURCE', id: 'uses-1', sourceNodeId: 'start', resourceId: 'note' },
+      { kind: 'RESOURCE_REFERENCE', id: 'reference-1', sourceResourceId: 'note', targetNodeId: 'finish' },
+    ],
+    learningPath: [
+      { id: 'step-1', order: 0, targetNodeId: 'start' },
+      { id: 'step-2', order: 1, targetResourceId: 'note' },
+    ],
+    diagnostics: {
+      danglingFlowEdgeIds: [],
+      invalidResourceRelationIds: [],
+      unreferencedResourceIds: [],
+      invalidLearningTargetIds: [],
+      excludedDerivedNodeIds: [],
+    },
   };
 }
