@@ -306,6 +306,7 @@ git commit -m "feat: index versioned flow snapshots"
 
 - Create: `packages/contracts/src/guide-digest.ts`
 - Create: `packages/contracts/src/guide-digest.test.ts`
+- Modify: `packages/contracts/src/index.ts`
 - Create: `apps/api/src/modules/guides/digest-renderer.ts`
 - Create: `apps/api/src/modules/guides/digest-renderer.test.ts`
 - Create: `apps/api/src/modules/agents/bundles/guide-digest.ts`
