@@ -211,6 +211,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .guide-digest-current-tag { border: 1px solid var(--ga-border); color: var(--ga-text-secondary); background: var(--ga-surface-solid); }
 .guide-digest-suggested-tag { border: 1px solid color-mix(in srgb, var(--ga-accent) 42%, transparent); color: var(--ga-text); background: var(--ga-accent-soft); }
 .guide-digest-suggested-tag small, .guide-digest-gaps small { color: var(--ga-text-secondary); font-size: .66rem; }
+.guide-digest-provenance { display: grid; width: 100%; gap: 2px; color: var(--ga-text-secondary); font-size: .66rem; }
 .guide-digest-gaps { display: grid; gap: 7px; padding-left: 26px; }
 .guide-digest-gaps small { display: block; }
 .guide-digest-markdown { max-height: 280px; overflow: auto; border: 1px solid var(--ga-border); border-radius: 10px; padding: 12px; background: var(--ga-surface-solid); }

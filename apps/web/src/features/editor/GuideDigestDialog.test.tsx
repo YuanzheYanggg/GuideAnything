@@ -8,9 +8,9 @@ const proposal: GuideDigestProposal = {
   bundleRevision: 1, rendererVersion: 'guide-digest-markdown-v1', generationMetadata: {}, status: 'DRAFT',
   draft: {
     schemaVersion: 1, shortSummary: '建议的流程摘要', scope: { audiences: [], businessObjects: [], systems: [] },
-    stageSections: [], keyRules: [],
-    tagSuggestions: [{ label: '订单复核', category: 'PROCESS', sourceIds: ['node-1'] }],
-    gaps: [{ code: 'MISSING_EXIT', message: '缺少明确出口', sourceIds: ['node-1'] }],
+    stageSections: [{ stageId: 'stage-1', title: '准备', overview: '准备订单', steps: [{ targetId: 'node-1', title: '确认订单', description: '确认客户需求', inputs: [], actions: [], outputs: [], resourceIds: ['resource-1'] }] }], keyRules: [],
+    tagSuggestions: [{ label: '订单复核', category: 'PROCESS', sourceIds: ['stage-1', 'node-1', 'resource-1'] }],
+    gaps: [{ code: 'MISSING_EXIT', message: '缺少明确出口', sourceIds: ['stage-1', 'node-1', 'resource-1'] }],
   },
   markdown: '# 指南总览\n\n安全内容\n\n<script>alert(1)</script>', failureCode: null, supersedesProposalId: null,
   appliedRevision: null, selectedSummary: null, acceptedTags: null, acceptedMarkdown: null,
@@ -36,6 +36,11 @@ describe('GuideDigestDialog', () => {
     expect(screen.queryByText('alert(1)')).not.toBeInTheDocument();
     expect(screen.getByText('安全内容')).toBeInTheDocument();
     expect(screen.getByText('缺少明确出口')).toBeInTheDocument();
+    expect(screen.getByText('类别：流程')).toBeInTheDocument();
+    expect(screen.getByText('阶段：准备')).toBeInTheDocument();
+    expect(screen.getByText('步骤：确认订单')).toBeInTheDocument();
+    expect(screen.getByText('资料：确认订单中的关联资料')).toBeInTheDocument();
+    expect(screen.getByText(/sourceIds=stage-1,node-1,resource-1/)).toBeInTheDocument();
   });
 
   it('refuses an empty effective apply selection', () => {

@@ -183,6 +183,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const saveRetryRef = useRef(false);
   const guideRef = useRef<GuideDraftDetail | null>(null);
   const saveStateRef = useRef(saveState);
+  const savedEditorStateRef = useRef<{ document: CanvasDocument | null; title: string; summary: string; tags: string[] }>({ document: null, title: '', summary: '', tags: [] });
   const appliedFocusRef = useRef<string | null>(null);
   const stageDragRef = useRef<StageDrag | null>(null);
   const latestEditorStateRef = useRef<{ document: CanvasDocument | null; title: string; summary: string; tags: string[] }>({ document: null, title: '', summary: '', tags: [] });
@@ -222,6 +223,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       setSummary(loaded.summary);
       setTags(loaded.tags);
       setSaveState('已保存');
+      savedEditorStateRef.current = { document: normalized, title: loaded.title, summary: loaded.summary, tags: loaded.tags };
       historyRef.current = new HistoryStack(normalized, 80);
       if (personalApi) void personalApi.recordRecent(loaded.workspaceItemId, { mode: 'edit', guideId: loaded.id });
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '指南载入失败'));
@@ -741,7 +743,9 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       try {
         const clean = CanvasDocumentSchema.parse(snapshot.document);
         const updated = await api.saveGuide(snapshot.guideId, snapshot.revision, { title: snapshot.title, summary: snapshot.summary, tags: snapshot.tags, document: clean });
-        setGuide((current) => current ? { ...current, revision: updated.revision, status: updated.status } : current);
+        guideRef.current = updated;
+        setGuide(updated);
+        savedEditorStateRef.current = { document: snapshot.document, title: snapshot.title, summary: snapshot.summary, tags: snapshot.tags };
         const latest = latestEditorStateRef.current;
         const unchanged = latest.document === snapshot.document && latest.title === snapshot.title && latest.summary === snapshot.summary && latest.tags === snapshot.tags;
         setSaveState(unchanged ? '已保存' : '未保存');
@@ -768,12 +772,12 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const flushPendingSave = useCallback(async (): Promise<GuideDraftDetail | undefined> => {
     if (saveStateRef.current === '保存失败') throw new Error('草稿保存失败，无法生成指南总览');
     let saved = guideRef.current ?? undefined;
-    if (!saveInFlightRef.current && saveStateRef.current !== '未保存') return saved;
+    if (!saveInFlightRef.current && !hasUnsavedEditorChanges(latestEditorStateRef.current, savedEditorStateRef.current)) return guideRef.current ?? saved;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const next = await saveRef.current();
       if (next) saved = next;
       await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      if (!saveInFlightRef.current && !saveRetryRef.current && saveStateRef.current !== '未保存') return saved;
+      if (!saveInFlightRef.current && !saveRetryRef.current && !hasUnsavedEditorChanges(latestEditorStateRef.current, savedEditorStateRef.current)) return guideRef.current ?? saved;
       if (saveInFlightRef.current) {
         const inFlight = await saveInFlightRef.current;
         if (inFlight) saved = inFlight;
@@ -832,20 +836,47 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     if (!guide) return;
     setDigestError('');
     try {
+      const saved = await flushPendingSave();
+      const activeProposal = digestProposal?.id === proposalId ? digestProposal : await api.getGuideDigestProposal(guide.id, proposalId);
+      const currentStatus = await api.getFlowSnapshotStatus(guide.id);
+      setDigestStatus(currentStatus);
+      if (!saved || activeProposal.baseRevision !== saved.revision || currentStatus.guideRevision !== saved.revision || currentStatus.snapshotRevision !== saved.revision) {
+        setDigestProposal({ ...activeProposal, status: 'STALE' });
+        setDigestError('草稿已更新，提案必须重新生成后才能应用');
+        return;
+      }
+      const beforeApply = latestEditorStateRef.current;
       const result = await api.applyGuideDigestProposal(guide.id, proposalId, selection);
+      guideRef.current = result.guide;
       setGuide(result.guide);
-      setTitle(result.guide.title);
-      setSummary(result.guide.summary);
-      setTags(result.guide.tags);
-      setDocument((current) => current ?? result.guide.document);
-      latestEditorStateRef.current = { document: document ?? result.guide.document, title: result.guide.title, summary: result.guide.summary, tags: result.guide.tags };
-      historyRef.current = new HistoryStack(document ?? result.guide.document, 80);
-      setSaveState('已保存');
+      const unchangedDuringApply = latestEditorStateRef.current.document === beforeApply.document && latestEditorStateRef.current.title === beforeApply.title && latestEditorStateRef.current.summary === beforeApply.summary && latestEditorStateRef.current.tags === beforeApply.tags;
+      if (unchangedDuringApply) {
+        const currentDocument = document ?? result.guide.document;
+        savedEditorStateRef.current = { document: currentDocument, title: result.guide.title, summary: result.guide.summary, tags: result.guide.tags };
+        setTitle(result.guide.title);
+        setSummary(result.guide.summary);
+        setTags(result.guide.tags);
+        setDocument((current) => current ?? currentDocument);
+        latestEditorStateRef.current = { document: currentDocument, title: result.guide.title, summary: result.guide.summary, tags: result.guide.tags };
+        historyRef.current = new HistoryStack(currentDocument, 80);
+        setSaveState('已保存');
+      } else {
+        savedEditorStateRef.current = { document: result.guide.document, title: result.guide.title, summary: result.guide.summary, tags: result.guide.tags };
+        setSaveState('未保存');
+      }
       saveRetryRef.current = false;
       setDigestProposal(result.proposal);
       setDigestOpen(false);
-    } catch (reason) { setDigestError(reason instanceof Error ? reason.message : '应用提案失败'); }
-  }, [api, document, guide]);
+    } catch (reason) {
+      const originalError = reason instanceof Error ? reason.message : '应用提案失败';
+      setDigestError(originalError);
+      try {
+        const [latestProposal, status] = await Promise.all([api.getGuideDigestProposal(guide.id, proposalId), api.getFlowSnapshotStatus(guide.id)]);
+        setDigestProposal(latestProposal);
+        setDigestStatus(status);
+      } catch { /* Preserve the original safe apply error if refresh cannot complete. */ }
+    }
+  }, [api, digestProposal, document, flushPendingSave, guide]);
 
   useEffect(() => {
     if (layoutPreview || !guide || !document || saveState !== '未保存') return;
@@ -1242,6 +1273,13 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     {digestOpen ? <GuideDigestDialog guide={guide} status={digestStatus} proposal={digestProposal} generating={digestGenerating} error={digestError} onReconcile={reconcileDigest} onGenerate={generateDigest} onReject={rejectDigest} onApply={applyDigest} onClose={() => setDigestOpen(false)} /> : null}
     {detailEditor ? <NodeDetailDialog nodeId={detailEditor.nodeId} title={detailEditor.title} value={detailEditor.value} openerRef={{ current: detailEditor.opener }} onSave={saveNodeDetail} onClose={() => setDetailEditor(null)} /> : null}
   </main>;
+}
+
+function hasUnsavedEditorChanges(
+  latest: { document: CanvasDocument | null; title: string; summary: string; tags: string[] },
+  saved: { document: CanvasDocument | null; title: string; summary: string; tags: string[] },
+): boolean {
+  return latest.document !== saved.document || latest.title !== saved.title || latest.summary !== saved.summary || latest.tags !== saved.tags;
 }
 
 export function removeHierarchyItem(document: CanvasDocument, kind: 'stage' | 'lane', itemId: string): CanvasDocument {

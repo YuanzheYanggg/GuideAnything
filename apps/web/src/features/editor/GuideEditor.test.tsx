@@ -6,6 +6,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { CanvasDocument, CanvasEdge, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
 
 import { GuideEditor, persistableNodeChanges, removeHierarchyItem, removeNodesFromDocument, toCanvasEdge, toFlowNodes, updateInlineNodeText, type EditorApi, type GuideDraftDetail } from './GuideEditor';
+import type { GuideDigestProposal, GuideFlowSnapshotStatus } from './GuideDigestDialog';
 import { createPersonalApiMock } from '../../test/workspace-api-mocks';
 
 const { fitView, screenToFlowPosition, reactFlowCallbacks } = vi.hoisted(() => ({
@@ -110,6 +111,95 @@ describe('GuideEditor', () => {
     await waitFor(() => expect(api.saveGuide).toHaveBeenCalledWith('guide-host', 0, expect.objectContaining({ summary: '待保存摘要' })));
     await waitFor(() => expect(api.createGuideDigestProposal).toHaveBeenCalledWith('guide-host', { regenerate: false }));
     expect(api.getFlowSnapshotStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('drains an in-flight save plus a later edit before generating from the final revision', async () => {
+    const api = createApi();
+    let resolveFirstSave: ((guide: GuideDraftDetail) => void) | undefined;
+    (api.saveGuide as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(() => new Promise<GuideDraftDetail>((resolve) => { resolveFirstSave = resolve; }))
+      .mockResolvedValueOnce({ ...emptyGuide, revision: 2, summary: '第二次编辑', document: emptyGuide.document });
+    (api.getFlowSnapshotStatus as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(snapshotStatus(0))
+      .mockResolvedValueOnce(snapshotStatus(2));
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    const summary = await screen.findByLabelText('摘要');
+    fireEvent.change(summary, { target: { value: '第一次编辑' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledTimes(1));
+    fireEvent.change(summary, { target: { value: '第二次编辑' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('button', { name: '生成结构化摘要' });
+    fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
+    resolveFirstSave?.({ ...emptyGuide, revision: 1, summary: '第一次编辑', document: emptyGuide.document });
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledWith('guide-host', 1, expect.objectContaining({ summary: '第二次编辑' })));
+    await waitFor(() => expect(api.createGuideDigestProposal).toHaveBeenCalledWith('guide-host', { regenerate: false }));
+  });
+
+  it('does not generate when the pending save fails', async () => {
+    const api = createApi();
+    (api.saveGuide as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('保存被拒绝'));
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    fireEvent.change(await screen.findByLabelText('摘要'), { target: { value: '未保存摘要' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('button', { name: '生成结构化摘要' });
+    fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
+
+    await waitFor(() => expect(screen.getAllByText('保存被拒绝')).toHaveLength(2));
+    expect(api.createGuideDigestProposal).not.toHaveBeenCalled();
+  });
+
+  it('blocks apply while dirty in-flight edits advance the proposal base revision without losing the local edit', async () => {
+    const api = createApi();
+    let resolveSave: ((guide: GuideDraftDetail) => void) | undefined;
+    (api.createGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue(digestProposal());
+    (api.saveGuide as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<GuideDraftDetail>((resolve) => { resolveSave = resolve; }));
+    (api.getFlowSnapshotStatus as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(snapshotStatus(0))
+      .mockResolvedValueOnce(snapshotStatus(0))
+      .mockResolvedValueOnce(snapshotStatus(1));
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByLabelText('摘要');
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('button', { name: '生成结构化摘要' });
+    fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
+    await screen.findByText('建议的流程摘要');
+    fireEvent.change(screen.getByLabelText('摘要'), { target: { value: '本地改动' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByLabelText('采用建议摘要'));
+    fireEvent.click(screen.getByRole('button', { name: '接受并应用到草稿' }));
+    resolveSave?.({ ...emptyGuide, revision: 1, summary: '本地改动', document: emptyGuide.document });
+
+    await screen.findByText('提案基于旧 revision，无法应用。请重新生成。');
+    expect(api.applyGuideDigestProposal).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('摘要')).toHaveValue('本地改动');
+  });
+
+  it('refreshes a 409 apply conflict into stale review without hiding the original error', async () => {
+    const api = createApi();
+    const draft = digestProposal();
+    (api.createGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue(draft);
+    (api.applyGuideDigestProposal as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('草稿已被其他编辑更新'));
+    (api.getGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue({ ...draft, status: 'STALE' });
+    (api.getFlowSnapshotStatus as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(snapshotStatus(0))
+      .mockResolvedValueOnce(snapshotStatus(0))
+      .mockResolvedValueOnce(snapshotStatus(0))
+      .mockResolvedValueOnce(snapshotStatus(1));
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByLabelText('摘要');
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('button', { name: '生成结构化摘要' });
+    fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
+    await screen.findByText('建议的流程摘要');
+    fireEvent.click(screen.getByLabelText('采用建议摘要'));
+    fireEvent.click(screen.getByRole('button', { name: '接受并应用到草稿' }));
+
+    await screen.findByText('草稿已被其他编辑更新');
+    await screen.findByText('提案基于旧 revision，无法应用。请重新生成。');
+    expect(api.getGuideDigestProposal).toHaveBeenCalledWith('guide-host', 'proposal-1');
   });
 
   it('records the guide as recent only after a successful load', async () => {
@@ -1290,6 +1380,21 @@ function createApi(overrides: { document?: CanvasDocument } = {}): EditorApi & R
     referenceUpdates: vi.fn().mockResolvedValue([]),
     getVersion: vi.fn().mockResolvedValue(sourceVersion),
     uploadMedia: vi.fn(),
+  };
+}
+
+function snapshotStatus(revision: number): GuideFlowSnapshotStatus {
+  return { guideRevision: revision, sourceStatus: 'READY', snapshotId: `snapshot-${revision}`, snapshotRevision: revision, snapshotSchemaVersion: 2, failureCode: null };
+}
+
+function digestProposal(): GuideDigestProposal {
+  return {
+    id: 'proposal-1', guideId: 'guide-host', workspaceId: 'workspace-sales', baseSnapshotId: 'snapshot-0', baseRevision: 0,
+    bundleRevision: 1, rendererVersion: 'guide-digest-markdown-v1', generationMetadata: {}, status: 'DRAFT',
+    draft: { schemaVersion: 1, shortSummary: '建议的流程摘要', scope: { audiences: [], businessObjects: [], systems: [] }, stageSections: [], keyRules: [], tagSuggestions: [], gaps: [] },
+    markdown: '# 建议总览', failureCode: null, supersedesProposalId: null, appliedRevision: null,
+    selectedSummary: null, acceptedTags: null, acceptedMarkdown: null, createdBy: 'author',
+    createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z',
   };
 }
 

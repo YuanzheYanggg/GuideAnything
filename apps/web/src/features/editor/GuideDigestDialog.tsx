@@ -72,6 +72,8 @@ export function GuideDigestDialog({
   const isStale = proposal?.status === 'STALE' || (proposal?.baseRevision !== undefined && proposal.baseRevision !== guide.revision);
   const suggestedTags = proposal?.draft?.tagSuggestions ?? [];
   const selectedTagLabels = useMemo(() => suggestedTags.map((tag) => tag.label).filter((label) => selectedTags.has(label)), [selectedTags, suggestedTags]);
+  const sourceIndex = useMemo(() => buildSourceIndex(proposal?.draft), [proposal?.draft]);
+  const sourceIds = useMemo(() => collectSourceIds(proposal?.draft), [proposal?.draft]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -124,13 +126,44 @@ export function GuideDigestDialog({
         {isStale ? <p className="error-message" role="alert">提案基于旧 revision，无法应用。请重新生成。</p> : null}
         {proposal.draft ? <>
           <section><h3>摘要差异</h3><div className="guide-digest-summary"><p><span>当前</span>{guide.summary || '（未填写）'}</p><p><span>建议</span>{proposal.draft.shortSummary}</p></div><label><input type="checkbox" checked={applySummary} disabled={disabled || isStale} onChange={(event) => setApplySummary(event.target.checked)} />采用建议摘要</label></section>
-          <section><h3>标签建议</h3><div className="guide-digest-tags">{guide.tags.map((tag) => <span className="guide-digest-current-tag" key={tag}>{tag}</span>)}{suggestedTags.map((tag) => <label className="guide-digest-suggested-tag" key={tag.label}><input type="checkbox" aria-label={`采用标签 ${tag.label}`} checked={selectedTags.has(tag.label)} disabled={disabled || isStale} onChange={() => toggleTag(tag.label)} />{tag.label}<small>{tag.category} · 来自 {tag.sourceIds.length} 条流程证据</small></label>)}</div></section>
-          <section><h3>待完善项</h3>{proposal.draft.gaps.length ? <ul className="guide-digest-gaps">{proposal.draft.gaps.map((gap, index) => <li key={`${gap.code}-${index}`}>{gap.message}<small>{gap.code} · {gap.sourceIds.length} 条证据</small></li>)}</ul> : <p className="muted">未报告信息缺口。</p>}</section>
+          <section><h3>标签建议</h3><div className="guide-digest-tags">{guide.tags.map((tag) => <span className="guide-digest-current-tag" key={tag}>{tag}</span>)}{suggestedTags.map((tag) => <label className="guide-digest-suggested-tag" key={tag.label}><input type="checkbox" aria-label={`采用标签 ${tag.label}`} checked={selectedTags.has(tag.label)} disabled={disabled || isStale} onChange={() => toggleTag(tag.label)} />{tag.label}<small>类别：{categoryLabel(tag.category)}</small><span className="guide-digest-provenance">{describeSources(tag.sourceIds, sourceIndex).map((source) => <span key={source}>{source}</span>)}</span></label>)}</div></section>
+          <section><h3>待完善项</h3>{proposal.draft.gaps.length ? <ul className="guide-digest-gaps">{proposal.draft.gaps.map((gap, index) => <li key={`${gap.code}-${index}`}>{gap.message}<small>{describeSources(gap.sourceIds, sourceIndex).join('；')}</small></li>)}</ul> : <p className="muted">未报告信息缺口。</p>}</section>
         </> : null}
         {proposal.markdown ? <section><h3>Markdown 总览（只读）</h3><div className="guide-digest-markdown"><SanitizedMarkdown>{proposal.markdown}</SanitizedMarkdown></div></section> : null}
-        <details><summary>诊断信息</summary><code>proposal={proposal.id} · snapshot={proposal.baseSnapshotId} · revision={proposal.baseRevision}</code></details>
+        <details><summary>诊断信息</summary><code>proposal={proposal.id} · snapshot={proposal.baseSnapshotId} · revision={proposal.baseRevision}{sourceIds.length ? ` · sourceIds=${sourceIds.join(',')}` : ''}</code></details>
         <div className="guide-digest-actions"><button className="secondary-button" type="button" onClick={() => void run(() => onGenerate(true))} disabled={disabled}>重新生成</button><button className="secondary-button" type="button" onClick={() => void run(() => onReject(proposal.id))} disabled={disabled || proposal.status !== 'DRAFT'}>拒绝提案</button><label><input type="checkbox" checked={acceptMarkdown} disabled={disabled || isStale} onChange={(event) => setAcceptMarkdown(event.target.checked)} />接受 Markdown 审计记录</label><button className="primary-button" type="button" onClick={apply} disabled={disabled || isStale || proposal.status !== 'DRAFT'}>接受并应用到草稿</button></div>
       </div> : null}
     </section>
   </div>;
+}
+
+function buildSourceIndex(draft: GuideDigestDraftV1 | null | undefined): ReadonlyMap<string, string> {
+  const sources = new Map<string, string>();
+  for (const section of draft?.stageSections ?? []) {
+    sources.set(section.stageId, `阶段：${section.title}`);
+    for (const step of section.steps) {
+      sources.set(step.targetId, `步骤：${step.title}`);
+      for (const resourceId of step.resourceIds) sources.set(resourceId, `资料：${step.title}中的关联资料`);
+    }
+  }
+  return sources;
+}
+
+function describeSources(sourceIds: readonly string[], sources: ReadonlyMap<string, string>): string[] {
+  if (sourceIds.length === 0) return ['未提供可追溯来源'];
+  return sourceIds.map((sourceId) => sources.get(sourceId) ?? '未命名流程证据（来源类型未知）');
+}
+
+function collectSourceIds(draft: GuideDigestDraftV1 | null | undefined): string[] {
+  if (!draft) return [];
+  return [...new Set([
+    ...draft.stageSections.flatMap((section) => [section.stageId, ...section.steps.flatMap((step) => [step.targetId, ...step.resourceIds])]),
+    ...draft.keyRules.flatMap((rule) => rule.sourceIds),
+    ...draft.tagSuggestions.flatMap((tag) => tag.sourceIds),
+    ...draft.gaps.flatMap((gap) => gap.sourceIds),
+  ])];
+}
+
+function categoryLabel(category: GuideDigestDraftV1['tagSuggestions'][number]['category']): string {
+  return { DOMAIN: '领域', PROCESS: '流程', SYSTEM: '系统', OBJECT: '业务对象', ROLE: '角色', RISK: '风险' }[category];
 }
