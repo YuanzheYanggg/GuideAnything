@@ -15,6 +15,15 @@ export function duplicateSelection(
     node.id = copiedId(sourceNode.id);
     node.position = { x: sourceNode.position.x + offset.x, y: sourceNode.position.y + offset.y };
     node.zIndex = sourceNode.zIndex + 1;
+    if (node.type === 'image' && node.data.annotations) {
+      node.data.annotations = node.data.annotations.map((annotation) => ({
+        ...annotation,
+        id: copiedId(annotation.id),
+        ...(annotation.targetNodeId && selected.has(annotation.targetNodeId)
+          ? { targetNodeId: copiedId(annotation.targetNodeId) }
+          : {}),
+      }));
+    }
     if (node.type === 'video') {
       node.data.keypoints = node.data.keypoints.map((point) => ({
         ...point,
@@ -51,4 +60,3 @@ export function duplicateSelection(
     newNodeIds,
   };
 }
-
