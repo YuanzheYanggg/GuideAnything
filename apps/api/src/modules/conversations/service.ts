@@ -1,10 +1,11 @@
 import {
-  FlowKnowledgeSnapshotV1Schema,
+  FlowKnowledgeSnapshotSchema,
   SendConversationMessageRequestV1Schema,
   SendGlobalConversationMessageRequestV1Schema,
   type SendConversationMessageRequestV1,
   type SendGlobalConversationMessageRequestV1,
 } from '@guideanything/contracts';
+import { normalizeFlowKnowledgeSnapshot } from '@guideanything/canvas-core';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { httpError } from '../../lib/http-error';
@@ -181,8 +182,15 @@ export class ConversationService {
       ).get(context.snapshotId, workspaceId) as { snapshot_json: string } | undefined;
       if (!row) throw httpError(400, 'SELECTED_CONTEXT_INVALID', '选中的流程快照不存在或无权访问');
       if (context.kind === 'FLOW_NODE') {
-        const snapshot = FlowKnowledgeSnapshotV1Schema.safeParse(JSON.parse(row.snapshot_json));
-        const nodeExists = snapshot.success && snapshot.data.nodes.some((node) => node.id === context.nodeId);
+        let nodeExists = false;
+        try {
+          const snapshot = normalizeFlowKnowledgeSnapshot(
+            FlowKnowledgeSnapshotSchema.parse(JSON.parse(row.snapshot_json)),
+          );
+          nodeExists = snapshot.nodes.some((node) => node.id === context.nodeId);
+        } catch {
+          nodeExists = false;
+        }
         if (!nodeExists) throw httpError(400, 'SELECTED_CONTEXT_INVALID', '选中的流程节点不存在');
       }
       return;

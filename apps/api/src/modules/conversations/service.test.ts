@@ -1,9 +1,12 @@
 import type { SourceOptionsV1 } from '@guideanything/contracts';
+import { compileFlowKnowledgeSnapshotV1 } from '@guideanything/canvas-core';
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createDatabase } from '../../db/client';
 import { migrateDatabase } from '../../db/migrate';
+import { sampleDocument } from '../../test/test-app';
+import { syncGuideFlowSnapshot } from '../knowledge/flow-indexer';
 import { ConversationService } from './service';
 
 describe('ConversationService', () => {
@@ -155,6 +158,28 @@ describe('ConversationService', () => {
       attachmentIds: [],
     })).toThrowError(expect.objectContaining({ statusCode: 400, code: 'SELECTED_CONTEXT_INVALID' }));
   });
+
+  it.each([1, 2] as const)('accepts selected flow nodes from stored V%s snapshots', (schemaVersion) => {
+    const conversation = service.createWorkspace('owner-1', 'workspace-1', `V${schemaVersion} 节点问答`);
+    const flow = seedFlowSnapshot(database, schemaVersion);
+
+    const accepted = service.sendWorkspace('owner-1', 'workspace-1', conversation.id, {
+      clientMessageId: `client-flow-v${schemaVersion}`,
+      text: '查看节点',
+      sources: sources({ workspaceFlows: true }),
+      selectedContext: { kind: 'FLOW_NODE', snapshotId: flow.snapshotId, nodeId: 'start' },
+      attachmentIds: [],
+    });
+
+    expect(accepted.created).toBe(true);
+    expect(database.prepare(
+      'SELECT selected_context_json FROM conversation_messages WHERE id = ?',
+    ).get(accepted.accepted.message.id)).toEqual({
+      selected_context_json: JSON.stringify({
+        kind: 'FLOW_NODE', snapshotId: flow.snapshotId, nodeId: 'start',
+      }),
+    });
+  });
 });
 
 function sources(overrides: Partial<SourceOptionsV1> = {}): SourceOptionsV1 {
@@ -185,4 +210,51 @@ function seedWorkspace(database: DatabaseSync, id: string, ownerId: string): voi
     `INSERT INTO workspace_members (workspace_id, user_id, permission, created_at)
      VALUES (?, ?, 'OWNER', ?)`,
   ).run(id, ownerId, now);
+}
+
+function seedFlowSnapshot(database: DatabaseSync, schemaVersion: 1 | 2): { snapshotId: string } {
+  const now = '2026-07-15T00:00:00.000Z';
+  const guideId = `guide-flow-v${schemaVersion}`;
+  const workspaceItemId = `item-flow-v${schemaVersion}`;
+  const document = sampleDocument(`# V${schemaVersion} 流程`);
+  database.prepare(
+    `INSERT INTO guides (
+      id, owner_id, title, summary, tags_json, status, visibility, revision,
+      draft_document, created_at, updated_at
+    ) VALUES (?, 'owner-1', ?, '', '[]', 'DRAFT', 'INTERNAL', 0, ?, ?, ?)`,
+  ).run(guideId, `V${schemaVersion} 流程`, JSON.stringify(document), now, now);
+  database.prepare(
+    `INSERT INTO workspace_items (
+      id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+    ) VALUES (?, 'workspace-1', 'GUIDE', ?, ?, '', 'owner-1', ?, ?)`,
+  ).run(workspaceItemId, guideId, `V${schemaVersion} 流程`, now, now);
+  const input = {
+    workspaceId: 'workspace-1',
+    workspaceItemId,
+    guideId,
+    ownerId: 'owner-1',
+    title: `V${schemaVersion} 流程`,
+    summary: '',
+    tags: [],
+    origin: { kind: 'DRAFT' as const, revision: 0 },
+    document,
+  };
+  const snapshot = syncGuideFlowSnapshot(database, input);
+  if (schemaVersion === 1) {
+    const legacy = compileFlowKnowledgeSnapshotV1({
+      snapshotId: snapshot.snapshotId,
+      workspaceId: input.workspaceId,
+      workspaceItemId,
+      guideId,
+      title: input.title,
+      summary: input.summary,
+      tags: input.tags,
+      origin: input.origin,
+      document,
+    });
+    database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+    database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+      .run(JSON.stringify(legacy), snapshot.snapshotId);
+  }
+  return { snapshotId: snapshot.snapshotId };
 }

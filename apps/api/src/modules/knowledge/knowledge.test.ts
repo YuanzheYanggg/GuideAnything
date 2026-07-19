@@ -1,4 +1,6 @@
 import type { MultipartFile } from '@fastify/multipart';
+import { compileFlowKnowledgeSnapshotV1 } from '@guideanything/canvas-core';
+import type { CanvasDocument } from '@guideanything/contracts';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,7 +18,12 @@ import {
   type TestContext,
 } from '../../test/test-app';
 import { extractWorkspaceDocument, sanitizeUploadName } from './extractor';
-import { reconcileGuideFlowSnapshots } from './flow-indexer';
+import {
+  listReadableFlowSnapshots,
+  reconcileGuideFlowSnapshots,
+  recordFlowIndexFailure,
+  syncGuideFlowSnapshot,
+} from './flow-indexer';
 import { parseCanonicalMarkdown } from './markdown';
 import { searchKnowledge, searchKnowledgeInternal } from './repository';
 import { buildSearchText, compileFtsQuery } from './search-text';
@@ -427,6 +434,207 @@ describe('knowledge routes, uploads, and flow synchronization', () => {
     ).get(publishedSnapshotId)).toEqual({ flow_snapshot_id: publishedSnapshotId });
   });
 
+  it('stores V2 flow snapshots and materializes one overview plus semantic node and resource fragments', async () => {
+    const document = sampleDocument('# 提交资料\n核对订单附件。');
+    document.stages = [{ id: 'stage-review', title: '复核阶段', order: 0 }];
+    document.lanes = [{ id: 'lane-reviewer', title: '复核负责人', kind: 'ROLE', order: 0 }];
+    const start = document.nodes[0]!;
+    if (start.type !== 'start') throw new Error('expected sample start node');
+    document.nodes[0] = {
+      ...start,
+      stageId: 'stage-review',
+      laneId: 'lane-reviewer',
+      data: { label: '发起审批', description: '检查申请内容', shape: 'start' },
+    };
+    document.edges[0] = { ...document.edges[0]!, label: '提交附件' };
+    const created = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: {
+        workspaceId,
+        title: '采购审批知识',
+        summary: '仅在概览出现的当前摘要',
+        tags: ['概览标签', '采购'],
+      },
+    });
+    const guideId = created.json().guide.id as string;
+    const saved = await context.app.inject({
+      method: 'PATCH', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.author),
+      payload: { revision: 0, document },
+    });
+    expect(saved.statusCode).toBe(200);
+
+    const snapshotRow = context.database.prepare(
+      `SELECT id, snapshot_json FROM flow_knowledge_snapshots
+       WHERE guide_id = ? AND origin_type = 'DRAFT' AND revision = 1`,
+    ).get(guideId) as { id: string; snapshot_json: string };
+    expect(JSON.parse(snapshotRow.snapshot_json)).toMatchObject({
+      schemaVersion: 2,
+      title: '采购审批知识',
+      summary: '仅在概览出现的当前摘要',
+      tags: ['概览标签', '采购'],
+    });
+
+    const fragments = context.database.prepare(
+      `SELECT heading, content, search_text
+       FROM knowledge_fragments AS fragment
+       JOIN knowledge_documents AS document ON document.id = fragment.document_id
+       WHERE document.flow_snapshot_id = ?
+       ORDER BY fragment.ordinal`,
+    ).all(snapshotRow.id) as unknown as Array<{ heading: string; content: string; search_text: string }>;
+    const overview = fragments.filter((fragment) => fragment.heading === '采购审批知识');
+    expect(overview).toHaveLength(1);
+    expect(overview[0]?.content).toContain('仅在概览出现的当前摘要');
+    expect(overview[0]?.search_text).toContain('概览标签');
+    const semanticFragments = fragments.filter((fragment) => fragment.heading !== '采购审批知识');
+    const semanticContent = semanticFragments.map((fragment) => fragment.content).join('\n');
+    for (const expected of [
+      '发起审批', '检查申请内容', '复核阶段', '复核负责人', '提交附件', '提交资料', '核对订单附件',
+    ]) {
+      expect(semanticContent).toContain(expected);
+    }
+    expect(semanticFragments.every((fragment) => !fragment.search_text.includes('仅在概览出现的当前摘要'))).toBe(true);
+    expect(semanticFragments.every((fragment) => !fragment.search_text.includes('概览标签'))).toBe(true);
+
+    expect(searchKnowledge(context.database, '仅在概览出现的当前摘要', {
+      sourceKinds: ['WORKSPACE_FLOW'], workspaceId, userId: context.userIds.author, userRole: 'AUTHOR',
+    })).toHaveLength(1);
+    expect(searchKnowledge(context.database, '概览标签', {
+      sourceKinds: ['WORKSPACE_FLOW'], workspaceId, userId: context.userIds.author, userRole: 'AUTHOR',
+    })).toHaveLength(1);
+  });
+
+  it('keeps a current draft origin idempotent by document checksum', () => {
+    const document = sampleDocument('# 幂等流程');
+    const flowContext = {
+      workspaceId,
+      workspaceItemId: 'item-idempotent-flow',
+      guideId: 'guide-idempotent-flow',
+      ownerId: context.userIds.author,
+      title: '幂等流程',
+      summary: '幂等摘要',
+      tags: ['幂等'],
+      origin: { kind: 'DRAFT' as const, revision: 0 },
+      document,
+    };
+    seedFlowGuide(context, flowContext.guideId, flowContext.workspaceItemId, document);
+
+    const first = syncGuideFlowSnapshot(context.database, flowContext);
+    const repeated = syncGuideFlowSnapshot(context.database, flowContext);
+
+    expect(repeated).toEqual(first);
+    expect(first.schemaVersion).toBe(2);
+    expect(context.database.prepare(
+      `SELECT COUNT(*) AS count FROM flow_knowledge_snapshots
+       WHERE guide_id = ? AND origin_type = 'DRAFT' AND revision = 0`,
+    ).get(flowContext.guideId)).toEqual({ count: 1 });
+
+    const legacy = compileFlowKnowledgeSnapshotV1({
+      snapshotId: first.snapshotId,
+      workspaceId: flowContext.workspaceId,
+      workspaceItemId: flowContext.workspaceItemId,
+      guideId: flowContext.guideId,
+      title: flowContext.title,
+      summary: flowContext.summary,
+      tags: flowContext.tags,
+      origin: flowContext.origin,
+      document,
+    });
+    context.database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+    context.database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+      .run(JSON.stringify(legacy), first.snapshotId);
+    context.database.prepare('DELETE FROM knowledge_documents WHERE flow_snapshot_id = ?').run(first.snapshotId);
+
+    expect(syncGuideFlowSnapshot(context.database, flowContext)).toMatchObject({
+      schemaVersion: 2,
+      snapshotId: first.snapshotId,
+    });
+    expect(context.database.prepare(
+      'SELECT COUNT(*) AS count FROM knowledge_documents WHERE flow_snapshot_id = ?',
+    ).get(first.snapshotId)).toEqual({ count: 1 });
+    expect(listReadableFlowSnapshots(
+      context.database,
+      workspaceId,
+      context.userIds.author,
+    )).toEqual([expect.objectContaining({
+      snapshotId: first.snapshotId,
+      guideId: flowContext.guideId,
+      nodeCount: 1,
+    })]);
+    expect(JSON.parse((context.database.prepare(
+      'SELECT snapshot_json FROM flow_knowledge_snapshots WHERE id = ?',
+    ).get(first.snapshotId) as { snapshot_json: string }).snapshot_json)).toMatchObject({ schemaVersion: 1 });
+  });
+
+  it('does not invent an overview locator for an addressless empty snapshot', () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      steps: [],
+      exitNodeIds: [],
+    };
+    const guideId = 'guide-empty-flow';
+    const workspaceItemId = 'item-empty-flow';
+    seedFlowGuide(context, guideId, workspaceItemId, document);
+
+    const snapshot = syncGuideFlowSnapshot(context.database, {
+      workspaceId,
+      workspaceItemId,
+      guideId,
+      ownerId: context.userIds.author,
+      title: '空流程',
+      summary: '没有可定位节点',
+      tags: ['空'],
+      origin: { kind: 'DRAFT', revision: 0 },
+      document,
+    });
+
+    expect(snapshot).toMatchObject({ schemaVersion: 2, nodes: [], resources: [] });
+    expect(context.database.prepare(
+      `SELECT COUNT(*) AS count FROM knowledge_fragments AS fragment
+       JOIN knowledge_documents AS document ON document.id = fragment.document_id
+       WHERE document.flow_snapshot_id = ?`,
+    ).get(snapshot.snapshotId)).toEqual({ count: 0 });
+  });
+
+  it('records the failed current revision and restores the source to READY after a later successful sync', () => {
+    const original = sampleDocument('# 初始流程');
+    const workspaceItemId = 'item-failure-revision';
+    const guideId = 'guide-failure-revision';
+    seedFlowGuide(context, guideId, workspaceItemId, original);
+    const base = {
+      workspaceId,
+      workspaceItemId,
+      guideId,
+      ownerId: context.userIds.author,
+      title: '失败 revision 流程',
+      summary: '失败测试',
+      tags: ['失败'],
+    };
+    syncGuideFlowSnapshot(context.database, {
+      ...base, origin: { kind: 'DRAFT', revision: 0 }, document: original,
+    });
+
+    const next = sampleDocument('# 新 revision 流程');
+    const failedContext = {
+      ...base, origin: { kind: 'DRAFT' as const, revision: 1 }, document: next,
+    };
+    recordFlowIndexFailure(context.database, failedContext, 'FLOW_CURRENT_REVISION_FAILED');
+    expect(context.database.prepare(
+      `SELECT status, revision, json_extract(config_json, '$.lastFailureCode') AS failure
+       FROM knowledge_sources WHERE kind = 'WORKSPACE_FLOW' AND workspace_id = ? AND created_by = ?`,
+    ).get(workspaceId, context.userIds.author)).toEqual({
+      status: 'FAILED', revision: 'draft-1', failure: 'FLOW_CURRENT_REVISION_FAILED',
+    });
+
+    syncGuideFlowSnapshot(context.database, failedContext);
+    expect(context.database.prepare(
+      `SELECT status, revision FROM knowledge_sources
+       WHERE kind = 'WORKSPACE_FLOW' AND workspace_id = ? AND created_by = ?`,
+    ).get(workspaceId, context.userIds.author)).toEqual({ status: 'READY', revision: 'draft-1' });
+  });
+
   it('does not roll back an authoritative guide save when flow indexing fails', async () => {
     const created = await context.app.inject({
       method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
@@ -451,6 +659,26 @@ describe('knowledge routes, uploads, and flow synchronization', () => {
     ).get(workspaceId)).toEqual({ status: 'FAILED', failure: 'FLOW_INDEX_FAILED' });
   });
 });
+
+function seedFlowGuide(
+  context: TestContext,
+  guideId: string,
+  workspaceItemId: string,
+  document: CanvasDocument,
+): void {
+  const now = '2026-07-15T00:00:00.000Z';
+  context.database.prepare(
+    `INSERT INTO guides (
+      id, owner_id, title, summary, tags_json, status, visibility, revision,
+      draft_document, created_at, updated_at
+    ) VALUES (?, ?, '测试流程', '', '[]', 'DRAFT', 'INTERNAL', 0, ?, ?, ?)`,
+  ).run(guideId, context.userIds.author, JSON.stringify(document), now, now);
+  context.database.prepare(
+    `INSERT INTO workspace_items (
+      id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+    ) VALUES (?, ?, 'GUIDE', ?, '测试流程', '', ?, ?, ?)`,
+  ).run(workspaceItemId, 'workspace-knowledge', guideId, context.userIds.author, now, now);
+}
 
 async function uploadMarkdown(
   context: TestContext,

@@ -4,6 +4,7 @@ import {
   type RouteDecisionV1,
   type SourceOptionsV1,
 } from '@guideanything/contracts';
+import { compileFlowKnowledgeSnapshotV1 } from '@guideanything/canvas-core';
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -384,6 +385,39 @@ describe('database-backed Agent knowledge adapters', () => {
     });
     expect(['start', 'end']).toContain((evidence[1]!.locator as { nodeId: string }).nodeId);
     expect(Object.keys(evidence[0]!.locator).sort()).toEqual(['guideId', 'kind', 'nodeId', 'snapshotId']);
+  });
+
+  it('resolves and expands a selected flow node from a stored V1 snapshot', async () => {
+    const document = threeNodeDocument();
+    const flow = seedDraftFlow(database, document, { guideId: 'guide-legacy-v1' });
+    replaceFlowSnapshotWithV1(database, flow.snapshotId, {
+      snapshotId: flow.snapshotId,
+      workspaceId: 'workspace-1',
+      workspaceItemId: 'item-guide-legacy-v1',
+      guideId: flow.guideId,
+      title: '审批流程',
+      summary: '审批流程摘要',
+      tags: ['审批'],
+      origin: { kind: 'DRAFT', revision: 0 },
+      document,
+    });
+    const context = seedRun({
+      database,
+      sources: sources({ workspaceFlows: true }),
+      selectedContext: { kind: 'FLOW_NODE', snapshotId: flow.snapshotId, nodeId: 'middle' },
+      text: '解释旧版审批节点。',
+    });
+
+    const evidence = await adapters().retriever.retrieve({
+      ...request(context, focusedDecision('WORKSPACE_FLOW', context.sources, '旧版审批节点'), 2),
+      maxFlowHops: 1,
+    });
+
+    expect(evidence[0]).toMatchObject({
+      source: 'WORKSPACE_FLOW',
+      locator: { kind: 'WORKSPACE_FLOW', snapshotId: flow.snapshotId, nodeId: 'middle' },
+    });
+    expect(evidence).toHaveLength(2);
   });
 
   it('fails closed when retrieval access is revoked or an internal locator conflicts with authoritative rows', async () => {
@@ -1011,6 +1045,17 @@ function seedPublishedFlow(database: DatabaseSync, document: CanvasDocument, opt
     document,
   });
   return { guideId, snapshotId: snapshot.snapshotId, versionId };
+}
+
+function replaceFlowSnapshotWithV1(
+  database: DatabaseSync,
+  snapshotId: string,
+  input: Parameters<typeof compileFlowKnowledgeSnapshotV1>[0],
+): void {
+  const legacy = compileFlowKnowledgeSnapshotV1(input);
+  database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+  database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+    .run(JSON.stringify(legacy), snapshotId);
 }
 
 interface FlowSeedOptions {

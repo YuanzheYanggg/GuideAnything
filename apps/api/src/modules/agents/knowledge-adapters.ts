@@ -1,5 +1,5 @@
 import {
-  FlowKnowledgeSnapshotV1Schema,
+  FlowKnowledgeSnapshotSchema,
   InternalEvidenceLocatorV1Schema,
   InternalFlowFeedbackV1Schema,
   PublicReferenceV1Schema,
@@ -8,12 +8,13 @@ import {
   SourceOptionsV1Schema,
   ValidatedEvidenceV1Schema,
   type EvidenceSourceV1,
-  type FlowKnowledgeSnapshotV1,
+  type FlowKnowledgeSnapshotV2,
   type InternalEvidenceLocatorV1,
   type RouteDecisionV1,
   type SourceOptionsV1,
   type ValidatedEvidenceV1,
 } from '@guideanything/contracts';
+import { normalizeFlowKnowledgeSnapshot } from '@guideanything/canvas-core';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -323,12 +324,12 @@ function expandFlowEvidence(
       `SELECT snapshot_json FROM flow_knowledge_snapshots WHERE id = ? AND guide_id = ?`,
     ).get(locator.snapshotId, locator.guideId) as { snapshot_json: string } | undefined;
     if (!row) throw new Error('流程快照已经失效');
-    const snapshot = FlowKnowledgeSnapshotV1Schema.parse(JSON.parse(row.snapshot_json));
+    const snapshot = normalizeFlowKnowledgeSnapshot(
+      FlowKnowledgeSnapshotSchema.parse(JSON.parse(row.snapshot_json)),
+    );
     const node = snapshot.nodes.find((item) => item.id === locator.nodeId);
     if (!node) continue;
-    const neighborIds = request.maxFlowHops === 1
-      ? node.neighborhood.oneHopNodeIds
-      : [...node.neighborhood.oneHopNodeIds, ...node.neighborhood.twoHopNodeIds];
+    const neighborIds = flowNeighborIds(snapshot, node.id, request.maxFlowHops);
     for (const nodeId of neighborIds) {
       if (evidence.length >= request.maxCandidates) return;
       const record = loadSelectedFlowRecord(database, snapshot.snapshotId, nodeId);
@@ -499,7 +500,9 @@ function authoritativeFlowLocator(
     ).get(row.version_id, row.guide_id, row.version);
     if (!published) throw new Error('已发布流程版本已经失效');
   }
-  const snapshot = FlowKnowledgeSnapshotV1Schema.parse(JSON.parse(row.snapshot_json));
+  const snapshot = normalizeFlowKnowledgeSnapshot(
+    FlowKnowledgeSnapshotSchema.parse(JSON.parse(row.snapshot_json)),
+  );
   const locator = findFlowLocator(snapshot, nodeId);
   if (!locator || locator.guideId !== guideId || locator.snapshotId !== snapshotId) {
     throw new Error('流程节点 locator 不存在或已经变化');
@@ -510,18 +513,32 @@ function authoritativeFlowLocator(
 }
 
 function findFlowLocator(
-  snapshot: FlowKnowledgeSnapshotV1,
+  snapshot: FlowKnowledgeSnapshotV2,
   nodeId: string,
 ): { guideId: string; snapshotId: string; nodeId: string } | null {
   const node = snapshot.nodes.find((item) => item.id === nodeId);
   if (node) return node.locator;
-  for (const attachment of [
-    ...snapshot.nodes.flatMap((item) => item.attachments),
-    ...snapshot.unattachedResources,
-  ]) {
-    if (attachment.nodeId === nodeId) return attachment.locator;
-  }
-  return null;
+  return snapshot.resources.find((resource) => resource.id === nodeId)?.locator ?? null;
+}
+
+function flowNeighborIds(
+  snapshot: FlowKnowledgeSnapshotV2,
+  nodeId: string,
+  maxHops: number,
+): string[] {
+  const flowRelations = snapshot.relations.filter((relation) => relation.kind === 'FLOW');
+  const adjacent = (targetId: string) => flowRelations.flatMap((relation) => {
+    if (relation.sourceNodeId === targetId) return [relation.targetNodeId];
+    if (relation.targetNodeId === targetId) return [relation.sourceNodeId];
+    return [];
+  });
+  const oneHop = [...new Set(adjacent(nodeId))].filter((id) => id !== nodeId).sort();
+  if (maxHops === 1) return oneHop;
+  const oneHopSet = new Set(oneHop);
+  const twoHop = [...new Set(oneHop.flatMap(adjacent))]
+    .filter((id) => id !== nodeId && !oneHopSet.has(id))
+    .sort();
+  return [...oneHop, ...twoHop];
 }
 
 function requireFreshContext(
@@ -712,6 +729,7 @@ function loadSelectedFlowRecord(
      JOIN knowledge_documents AS document ON document.id = fragment.document_id
      WHERE document.flow_snapshot_id = ?
        AND json_extract(fragment.internal_locator_json, '$.nodeId') = ?
+       AND json_extract(fragment.internal_locator_json, '$.projection') IS NULL
      ORDER BY fragment.ordinal LIMIT 1`,
   ).get(snapshotId, nodeId) as { id: string } | undefined;
   return row ? loadEvidenceRecord(database, row.id) : null;

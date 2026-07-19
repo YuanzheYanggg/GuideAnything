@@ -1,11 +1,12 @@
 import {
   AgentRunStatusV1Schema,
-  FlowKnowledgeSnapshotV1Schema,
+  FlowKnowledgeSnapshotSchema,
   SelectedAgentContextV1Schema,
   SourceOptionsV1Schema,
   type SelectedAgentContextV1,
   type SourceOptionsV1,
 } from '@guideanything/contracts';
+import { normalizeFlowKnowledgeSnapshot } from '@guideanything/canvas-core';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { listMountedResourceWorkspaceIds } from '../workspaces/repository';
@@ -170,7 +171,9 @@ function requireSelectedContext(
     ).get(context.snapshotId, ...workspaceIds) as { snapshot_json: string } | undefined;
     if (!row) throw new Error('选中的流程快照不再可用');
     if (context.kind === 'FLOW_NODE') {
-      const snapshot = FlowKnowledgeSnapshotV1Schema.parse(JSON.parse(row.snapshot_json));
+      const snapshot = normalizeFlowKnowledgeSnapshot(
+        FlowKnowledgeSnapshotSchema.parse(JSON.parse(row.snapshot_json)),
+      );
       if (!snapshot.nodes.some((node) => node.id === context.nodeId)) {
         throw new Error('选中的流程节点不再可用');
       }

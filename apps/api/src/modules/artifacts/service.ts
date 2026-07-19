@@ -1,12 +1,14 @@
 import {
   ArtifactV1Schema,
-  FlowKnowledgeSnapshotV1Schema,
+  FlowKnowledgeSnapshotSchema,
   InternalEvidenceLocatorV1Schema,
   ReferenceResolutionV1Schema,
   type ArtifactV1,
+  type FlowKnowledgeSnapshotV2,
   type InternalEvidenceLocatorV1,
   type ReferenceResolutionV1,
 } from '@guideanything/contracts';
+import { normalizeFlowKnowledgeSnapshot } from '@guideanything/canvas-core';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { httpError } from '../../lib/http-error';
@@ -206,8 +208,15 @@ export class ArtifactReferenceService {
     if (!row || row.parse_status !== 'READY' || !isReadableSourceStatus(row.source_status)) {
       return this.invalid(citation, 'SOURCE_UNAVAILABLE', '对应的流程快照当前不可用。');
     }
-    const snapshot = FlowKnowledgeSnapshotV1Schema.safeParse(JSON.parse(row.snapshot_json));
-    if (!snapshot.success || !snapshotContainsFlowLocator(snapshot.data, locator)) {
+    let snapshot: FlowKnowledgeSnapshotV2 | null = null;
+    try {
+      snapshot = normalizeFlowKnowledgeSnapshot(
+        FlowKnowledgeSnapshotSchema.parse(JSON.parse(row.snapshot_json)),
+      );
+    } catch {
+      snapshot = null;
+    }
+    if (!snapshot || !snapshotContainsFlowLocator(snapshot, locator)) {
       return this.invalid(citation, 'STALE', '原流程节点已经不存在。');
     }
     if (row.origin_type === 'DRAFT') {
@@ -367,13 +376,12 @@ function isReadableSourceStatus(value: string): boolean {
 }
 
 function snapshotContainsFlowLocator(
-  snapshot: ReturnType<typeof FlowKnowledgeSnapshotV1Schema.parse>,
+  snapshot: FlowKnowledgeSnapshotV2,
   locator: Extract<InternalEvidenceLocatorV1, { kind: 'WORKSPACE_FLOW' }>,
 ): boolean {
   const candidates = [
     ...snapshot.nodes.map((node) => node.locator),
-    ...snapshot.nodes.flatMap((node) => node.attachments.map((attachment) => attachment.locator)),
-    ...snapshot.unattachedResources.map((attachment) => attachment.locator),
+    ...snapshot.resources.map((resource) => resource.locator),
   ];
   return candidates.some((candidate) => (
     candidate.guideId === locator.guideId

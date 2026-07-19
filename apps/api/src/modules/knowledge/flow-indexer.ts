@@ -1,6 +1,13 @@
-import type { FlowKnowledgeSnapshotV1, FlowSnapshotSummaryV1 } from '@guideanything/contracts';
-import { FlowKnowledgeSnapshotV1Schema, FlowSnapshotSummaryV1Schema } from '@guideanything/contracts';
-import { compileFlowKnowledgeSnapshotV1 } from '@guideanything/canvas-core';
+import type {
+  FlowKnowledgeResourceV2,
+  FlowKnowledgeSnapshotV2,
+  FlowSnapshotSummaryV1,
+} from '@guideanything/contracts';
+import { FlowKnowledgeSnapshotSchema, FlowSnapshotSummaryV1Schema } from '@guideanything/contracts';
+import {
+  compileFlowKnowledgeSnapshotV2,
+  normalizeFlowKnowledgeSnapshot,
+} from '@guideanything/canvas-core';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -15,7 +22,7 @@ export interface GuideFlowContext {
   summary: string;
   tags: string[];
   origin: { kind: 'DRAFT'; revision: number } | { kind: 'PUBLISHED'; versionId: string; version: number };
-  document: Parameters<typeof compileFlowKnowledgeSnapshotV1>[0]['document'];
+  document: Parameters<typeof compileFlowKnowledgeSnapshotV2>[0]['document'];
 }
 
 export class FlowIndexError extends Error {
@@ -25,14 +32,16 @@ export class FlowIndexError extends Error {
   }
 }
 
-export function syncGuideFlowSnapshot(database: DatabaseSync, context: GuideFlowContext): FlowKnowledgeSnapshotV1 {
+export function syncGuideFlowSnapshot(database: DatabaseSync, context: GuideFlowContext): FlowKnowledgeSnapshotV2 {
   const checksum = sha256(JSON.stringify(context.document));
   const existing = findOrigin(database, context);
   if (existing) {
     if (existing.document_checksum !== checksum) {
       throw new FlowIndexError('FLOW_ORIGIN_INTEGRITY_MISMATCH', '同一流程版本的内容校验不一致');
     }
-    const snapshot = FlowKnowledgeSnapshotV1Schema.parse(JSON.parse(existing.snapshot_json));
+    const snapshot = normalizeFlowKnowledgeSnapshot(
+      FlowKnowledgeSnapshotSchema.parse(JSON.parse(existing.snapshot_json)),
+    );
     const materialized = database.prepare(
       `SELECT 1 FROM knowledge_documents WHERE flow_snapshot_id = ?`,
     ).get(existing.id);
@@ -41,7 +50,7 @@ export function syncGuideFlowSnapshot(database: DatabaseSync, context: GuideFlow
   }
 
   const snapshotId = randomUUID();
-  const snapshot = compileFlowKnowledgeSnapshotV1({
+  const snapshot = compileFlowKnowledgeSnapshotV2({
     snapshotId,
     workspaceId: context.workspaceId,
     workspaceItemId: context.workspaceItemId,
@@ -131,7 +140,8 @@ export function recordFlowIndexFailure(database: DatabaseSync, context: GuideFlo
       status, revision, config_json, created_at, updated_at
     ) VALUES (?, 'WORKSPACE', 'WORKSPACE_FLOW', ?, NULL, ?, 'FAILED', ?, ?, ?, ?)
     ON CONFLICT (id) DO UPDATE SET
-      status = 'FAILED', config_json = excluded.config_json, updated_at = excluded.updated_at`,
+      status = 'FAILED', revision = excluded.revision,
+      config_json = excluded.config_json, updated_at = excluded.updated_at`,
   ).run(
     sourceId, context.workspaceId, context.ownerId, flowRevision(context.origin),
     JSON.stringify({ guideId: context.guideId, lastFailureCode: safeCode(code) }), now, now,
@@ -165,7 +175,9 @@ export function listReadableFlowSnapshots(
     if (!byGuide.has(row.guide_id)) byGuide.set(row.guide_id, row);
   }
   return [...byGuide.values()].map((row) => {
-    const snapshot = FlowKnowledgeSnapshotV1Schema.parse(JSON.parse(row.snapshot_json));
+    const snapshot = normalizeFlowKnowledgeSnapshot(
+      FlowKnowledgeSnapshotSchema.parse(JSON.parse(row.snapshot_json)),
+    );
     const origin = row.origin_type === 'DRAFT'
       ? { kind: 'DRAFT' as const, revision: row.revision! }
       : { kind: 'PUBLISHED' as const, versionId: row.version_id!, version: row.version! };
@@ -255,18 +267,48 @@ export function reconcileGuideFlowSnapshots(database: DatabaseSync): { indexed: 
 }
 
 function flowFragments(
-  snapshot: FlowKnowledgeSnapshotV1,
+  snapshot: FlowKnowledgeSnapshotV2,
   documentId: string,
   revision: string,
   now: string,
 ): Array<{ id: string; heading: string; content: string; searchText: string; locatorJson: string; now: string }> {
   const titleByNodeId = new Map(snapshot.nodes.map((node) => [node.id, node.title]));
+  const flowRelations = snapshot.relations.filter((relation) => relation.kind === 'FLOW');
+  const resourceById = new Map(snapshot.resources.map((resource) => [resource.id, resource]));
   const result: Array<{ id: string; heading: string; content: string; searchText: string; locatorJson: string; now: string }> = [];
+  const overviewTarget = snapshot.nodes.find((node) => node.isEntry)?.locator
+    ?? snapshot.nodes[0]?.locator
+    ?? snapshot.resources[0]?.locator;
+  if (overviewTarget) {
+    const parts = [snapshot.title, snapshot.summary, ...snapshot.tags].filter(Boolean);
+    const id = flowOverviewFragmentId(snapshot.snapshotId);
+    result.push({
+      id,
+      heading: snapshot.title,
+      content: parts.join('\n'),
+      searchText: buildSearchText(parts),
+      locatorJson: JSON.stringify({
+        kind: 'WORKSPACE_FLOW', ...overviewTarget, documentId, revision, fragmentId: id, projection: 'OVERVIEW',
+      }),
+      now,
+    });
+  }
   for (const node of snapshot.nodes) {
-    const branchLabels = [...node.incoming, ...node.outgoing]
-      .flatMap((edge) => [edge.label, edge.branchLabel]).filter((value): value is string => Boolean(value));
-    const neighbors = [...node.neighborhood.oneHopNodeIds, ...node.neighborhood.twoHopNodeIds]
-      .slice(0, 24).map((id) => titleByNodeId.get(id)).filter((value): value is string => Boolean(value));
+    const relatedFlow = flowRelations.filter((relation) => (
+      relation.sourceNodeId === node.id || relation.targetNodeId === node.id
+    ));
+    const branchLabels = relatedFlow
+      .flatMap((relation) => [relation.label, relation.branchLabel])
+      .filter((value): value is string => Boolean(value));
+    const neighborIds = oneAndTwoHopNodeIds(node.id, flowRelations).slice(0, 24);
+    const neighbors = neighborIds
+      .map((id) => titleByNodeId.get(id))
+      .filter((value): value is string => Boolean(value));
+    const resourceLabels = snapshot.relations.flatMap((relation) => (
+      relation.kind === 'USES_RESOURCE' && relation.sourceNodeId === node.id
+        ? [relation.label, resourceTitle(resourceById.get(relation.resourceId))]
+        : []
+    )).filter((value): value is string => Boolean(value));
     const parts = [
       node.title,
       node.description ?? '',
@@ -274,6 +316,7 @@ function flowFragments(
       node.responsibility?.title ?? '',
       ...branchLabels,
       ...neighbors,
+      ...resourceLabels,
     ].filter(Boolean);
     const content = parts.join('\n');
     const id = flowFragmentId(snapshot.snapshotId, node.id);
@@ -281,38 +324,63 @@ function flowFragments(
       id,
       heading: node.title,
       content,
-      searchText: buildSearchText([snapshot.title, ...snapshot.tags, ...parts]),
+      searchText: buildSearchText(parts),
       locatorJson: JSON.stringify({ kind: 'WORKSPACE_FLOW', ...node.locator, documentId, revision, fragmentId: id }),
       now,
     });
-    node.attachments.forEach((attachment) => result.push(flowAttachmentFragment(snapshot, attachment, documentId, revision, now)));
   }
-  snapshot.unattachedResources.forEach((attachment) => result.push(flowAttachmentFragment(snapshot, attachment, documentId, revision, now)));
+  snapshot.resources.forEach((resource) => result.push(flowResourceFragment(snapshot, resource, documentId, revision, now)));
   return result;
 }
 
-function flowAttachmentFragment(
-  snapshot: FlowKnowledgeSnapshotV1,
-  attachment: FlowKnowledgeSnapshotV1['unattachedResources'][number],
+function flowResourceFragment(
+  snapshot: FlowKnowledgeSnapshotV2,
+  resource: FlowKnowledgeResourceV2,
   documentId: string,
   revision: string,
   now: string,
 ) {
-  const parts = attachment.kind === 'MARKDOWN'
-    ? [attachment.markdown]
-    : attachment.kind === 'IMAGE'
-      ? [attachment.alt, attachment.caption ?? '', ...attachment.annotations.flatMap((annotation) => [annotation.title, annotation.body ?? ''])]
-      : [attachment.caption ?? '', ...attachment.keypoints.map((keypoint) => keypoint.title)];
+  const parts = resource.kind === 'MARKDOWN'
+    ? [resource.markdown]
+    : resource.kind === 'IMAGE'
+      ? [resource.alt, resource.caption ?? '', ...resource.annotations.flatMap((annotation) => [annotation.title, annotation.body ?? ''])]
+      : [resource.caption ?? '', ...resource.keypoints.map((keypoint) => keypoint.title)];
   const content = parts.filter(Boolean).join('\n').slice(0, 100_000);
-  const id = flowFragmentId(snapshot.snapshotId, attachment.nodeId);
+  const id = flowFragmentId(snapshot.snapshotId, resource.id);
   return {
     id,
-    heading: attachment.kind === 'MARKDOWN' ? '说明' : attachment.kind === 'IMAGE' ? '图片说明' : '视频要点',
+    heading: resourceTitle(resource),
     content,
-    searchText: buildSearchText([snapshot.title, ...snapshot.tags, ...parts]),
-    locatorJson: JSON.stringify({ kind: 'WORKSPACE_FLOW', ...attachment.locator, documentId, revision, fragmentId: id }),
+    searchText: buildSearchText(parts),
+    locatorJson: JSON.stringify({ kind: 'WORKSPACE_FLOW', ...resource.locator, documentId, revision, fragmentId: id }),
     now,
   };
+}
+
+function resourceTitle(resource: FlowKnowledgeResourceV2 | undefined): string {
+  if (!resource) return '';
+  if (resource.kind === 'MARKDOWN') {
+    return resource.markdown.match(/^\s{0,3}#{1,6}\s+(.+)$/mu)?.[1]?.trim() || '说明';
+  }
+  if (resource.kind === 'IMAGE') return resource.alt;
+  return resource.caption?.trim() || resource.keypoints[0]?.title || '视频要点';
+}
+
+function oneAndTwoHopNodeIds(
+  nodeId: string,
+  relations: Array<Extract<FlowKnowledgeSnapshotV2['relations'][number], { kind: 'FLOW' }>>,
+): string[] {
+  const adjacent = (targetId: string) => relations.flatMap((relation) => {
+    if (relation.sourceNodeId === targetId) return [relation.targetNodeId];
+    if (relation.targetNodeId === targetId) return [relation.sourceNodeId];
+    return [];
+  });
+  const oneHop = [...new Set(adjacent(nodeId))].filter((id) => id !== nodeId).sort();
+  const oneHopSet = new Set(oneHop);
+  const twoHop = [...new Set(oneHop.flatMap(adjacent))]
+    .filter((id) => id !== nodeId && !oneHopSet.has(id))
+    .sort();
+  return [...oneHop, ...twoHop];
 }
 
 function findOrigin(database: DatabaseSync, context: GuideFlowContext) {
@@ -331,7 +399,7 @@ function findOrigin(database: DatabaseSync, context: GuideFlowContext) {
 function materializeExistingSnapshot(
   database: DatabaseSync,
   context: GuideFlowContext,
-  snapshot: FlowKnowledgeSnapshotV1,
+  snapshot: FlowKnowledgeSnapshotV2,
   checksum: string,
 ): void {
   const sourceId = flowSourceId(context.guideId);
@@ -385,6 +453,10 @@ function flowSourceId(guideId: string): string {
 
 function flowFragmentId(snapshotId: string, nodeId: string): string {
   return `flow-fragment-${createHash('sha256').update(`${snapshotId}\u0000${nodeId}`).digest('hex').slice(0, 32)}`;
+}
+
+function flowOverviewFragmentId(snapshotId: string): string {
+  return `flow-overview-${createHash('sha256').update(snapshotId).digest('hex').slice(0, 32)}`;
 }
 
 function flowRevision(origin: GuideFlowContext['origin']): string {

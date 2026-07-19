@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { compileFlowKnowledgeSnapshotV1 } from '@guideanything/canvas-core';
 
 import {
   addTestWorkspaceMember,
@@ -188,9 +189,23 @@ describe('private artifact and opaque reference routes', () => {
       },
     });
 
+    const legacy = compileFlowKnowledgeSnapshotV1({
+      snapshotId: snapshot.snapshotId,
+      workspaceId: 'workspace-artifacts',
+      workspaceItemId: 'guide-item',
+      guideId: 'guide-flow',
+      title: '审批流程',
+      summary: '',
+      tags: [],
+      origin: { kind: 'DRAFT', revision: 0 },
+      document,
+    });
+    context.database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+    context.database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+      .run(JSON.stringify(legacy), snapshot.snapshotId);
     const resource = [
-      ...snapshot.nodes.flatMap((item) => item.attachments),
-      ...snapshot.unattachedResources,
+      ...legacy.nodes.flatMap((item) => item.attachments),
+      ...legacy.unattachedResources,
     ][0]!;
     seedCitation('reference-flow-resource', 'run-flow', 'WORKSPACE_FLOW', {
       kind: 'WORKSPACE_FLOW', ...resource.locator,
