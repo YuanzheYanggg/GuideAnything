@@ -570,6 +570,28 @@ describe('CodexRuntime thread and turn safety', () => {
     expect(events.some(({ type }) => type === 'FINAL_ANSWER')).toBe(false);
   });
 
+  it('uses the digest failure code when a completed final agent message has no text', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const handle = await startHandle(
+      runtime,
+      rpc,
+      runtimeConfig,
+      runRequest({ outputKind: 'GUIDE_DIGEST' }),
+    );
+    rpc.emit('item/completed', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      item: { id: 'final-item', type: 'agentMessage', phase: 'final_answer' },
+    });
+
+    const events = await collectEvents(handle);
+    expect(events.map(({ type }) => type)).toEqual(['THREAD_BOUND', 'FAILED']);
+    expect(events.at(-1)).toMatchObject({
+      type: 'FAILED', payload: { code: 'INVALID_GUIDE_DIGEST_OUTPUT' },
+    });
+    expect(events.some(({ type }) => type === 'GUIDE_DIGEST' || type === 'FINAL_ANSWER')).toBe(false);
+  });
+
   it('rejects a valid answer payload when a route decision was requested', async () => {
     const { runtime, rpc, runtimeConfig } = await initializedRuntime();
     const handle = await startHandle(

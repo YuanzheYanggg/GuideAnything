@@ -583,7 +583,7 @@ export class CodexRuntime {
       return;
     }
     if (typeof value.text !== 'string') {
-      this.#fail(context, 'INVALID_FINAL_ANSWER', false);
+      this.#fail(context, invalidOutputCode(context.outputKind), false);
       return;
     }
     try {
