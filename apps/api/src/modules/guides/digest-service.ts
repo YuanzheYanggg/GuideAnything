@@ -556,7 +556,9 @@ function repairableFailureCode(error: unknown): string | null {
   if (error instanceof GuideDigestSourceValidationError) return error.code;
   if (error instanceof ZodError) return 'INVALID_GUIDE_DIGEST_OUTPUT';
   const code = errorCode(error);
-  return code === 'INVALID_GUIDE_DIGEST_OUTPUT' || code === 'BRIDGE_OUTPUT_MISSING'
+  return code === 'INVALID_GUIDE_DIGEST_OUTPUT'
+    || code === 'BRIDGE_OUTPUT_MISSING'
+    || code === 'GUIDE_DIGEST_MISSING'
     ? code
     : null;
 }

@@ -246,6 +246,23 @@ describe('GuideDigestService access and snapshot gates', () => {
     expect(runtime.requests).toHaveLength(2);
   });
 
+  it('repairs the production missing-digest code once and persists only a safe FAILED proposal', async () => {
+    runtime.enqueueFailure('GUIDE_DIGEST_MISSING');
+    runtime.enqueueFailure('GUIDE_DIGEST_MISSING');
+
+    const failed = await service.createProposal(owner, guideId, {});
+
+    expect(failed.proposal).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'GUIDE_DIGEST_MISSING',
+      draft: null,
+      markdown: null,
+      generationMetadata: { attemptCount: 2, repairAttempted: true },
+    });
+    expect(runtime.requests).toHaveLength(2);
+    expect(JSON.stringify(failed.proposal.generationMetadata)).not.toContain('unsafe runtime detail');
+  });
+
   it('does not retry or persist auth/runtime failures', async () => {
     runtime.enqueueFailure('RUNTIME_AUTH_FAILED');
 
