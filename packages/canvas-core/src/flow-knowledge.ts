@@ -1,6 +1,7 @@
 import {
   CanvasDocumentSchema,
   FlowKnowledgeSnapshotV1Schema,
+  FlowKnowledgeSnapshotV2Schema,
   FlowSnapshotOriginV1Schema,
   type CanvasDocument,
   type CanvasEdge,
@@ -10,7 +11,12 @@ import {
   type FlowKnowledgeEdgeRefV1,
   type FlowKnowledgeLaneV1,
   type FlowKnowledgeNodeV1,
+  type FlowKnowledgeNodeV2,
+  type FlowKnowledgeResourceV2,
+  type FlowKnowledgeRelationV2,
+  type FlowKnowledgeLearningStepV2,
   type FlowKnowledgeSnapshotV1,
+  type FlowKnowledgeSnapshotV2,
   type FlowKnowledgeStageV1,
   type FlowSnapshotOriginV1,
 } from '@guideanything/contracts';
@@ -28,6 +34,375 @@ export interface CompileFlowKnowledgeSnapshotInputV1 {
   tags: string[];
   origin: FlowSnapshotOriginV1;
   document: CanvasDocument;
+}
+
+export interface CompileFlowKnowledgeSnapshotInputV2 extends CompileFlowKnowledgeSnapshotInputV1 {}
+
+export function compileFlowKnowledgeSnapshotV2(
+  input: CompileFlowKnowledgeSnapshotInputV2,
+): FlowKnowledgeSnapshotV2 {
+  const document = CanvasDocumentSchema.parse(input.document);
+  const stages = [...(document.stages ?? [])].map(projectStage).sort(compareOrderThenId);
+  const lanes = [...(document.lanes ?? [])].map(projectLane).sort(compareOrderThenId);
+  const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+  const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  const primary = document.nodes.filter(isPrimaryNode);
+  const resourcesWithOrder = document.nodes
+    .map((node, order) => ({ node, order }))
+    .filter((item): item is { node: CanvasNode<'markdown' | 'image' | 'video'>; order: number } => isResourceNode(item.node));
+  const primaryIds = new Set(primary.map((node) => node.id));
+  const resourceIds = new Set(resourcesWithOrder.map(({ node }) => node.id));
+  const addressableIds = new Set([...primaryIds, ...resourceIds]);
+  const diagnostics = v2DiagnosticsSets();
+  document.nodes.forEach((node) => {
+    if (node.source) diagnostics.excludedDerivedNodeIds.add(node.id);
+  });
+
+  const nodes = primary
+    .map((node) => projectNode(node, input.guideId, input.snapshotId, stageById, laneById, document))
+    .sort((left, right) => compareId(left.id, right.id));
+  const resources = resourcesWithOrder
+    .map(({ node, order }) => projectResource(node, order, addressableIds, input.guideId, input.snapshotId, diagnostics))
+    .sort((left, right) => left.order - right.order || compareId(left.id, right.id));
+  const relations = compileV2Relations(document, primary, resourcesWithOrder, primaryIds, resourceIds, diagnostics);
+  const learningPath = compileLearningPath(document, primaryIds, resourceIds, diagnostics);
+  const usedResourceIds = new Set(relations.flatMap((relation) => relation.kind === 'USES_RESOURCE' ? [relation.resourceId] : []));
+
+  return FlowKnowledgeSnapshotV2Schema.parse({
+    schemaVersion: 2,
+    snapshotId: input.snapshotId,
+    workspaceId: input.workspaceId,
+    workspaceItemId: input.workspaceItemId,
+    guideId: input.guideId,
+    title: input.title,
+    summary: input.summary,
+    tags: [...input.tags],
+    origin: FlowSnapshotOriginV1Schema.parse(input.origin),
+    stages,
+    lanes,
+    nodes,
+    resources,
+    relations,
+    learningPath,
+    diagnostics: {
+      danglingFlowEdgeIds: sorted(diagnostics.danglingFlowEdgeIds),
+      invalidResourceRelationIds: sorted(diagnostics.invalidResourceRelationIds),
+      unreferencedResourceIds: resources.filter((resource) => !usedResourceIds.has(resource.id)).map((resource) => resource.id),
+      invalidLearningTargetIds: sorted(diagnostics.invalidLearningTargetIds),
+      excludedDerivedNodeIds: sorted(diagnostics.excludedDerivedNodeIds),
+    },
+  });
+}
+
+interface V2DiagnosticsSets {
+  danglingFlowEdgeIds: Set<string>;
+  invalidResourceRelationIds: Set<string>;
+  invalidLearningTargetIds: Set<string>;
+  excludedDerivedNodeIds: Set<string>;
+}
+
+function v2DiagnosticsSets(): V2DiagnosticsSets {
+  return {
+    danglingFlowEdgeIds: new Set(),
+    invalidResourceRelationIds: new Set(),
+    invalidLearningTargetIds: new Set(),
+    excludedDerivedNodeIds: new Set(),
+  };
+}
+
+function projectStage(stage: NonNullable<CanvasDocument['stages']>[number]): FlowKnowledgeStageV1 {
+  return {
+    id: stage.id,
+    title: stage.title,
+    order: stage.order,
+    ...(stage.description ? { description: stage.description } : {}),
+  };
+}
+
+function projectLane(lane: NonNullable<CanvasDocument['lanes']>[number]): FlowKnowledgeLaneV1 {
+  return {
+    id: lane.id,
+    title: lane.title,
+    kind: lane.kind,
+    order: lane.order,
+  };
+}
+
+function isResourceNode(node: CanvasNode): node is CanvasNode<'markdown' | 'image' | 'video'> {
+  return isContentNode(node) && node.source === undefined;
+}
+
+function projectNode(
+  node: CanvasNode<'start' | 'end' | 'process' | 'decision' | 'data' | 'subguide'>,
+  guideId: string,
+  snapshotId: string,
+  stageById: Map<string, FlowKnowledgeStageV1>,
+  laneById: Map<string, FlowKnowledgeLaneV1>,
+  document: CanvasDocument,
+): FlowKnowledgeNodeV2 {
+  const stage = node.stageId ? stageById.get(node.stageId) ?? null : null;
+  const responsibility = node.laneId ? laneById.get(node.laneId) ?? null : null;
+  const common = {
+    id: node.id,
+    locator: { guideId, snapshotId, nodeId: node.id },
+    kind: node.type,
+    title: node.type === 'subguide' ? node.data.title : node.data.label,
+    ...(node.type !== 'subguide' && node.data.description ? { description: node.data.description } : {}),
+    stage,
+    responsibility,
+    isEntry: document.entryNodeId === node.id,
+    isExit: document.exitNodeIds.includes(node.id),
+  };
+  if (node.type !== 'subguide') return common;
+  return {
+    ...common,
+    subguide: {
+      guideId: node.data.guideId,
+      versionId: node.data.guideVersionId,
+      version: node.data.version,
+      title: node.data.title,
+    },
+  };
+}
+
+function projectResource(
+  node: CanvasNode<'markdown' | 'image' | 'video'>,
+  order: number,
+  addressableIds: Set<string>,
+  guideId: string,
+  snapshotId: string,
+  diagnostics: V2DiagnosticsSets,
+): FlowKnowledgeResourceV2 {
+  const base = {
+    id: node.id,
+    locator: { guideId, snapshotId, nodeId: node.id },
+    order,
+  };
+  if (node.type === 'markdown') return { kind: 'MARKDOWN', ...base, markdown: node.data.markdown };
+  if (node.type === 'image') {
+    return {
+      kind: 'IMAGE',
+      ...base,
+      ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
+      alt: node.data.alt,
+      ...(node.data.caption ? { caption: node.data.caption } : {}),
+      annotations: [...(node.data.annotations ?? [])]
+        .sort((left, right) => left.order - right.order || compareId(left.id, right.id))
+        .map((annotation) => ({
+          id: annotation.id,
+          order: annotation.order,
+          title: annotation.title,
+          ...(annotation.body ? { body: annotation.body } : {}),
+          shape: annotation.shape,
+          region: { ...annotation.region },
+          ...(annotation.camera ? { camera: { ...annotation.camera } } : {}),
+          ...(annotation.supplementalImages?.length ? {
+            supplementalImages: [...annotation.supplementalImages]
+              .sort((left, right) => left.order - right.order || compareId(left.id, right.id))
+              .map(({ assetId, alt, caption }) => ({ assetId, alt, ...(caption ? { caption } : {}) })),
+          } : {}),
+          ...projectTargetReference(annotation.targetNodeId, addressableIds, guideId, snapshotId, diagnostics),
+        })),
+    };
+  }
+  return {
+    kind: 'VIDEO',
+    ...base,
+    ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
+    ...(node.data.caption ? { caption: node.data.caption } : {}),
+    keypoints: [...node.data.keypoints]
+      .sort((left, right) => left.timeSeconds - right.timeSeconds || compareId(left.id, right.id))
+      .map((keypoint) => ({
+        id: keypoint.id,
+        title: keypoint.title,
+        timeSeconds: keypoint.timeSeconds,
+        ...(keypoint.stepId ? { stepId: keypoint.stepId } : {}),
+        ...projectTargetReference(keypoint.targetNodeId, addressableIds, guideId, snapshotId, diagnostics),
+      })),
+  };
+}
+
+function projectTargetReference(
+  targetNodeId: string | undefined,
+  addressableIds: Set<string>,
+  guideId: string,
+  snapshotId: string,
+  diagnostics: V2DiagnosticsSets,
+): { targetNodeId?: string; targetLocator?: { guideId: string; snapshotId: string; nodeId: string } } {
+  if (!targetNodeId) return {};
+  if (!addressableIds.has(targetNodeId)) {
+    diagnostics.invalidResourceRelationIds.add(targetNodeId);
+    return { targetNodeId };
+  }
+  return {
+    targetNodeId,
+    targetLocator: { guideId, snapshotId, nodeId: targetNodeId },
+  };
+}
+
+function compileV2Relations(
+  document: CanvasDocument,
+  primary: CanvasNode<'start' | 'end' | 'process' | 'decision' | 'data' | 'subguide'>[],
+  resources: Array<{ node: CanvasNode<'markdown' | 'image' | 'video'>; order: number }>,
+  primaryIds: Set<string>,
+  resourceIds: Set<string>,
+  diagnostics: V2DiagnosticsSets,
+): FlowKnowledgeRelationV2[] {
+  const primaryById = new Map(primary.map((node) => [node.id, node]));
+  const relationsById = new Map<string, FlowKnowledgeRelationV2>();
+  const actualResourceUses = new Set<string>();
+  const continuationsByEdgeId = collectContinuations(primary);
+  document.edges.forEach((edge) => {
+    if (!isSemanticV2Edge(edge, continuationsByEdgeId)) return;
+    const sourceIsPrimary = primaryIds.has(edge.source);
+    const targetIsPrimary = primaryIds.has(edge.target);
+    const sourceIsResource = resourceIds.has(edge.source);
+    const targetIsResource = resourceIds.has(edge.target);
+    if (sourceIsPrimary && targetIsPrimary) {
+      const branchLabel = branchLabelFor(primaryById.get(edge.source), edge);
+      addV2Relation(relationsById, {
+        kind: 'FLOW',
+        id: edge.id,
+        sourceNodeId: edge.source,
+        targetNodeId: edge.target,
+        ...(edge.label ? { label: edge.label } : {}),
+        ...(branchLabel ? { branchLabel } : {}),
+      });
+      return;
+    }
+    if (sourceIsPrimary && targetIsResource) {
+      addV2Relation(relationsById, {
+        kind: 'USES_RESOURCE',
+        id: edge.id,
+        sourceNodeId: edge.source,
+        resourceId: edge.target,
+        ...(edge.label ? { label: edge.label } : {}),
+      });
+      actualResourceUses.add(resourceUseKey(edge.source, edge.target));
+      return;
+    }
+    if (sourceIsResource || targetIsResource) {
+      diagnostics.invalidResourceRelationIds.add(edge.id);
+      return;
+    }
+    diagnostics.danglingFlowEdgeIds.add(edge.id);
+  });
+
+  resources.forEach(({ node }) => {
+    if (node.contentParentId && primaryIds.has(node.contentParentId) && !actualResourceUses.has(resourceUseKey(node.contentParentId, node.id))) {
+      addV2Relation(relationsById, {
+        kind: 'USES_RESOURCE',
+        id: synthesizedRelationId('USES_RESOURCE', node.contentParentId, node.id),
+        sourceNodeId: node.contentParentId,
+        resourceId: node.id,
+      });
+    }
+    if (node.contentParentId && !primaryIds.has(node.contentParentId)) diagnostics.invalidResourceRelationIds.add(node.contentParentId);
+    resourceReferencesForNode(node, primaryIds, resourceIds, diagnostics).forEach((relation) => addV2Relation(relationsById, relation));
+  });
+
+  return [...relationsById.values()].sort(compareV2Relation);
+}
+
+function isSemanticV2Edge(edge: CanvasEdge, continuationsByEdgeId: ContinuationsByEdgeId): boolean {
+  if (!edge.hidden) return true;
+  return continuationsByEdgeId.get(edge.id)?.get(edge.source) === false;
+}
+
+function resourceReferencesForNode(
+  node: CanvasNode<'markdown' | 'image' | 'video'>,
+  primaryIds: Set<string>,
+  resourceIds: Set<string>,
+  diagnostics: V2DiagnosticsSets,
+): FlowKnowledgeRelationV2[] {
+  const references = node.type === 'image'
+    ? (node.data.annotations ?? []).map((annotation) => ({ id: annotation.id, targetId: annotation.targetNodeId }))
+    : node.type === 'video'
+      ? node.data.keypoints.map((keypoint) => ({ id: keypoint.id, targetId: keypoint.targetNodeId }))
+      : [];
+  return references.flatMap<FlowKnowledgeRelationV2>(({ id, targetId }) => {
+    if (!targetId) return [];
+    if (primaryIds.has(targetId)) {
+      return [{
+        kind: 'RESOURCE_REFERENCE' as const,
+        id: synthesizedRelationId('RESOURCE_REFERENCE', node.id, id),
+        sourceResourceId: node.id,
+        targetNodeId: targetId,
+      }];
+    }
+    if (resourceIds.has(targetId)) {
+      return [{
+        kind: 'RESOURCE_REFERENCE' as const,
+        id: synthesizedRelationId('RESOURCE_REFERENCE', node.id, id),
+        sourceResourceId: node.id,
+        targetResourceId: targetId,
+      }];
+    }
+    diagnostics.invalidResourceRelationIds.add(id);
+    return [];
+  });
+}
+
+function compileLearningPath(
+  document: CanvasDocument,
+  primaryIds: Set<string>,
+  resourceIds: Set<string>,
+  diagnostics: V2DiagnosticsSets,
+): FlowKnowledgeLearningStepV2[] {
+  return document.steps
+    .map((step, sourceOrder) => ({ step, sourceOrder }))
+    .sort((left, right) => left.step.order - right.step.order || left.sourceOrder - right.sourceOrder || compareId(left.step.id, right.step.id))
+    .flatMap<FlowKnowledgeLearningStepV2>(({ step }) => {
+      if (primaryIds.has(step.nodeId)) return [{ id: step.id, order: step.order, targetNodeId: step.nodeId }];
+      if (resourceIds.has(step.nodeId)) return [{ id: step.id, order: step.order, targetResourceId: step.nodeId }];
+      diagnostics.invalidLearningTargetIds.add(step.nodeId);
+      return [];
+    });
+}
+
+function resourceUseKey(sourceNodeId: string, resourceId: string): string {
+  return `${sourceNodeId}\u0000${resourceId}`;
+}
+
+function synthesizedRelationId(kind: 'USES_RESOURCE' | 'RESOURCE_REFERENCE', sourceId: string, targetId: string): string {
+  const prefix = kind === 'USES_RESOURCE' ? 'uses' : 'reference';
+  return `${prefix}:${stableTupleHash([kind, sourceId, targetId])}`;
+}
+
+function stableTupleHash(values: string[]): string {
+  let hash = 2_166_136_261;
+  for (const character of values.join('\u0000')) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function addV2Relation(relationsById: Map<string, FlowKnowledgeRelationV2>, relation: FlowKnowledgeRelationV2): void {
+  let id = relation.id;
+  let suffix = 2;
+  while (relationsById.has(id)) {
+    const suffixText = `:${suffix}`;
+    id = `${relation.id.slice(0, 200 - suffixText.length)}${suffixText}`;
+    suffix += 1;
+  }
+  relationsById.set(id, id === relation.id ? relation : { ...relation, id });
+}
+
+function compareV2Relation(left: FlowKnowledgeRelationV2, right: FlowKnowledgeRelationV2): number {
+  return v2RelationSource(left).localeCompare(v2RelationSource(right))
+    || v2RelationTarget(left).localeCompare(v2RelationTarget(right))
+    || compareId(left.id, right.id);
+}
+
+function v2RelationSource(relation: FlowKnowledgeRelationV2): string {
+  return relation.kind === 'RESOURCE_REFERENCE' ? relation.sourceResourceId : relation.sourceNodeId;
+}
+
+function v2RelationTarget(relation: FlowKnowledgeRelationV2): string {
+  if (relation.kind === 'FLOW') return relation.targetNodeId;
+  if (relation.kind === 'USES_RESOURCE') return relation.resourceId;
+  return relation.targetNodeId ?? relation.targetResourceId ?? '';
 }
 
 export function compileFlowKnowledgeSnapshotV1(

@@ -2,7 +2,11 @@ import type { CanvasDocument, CanvasNode } from '@guideanything/contracts';
 import { FlowKnowledgeSnapshotV1Schema } from '@guideanything/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { compileFlowKnowledgeSnapshotV1, type CompileFlowKnowledgeSnapshotInputV1 } from './flow-knowledge';
+import {
+  compileFlowKnowledgeSnapshotV1,
+  compileFlowKnowledgeSnapshotV2,
+  type CompileFlowKnowledgeSnapshotInputV1,
+} from './flow-knowledge';
 
 describe('compileFlowKnowledgeSnapshotV1', () => {
   it('is deterministic and ignores presentation-only movement', () => {
@@ -186,6 +190,49 @@ describe('compileFlowKnowledgeSnapshotV1', () => {
   });
 });
 
+describe('compileFlowKnowledgeSnapshotV2', () => {
+  it('projects current Canvas documents into semantic resources, relations, and learning steps', () => {
+    const snapshot = compileFlowKnowledgeSnapshotV2(input(currentCanvasDocument()));
+
+    expect(snapshot.stages).toEqual([{ id: 'intake', title: '受理', order: 0, description: '核对订单信息。' }]);
+    expect(snapshot.stages[0]).not.toHaveProperty('position');
+    expect(snapshot.nodes.map((node) => node.id)).toEqual(['collect', 'review']);
+    expect(snapshot.nodes.every((node) => !('position' in node))).toBe(true);
+    expect(snapshot.resources.map((resource) => resource.id)).toEqual(['image-proof', 'video-review']);
+    expect(snapshot.resources).not.toContainEqual(expect.objectContaining({ url: expect.anything() }));
+
+    expect(snapshot.relations).toEqual(expect.arrayContaining([
+      { kind: 'FLOW', id: 'flow-review', sourceNodeId: 'collect', targetNodeId: 'review', label: '提交审核' },
+      { kind: 'USES_RESOURCE', id: 'use-image-collect', sourceNodeId: 'collect', resourceId: 'image-proof' },
+      { kind: 'USES_RESOURCE', id: 'use-image-review', sourceNodeId: 'review', resourceId: 'image-proof' },
+      { kind: 'USES_RESOURCE', id: 'use-video-review', sourceNodeId: 'review', resourceId: 'video-review' },
+      expect.objectContaining({ kind: 'USES_RESOURCE', sourceNodeId: 'collect', resourceId: 'video-review' }),
+      expect.objectContaining({ kind: 'RESOURCE_REFERENCE', sourceResourceId: 'image-proof', targetNodeId: 'review' }),
+      expect.objectContaining({ kind: 'RESOURCE_REFERENCE', sourceResourceId: 'video-review', targetResourceId: 'image-proof' }),
+    ]));
+    expect(snapshot.relations).toHaveLength(7);
+    expect(snapshot.relations).not.toContainEqual(expect.objectContaining({ id: 'hidden-flow' }));
+    expect(snapshot.relations).not.toContainEqual(expect.objectContaining({ id: 'edge-derived' }));
+
+    const image = snapshot.resources.find((resource) => resource.id === 'image-proof');
+    const video = snapshot.resources.find((resource) => resource.id === 'video-review');
+    expect(image?.kind === 'IMAGE' ? image.annotations[0]?.targetLocator : undefined).toEqual(locator('review'));
+    expect(video?.kind === 'VIDEO' ? video.keypoints[0]?.targetLocator : undefined).toEqual(locator('image-proof'));
+
+    expect(snapshot.learningPath).toEqual([
+      { id: 'step-image', order: 1, targetResourceId: 'image-proof' },
+      { id: 'step-review', order: 2, targetNodeId: 'review' },
+    ]);
+    expect(snapshot.diagnostics).toEqual({
+      danglingFlowEdgeIds: ['edge-derived'],
+      invalidResourceRelationIds: [],
+      unreferencedResourceIds: [],
+      invalidLearningTargetIds: ['derived-helper'],
+      excludedDerivedNodeIds: ['derived-helper'],
+    });
+  });
+});
+
 function input(document: CanvasDocument): CompileFlowKnowledgeSnapshotInputV1 {
   return {
     snapshotId: 'snapshot-1',
@@ -324,6 +371,104 @@ function flowDocument(): CanvasDocument {
     entryNodeId: 'start',
     exitNodeIds: ['done'],
   };
+}
+
+function currentCanvasDocument(): CanvasDocument {
+  return {
+    schemaVersion: 1,
+    stages: [{
+      id: 'intake',
+      title: '受理',
+      order: 0,
+      description: '核对订单信息。',
+      position: { x: 120, y: 80 },
+    }],
+    lanes: [{ id: 'operator', title: '订单员', kind: 'ROLE', order: 0 }],
+    nodes: [
+      flowNode('collect', 'process', '收集订单', 'intake', 'operator'),
+      flowNode('review', 'process', '审核订单', 'intake', 'operator'),
+      {
+        id: 'image-proof',
+        type: 'image',
+        position: { x: 480, y: 320 },
+        zIndex: 9,
+        data: {
+          assetId: 'asset-proof',
+          url: '/api/media/asset-proof',
+          alt: '订单凭证',
+          caption: '核对凭证信息',
+          annotations: [{
+            id: 'annotation-review',
+            order: 0,
+            title: '审核字段',
+            shape: 'POINT',
+            region: { x: 0.4, y: 0.6 },
+            targetNodeId: 'review',
+          }],
+        },
+      },
+      {
+        id: 'video-review',
+        type: 'video',
+        position: { x: 760, y: 320 },
+        zIndex: 10,
+        contentParentId: 'collect',
+        data: {
+          assetId: 'asset-video',
+          url: '/api/media/asset-video',
+          caption: '审核演示',
+          keypoints: [{ id: 'keypoint-proof', title: '查看凭证', timeSeconds: 18, targetNodeId: 'image-proof' }],
+        },
+      },
+      {
+        ...flowNode('derived-helper', 'process', '派生辅助节点'),
+        source: {
+          referenceNodeId: 'subguide-reference',
+          sourceGuideId: 'source-guide',
+          sourceVersionId: 'source-version',
+          sourceElementId: 'source-helper',
+        },
+      },
+    ],
+    edges: [
+      {
+        id: 'flow-review',
+        source: 'collect',
+        sourceHandle: 'out',
+        target: 'review',
+        targetHandle: 'in',
+        label: '提交审核',
+        presentation: { routeMode: 'manual', waypoints: [{ x: 320, y: 120 }] },
+      },
+      { id: 'use-image-collect', source: 'collect', target: 'image-proof' },
+      { id: 'use-image-review', source: 'review', target: 'image-proof' },
+      { id: 'use-video-review', source: 'review', target: 'video-review' },
+      { id: 'hidden-flow', source: 'review', target: 'collect', hidden: true },
+      {
+        id: 'edge-derived',
+        source: 'collect',
+        target: 'derived-helper',
+        sourceTrace: {
+          referenceNodeId: 'subguide-reference',
+          sourceGuideId: 'source-guide',
+          sourceVersionId: 'source-version',
+          sourceElementId: 'source-edge',
+        },
+      },
+    ],
+    viewport: { x: 33, y: 44, zoom: 1.25 },
+    steps: [
+      { id: 'step-review', order: 2, title: '审核订单', nodeId: 'review' },
+      { id: 'step-image', order: 1, title: '核对凭证', nodeId: 'image-proof' },
+      { id: 'step-derived', order: 3, title: '派生步骤', nodeId: 'derived-helper' },
+    ],
+    entryNodeId: 'collect',
+    exitNodeIds: ['review'],
+  };
+}
+
+function locator(nodeId: string) {
+  return { guideId: 'guide-1', snapshotId: 'snapshot-1', nodeId };
 }
 
 function expandedSubguideDocument(): CanvasDocument {
