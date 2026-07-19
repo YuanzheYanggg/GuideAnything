@@ -320,6 +320,12 @@ export class GuideDigestService {
         this.database.exec('COMMIT');
         return { created: false, proposal: currentDraft };
       }
+      if (
+        input.regenerate === true
+        && (existing?.id ?? null) !== (currentDraft?.id ?? null)
+      ) {
+        throw httpError(409, 'GUIDE_DIGEST_PROPOSAL_CHANGED', '指南摘要提案状态已发生变化');
+      }
       if (existing && !currentDraft) {
         throw httpError(409, 'GUIDE_DIGEST_PROPOSAL_CHANGED', '指南摘要提案状态已发生变化');
       }
@@ -766,7 +772,7 @@ function generationMetadata(
     repairAttempted: attemptCount > 1,
     truncatedResourceCount,
     continuityMode: mode.continuityMode,
-    ...(selectedContinuity === null
+    ...(selectedContinuity === null || mode.continuityMode !== 'RESIDUAL_CONTEXT'
       ? {}
       : {
           baselineProposalId: selectedContinuity.context.baselineProposalId,

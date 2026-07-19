@@ -19,6 +19,7 @@ import {
   getGuideDigestProposal,
   listGuideDigestAuditEvents,
   listGuideDigestProposals,
+  regenerateGuideDigestProposal,
 } from './digest-repository';
 import { DIGEST_RENDERER_VERSION } from './digest-renderer';
 import { GuideDigestService } from './digest-service';
@@ -327,9 +328,61 @@ describe('GuideDigestService access and snapshot gates', () => {
     });
   });
 
+  it('rejects an explicit regenerate when concurrent DRAFT B replaces observed baseline A', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '观察到的基线 A' }));
+    const baselineA = (await service.createProposal(owner, guideId, {})).proposal;
+    let concurrentB: ReturnType<typeof regenerateGuideDigestProposal> | undefined;
+    runtime.enqueueDigest(digest({ shortSummary: '迟到的生成结果' }), () => {
+      concurrentB = regenerateGuideDigestProposal(database, baselineA.id, {
+        ...currentProposalIdentity(database, guideId),
+        draft: digest({ shortSummary: '并发 DRAFT B' }),
+        markdown: '# 并发 DRAFT B',
+        createdBy: owner.id,
+      });
+    });
+
+    await expect(service.createProposal(owner, guideId, { regenerate: true })).rejects.toMatchObject({
+      statusCode: 409, code: 'GUIDE_DIGEST_PROPOSAL_CHANGED',
+    });
+
+    expect(concurrentB).toBeDefined();
+    expect(getGuideDigestProposal(database, guideId, baselineA.id)?.status).toBe('STALE');
+    expect(getGuideDigestProposal(database, guideId, concurrentB!.id)).toMatchObject({
+      status: 'DRAFT', draft: { shortSummary: '并发 DRAFT B' }, supersedesProposalId: baselineA.id,
+    });
+    expect(listGuideDigestProposals(database, guideId)).toHaveLength(2);
+    expect(listGuideDigestProposals(database, guideId)
+      .filter(({ supersedesProposalId }) => supersedesProposalId === concurrentB!.id)).toEqual([]);
+  });
+
+  it('rejects a late explicit-regenerate failure when no initial DRAFT became concurrent DRAFT B', async () => {
+    let concurrentB: ReturnType<typeof createGuideDigestProposal> | undefined;
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT', () => {
+      concurrentB = createGuideDigestProposal(database, {
+        ...currentProposalIdentity(database, guideId),
+        draft: digest({ shortSummary: '无初始基线时的并发 DRAFT B' }),
+        markdown: '# 无初始基线时的并发 DRAFT B',
+        createdBy: owner.id,
+      });
+    });
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
+
+    await expect(service.createProposal(owner, guideId, { regenerate: true })).rejects.toMatchObject({
+      statusCode: 409, code: 'GUIDE_DIGEST_PROPOSAL_CHANGED',
+    });
+
+    expect(concurrentB).toBeDefined();
+    expect(getGuideDigestProposal(database, guideId, concurrentB!.id)).toMatchObject({
+      status: 'DRAFT', draft: { shortSummary: '无初始基线时的并发 DRAFT B' },
+    });
+    expect(listGuideDigestProposals(database, guideId)).toEqual([
+      expect.objectContaining({ id: concurrentB!.id, status: 'DRAFT' }),
+    ]);
+  });
+
   it('falls back only the oversized continuity request to a full prompt that fits', async () => {
     const sourceId = snapshotSourceId(database, guideId);
-    const baseline = createGuideDigestProposal(database, {
+    createGuideDigestProposal(database, {
       ...currentProposalIdentity(database, guideId),
       draft: oversizedDigest(sourceId),
       markdown: '# 大型历史摘要',
@@ -344,15 +397,58 @@ describe('GuideDigestService access and snapshot gates', () => {
     expect(promptEnvelope(runtime.requests[0]!.prompt)).not.toHaveProperty('continuity');
     expect(generated.proposal.generationMetadata).toMatchObject({
       continuityMode: 'FULL',
-      baselineProposalId: baseline.id,
-      baselineRevision: baseline.baseRevision,
       continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
     });
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineProposalId');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineRevision');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('changedSourceCount');
+  });
+
+  it('keeps fallback repair in FULL mode and persists only the repaired output', async () => {
+    const sourceId = snapshotSourceId(database, guideId);
+    createGuideDigestProposal(database, {
+      ...currentProposalIdentity(database, guideId),
+      draft: oversizedDigest(sourceId),
+      markdown: '# 大型历史摘要',
+      createdBy: owner.id,
+    });
+    advanceGuide(database, guideId, owner.id, { summary: '触发完整回退修复' });
+    runtime.enqueueDigest(digest({
+      shortSummary: '无效完整输出',
+      tagSuggestions: [{ label: '订单', category: 'PROCESS', sourceIds: [sourceId] }],
+    }));
+    runtime.enqueueDigest(digest({
+      shortSummary: '修复后的完整输出',
+      tagSuggestions: [{ label: '审批', category: 'PROCESS', sourceIds: [sourceId] }],
+    }));
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(runtime.requests).toHaveLength(2);
+    expect(promptEnvelope(runtime.requests[0]!.prompt)).not.toHaveProperty('continuity');
+    expect(promptEnvelope(runtime.requests[1]!.prompt)).not.toHaveProperty('continuity');
+    expect(runtime.requests[1]!.prompt).toContain('snapshot.tags');
+    expect(runtime.requests[1]!.prompt).toContain('tagSuggestions');
+    expect(generated.proposal).toMatchObject({
+      status: 'DRAFT',
+      draft: { shortSummary: '修复后的完整输出', tagSuggestions: [{ label: '审批' }] },
+      generationMetadata: {
+        continuityMode: 'FULL',
+        continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
+        attemptCount: 2,
+        repairAttempted: true,
+      },
+    });
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineProposalId');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineRevision');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('changedSourceCount');
+    expect(listGuideDigestProposals(database, guideId)
+      .filter(({ draft }) => draft?.shortSummary === '无效完整输出')).toEqual([]);
   });
 
   it('keeps GUIDE_DIGEST_INPUT_TOO_LARGE when continuity and the full prompt both overflow', async () => {
     runtime.enqueueDigest(digest({ shortSummary: '历史摘要' }));
-    const baseline = (await service.createProposal(owner, guideId, {})).proposal;
+    await service.createProposal(owner, guideId, {});
     advanceGuide(database, guideId, owner.id, { summary: '第二版摘要' });
     const row = database.prepare(
       `SELECT id, snapshot_json FROM flow_knowledge_snapshots
@@ -371,10 +467,12 @@ describe('GuideDigestService access and snapshot gates', () => {
       failureCode: 'GUIDE_DIGEST_INPUT_TOO_LARGE',
       generationMetadata: {
         continuityMode: 'FULL',
-        baselineProposalId: baseline.id,
         continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
       },
     });
+    expect(failed.proposal.generationMetadata).not.toHaveProperty('baselineProposalId');
+    expect(failed.proposal.generationMetadata).not.toHaveProperty('baselineRevision');
+    expect(failed.proposal.generationMetadata).not.toHaveProperty('changedSourceCount');
     expect(runtime.requests).toHaveLength(1);
     expect(runtime.requests[0]!.prompt).not.toContain('当前超限标记');
     expect(JSON.stringify(failed.proposal.generationMetadata)).not.toContain('当前超限标记');
@@ -848,12 +946,12 @@ describe('GuideDigestService access and snapshot gates', () => {
 class RecordingRuntime implements AgentRuntimeClient {
   readonly requests: BridgeRunRequestV1[] = [];
   readonly #steps: Array<
-    | { kind: 'DIGEST'; digest: GuideDigestDraftV1 }
+    | { kind: 'DIGEST'; digest: GuideDigestDraftV1; before?: () => void }
     | { kind: 'FAILURE'; code: string; before?: () => void }
   > = [];
 
-  enqueueDigest(digest: GuideDigestDraftV1): void {
-    this.#steps.push({ kind: 'DIGEST', digest });
+  enqueueDigest(digest: GuideDigestDraftV1, before?: () => void): void {
+    this.#steps.push({ kind: 'DIGEST', digest, ...(before ? { before } : {}) });
   }
 
   enqueueFailure(code: string, before?: () => void): void {
@@ -875,6 +973,7 @@ class RecordingRuntime implements AgentRuntimeClient {
       };
       return;
     }
+    step.before?.();
     yield {
       requestId: request.requestId,
       runId: request.runId,
