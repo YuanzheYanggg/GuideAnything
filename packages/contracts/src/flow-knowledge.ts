@@ -56,6 +56,12 @@ const ImageAnnotationCameraV1Schema = z.object({
   zoom: z.number().min(1).max(8),
 }).strict();
 
+export const FlowKnowledgeImageAnnotationSupplementV1Schema = z.object({
+  assetId: IdV1Schema,
+  alt: z.string().min(1).max(500),
+  caption: z.string().max(1_000).optional(),
+}).strict();
+
 export const FlowKnowledgeImageAnnotationV1Schema = z.object({
   id: IdV1Schema,
   order: z.number().int().min(0),
@@ -64,6 +70,7 @@ export const FlowKnowledgeImageAnnotationV1Schema = z.object({
   shape: z.enum(['POINT', 'RECT']),
   region: ImageAnnotationRegionV1Schema,
   camera: ImageAnnotationCameraV1Schema.optional(),
+  supplementalImages: z.array(FlowKnowledgeImageAnnotationSupplementV1Schema).max(8).optional(),
   ...FlowKnowledgeTargetV1Schema.shape,
 }).strict().superRefine((annotation, context) => {
   const { width, height, x, y } = annotation.region;

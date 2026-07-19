@@ -121,6 +121,56 @@ export function isContentNode(node: CanvasNode): boolean {
   return ['markdown', 'image', 'video'].includes(node.type) && !node.source;
 }
 
+/**
+ * Reassigning a primary node changes the row that gives the stage its visual
+ * bounds. Re-run the deterministic hierarchy placement so the node (and any
+ * legacy attached content) enters the new stage instead of retaining an
+ * absolute position from the old stage.
+ */
+export function movePrimaryNodeToStage(document: CanvasDocument, nodeId: string, stageId?: string): CanvasDocument {
+  const node = document.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node || !isPrimaryFlowNode(node)) return document;
+  if (stageId && !(document.stages ?? []).some((stage) => stage.id === stageId)) return document;
+
+  const nodes = document.nodes.map((candidate) => {
+    if (candidate.id !== nodeId) return candidate;
+    if (stageId) return { ...candidate, stageId };
+    const { stageId: _stageId, ...withoutStage } = candidate;
+    return withoutStage;
+  });
+  return layoutFlowHierarchy({ ...document, nodes }).document;
+}
+
+/** Move a stage as a group while keeping attached resources aligned. */
+export function translateStageNodes(document: CanvasDocument, stageId: string, delta: { x: number; y: number }): CanvasDocument {
+  const primaryIds = new Set(document.nodes.filter((node) => isPrimaryFlowNode(node) && node.stageId === stageId).map((node) => node.id));
+  if (delta.x === 0 && delta.y === 0) return document;
+  const linkedContentIds = new Set(document.edges
+    .filter((edge) => !edge.hidden && !edge.sourceTrace && primaryIds.has(edge.source))
+    .map((edge) => edge.target));
+  const currentBound = getStageBounds(document).find((bound) => bound.stageId === stageId);
+  const stages = primaryIds.size === 0 ? document.stages?.map((stage) => {
+    if (stage.id !== stageId) return stage;
+    const position = stage.position ?? (currentBound ? { x: currentBound.x, y: currentBound.y } : { x: 0, y: 0 });
+    return { ...stage, position: { x: position.x + delta.x, y: position.y + delta.y } };
+  }) : document.stages;
+
+  return {
+    ...document,
+    ...(stages ? { stages } : {}),
+    nodes: document.nodes.map((node) => {
+      const belongsToStage = primaryIds.has(node.id)
+        || (isContentNode(node) && (
+          Boolean(node.contentParentId && primaryIds.has(node.contentParentId))
+          || linkedContentIds.has(node.id)
+        ));
+      return belongsToStage
+        ? { ...node, position: { x: node.position.x + delta.x, y: node.position.y + delta.y } }
+        : node;
+    }),
+  };
+}
+
 export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutResult {
   const visible = document.nodes.filter((node) => !node.hidden);
   const primary = visible.filter(isPrimaryFlowNode).sort(compareNodes);
@@ -168,7 +218,7 @@ export function getStageBounds(document: CanvasDocument): StageBounds[] {
 
   document.nodes.forEach((node) => {
     if (node.hidden || node.source) return;
-    const stageId = stageForNode(node, nodesById, stagesById);
+    const stageId = stageForNode(node, nodesById, stagesById, document.edges);
     const size = nodeSize(node);
     const existing = boundsByStage.get(stageId);
     const maxX = node.position.x + size.width;
@@ -188,13 +238,13 @@ export function getStageBounds(document: CanvasDocument): StageBounds[] {
     return bounds ? toStageBounds(stage.id, stage.title, bounds) : null;
   });
   const configuredWidth = Math.max(EMPTY_GRID_CELL_WIDTH + STAGE_PADDING * 2, ...configuredBounds.map((bound) => bound?.width ?? 0));
-  let nextY = configuredBounds.find((bound): bound is StageBounds => Boolean(bound))?.y ?? -STAGE_PADDING;
+  let nextY = -STAGE_PADDING;
   const result = stages.map((stage, index) => {
     const actual = configuredBounds[index];
     const bound = actual
-      ? { ...actual, x: -STAGE_PADDING, width: configuredWidth }
-      : { stageId: stage.id, title: stage.title, x: -STAGE_PADDING, y: nextY, width: configuredWidth, height: EMPTY_GRID_CELL_HEIGHT + STAGE_PADDING * 2 };
-    nextY = bound.y + bound.height + STAGE_GAP_Y - STAGE_PADDING * 2;
+      ? { ...actual, width: Math.max(actual.width, configuredWidth) }
+      : { stageId: stage.id, title: stage.title, x: stage.position?.x ?? -STAGE_PADDING, y: stage.position?.y ?? nextY, width: configuredWidth, height: EMPTY_GRID_CELL_HEIGHT + STAGE_PADDING * 2 };
+    nextY = Math.max(nextY, bound.y + bound.height + STAGE_GAP_Y - STAGE_PADDING * 2);
     return bound;
   });
   const unassigned = boundsByStage.get(null);
@@ -920,9 +970,21 @@ function orderedLanes(lanes: FlowLane[]): FlowLane[] {
   return [...lanes].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
 }
 
-function stageForNode(node: CanvasNode, nodesById: Map<string, CanvasNode>, stagesById: Map<string, FlowStage>): string | null {
+function stageForNode(
+  node: CanvasNode,
+  nodesById: Map<string, CanvasNode>,
+  stagesById: Map<string, FlowStage>,
+  edges: CanvasEdge[] = [],
+): string | null {
   const parent = isContentNode(node) && node.contentParentId ? nodesById.get(node.contentParentId) : undefined;
-  const candidate = parent && isPrimaryFlowNode(parent) ? parent.stageId : node.stageId;
+  const linkedParent = !parent && isContentNode(node)
+    ? edges
+      .filter((edge) => !edge.hidden && !edge.sourceTrace && edge.target === node.id)
+      .map((edge) => nodesById.get(edge.source))
+      .find((candidate) => candidate && isPrimaryFlowNode(candidate))
+    : undefined;
+  const candidateParent = parent && isPrimaryFlowNode(parent) ? parent : linkedParent;
+  const candidate = candidateParent ? candidateParent.stageId : node.stageId;
   return candidate && stagesById.has(candidate) ? candidate : null;
 }
 

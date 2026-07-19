@@ -1,5 +1,5 @@
 import type { CanvasNode } from '@guideanything/contracts';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -74,13 +74,49 @@ describe('ImageAnnotationEditor', () => {
     await user.click(screen.getByRole('button', { name: '删除标注 1' }));
     expect(screen.queryByDisplayValue('新标注')).not.toBeInTheDocument();
   });
+
+  it('uploads, captions, reorders, and unlinks image-only supplemental screenshots', async () => {
+    const user = userEvent.setup();
+    const onUploadSupplement = vi.fn().mockResolvedValue({
+      assetId: 'asset-menu', url: '/api/media/asset-menu', alt: '成衣类型菜单',
+    });
+    render(<Harness initialAnnotations={[
+      { id: 'first', order: 0, title: '成衣类型', shape: 'POINT', region: { x: 0.2, y: 0.3 } },
+    ]} onUploadSupplement={onUploadSupplement} />);
+
+    await user.upload(screen.getByLabelText('上传步骤补充图'), new File(['menu'], 'menu.png', { type: 'image/png' }));
+    expect(onUploadSupplement).toHaveBeenCalledWith(expect.objectContaining({ name: 'menu.png', type: 'image/png' }));
+    await waitFor(() => expect(screen.getByTestId('annotation-state')).toHaveTextContent('成衣类型菜单'));
+    await user.type(screen.getByLabelText('补充图 1 说明'), '点击字段后的下拉菜单');
+    fireEvent.blur(screen.getByLabelText('补充图 1 说明'));
+    expect(screen.getByTestId('annotation-state')).toHaveTextContent('点击字段后的下拉菜单');
+    await user.click(screen.getByRole('button', { name: '移除补充图 1' }));
+    expect(screen.getByTestId('annotation-state')).not.toHaveTextContent('成衣类型菜单');
+    expect(onUploadSupplement).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects non-image supplemental uploads without changing the annotation', async () => {
+    const user = userEvent.setup({ applyAccept: false });
+    const onUploadSupplement = vi.fn();
+    render(<Harness initialAnnotations={[
+      { id: 'first', order: 0, title: '成衣类型', shape: 'POINT', region: { x: 0.2, y: 0.3 } },
+    ]} onUploadSupplement={onUploadSupplement} />);
+
+    await user.upload(screen.getByLabelText('上传步骤补充图'), new File(['video'], 'menu.mp4', { type: 'video/mp4' }));
+    expect(onUploadSupplement).not.toHaveBeenCalled();
+    expect(screen.getByText('仅支持图片文件。')).toBeVisible();
+  });
 });
 
-function Harness({ onClose = vi.fn(), initialAnnotations = [] }: { onClose?: () => void; initialAnnotations?: CanvasNode<'image'>['data']['annotations'] }) {
+function Harness({ onClose = vi.fn(), initialAnnotations = [], onUploadSupplement = vi.fn() }: {
+  onClose?: () => void;
+  initialAnnotations?: CanvasNode<'image'>['data']['annotations'];
+  onUploadSupplement?: (file: File) => Promise<{ assetId: string; url: string; alt: string }>;
+}) {
   const [data, setData] = useState<CanvasNode<'image'>['data']>({ ...imageNode.data, annotations: initialAnnotations });
   const annotations = data.annotations ?? [];
   return <>
-    <ImageAnnotationEditor node={{ ...imageNode, data }} nodes={[imageNode, target]} onChange={setData} onClose={onClose} />
-    <output data-testid="annotation-state">{annotations.map((item) => `${item.title}:${item.region.x.toFixed(3)},${item.region.y.toFixed(3)},${item.camera?.zoom ?? 0}`).join('|')}</output>
+    <ImageAnnotationEditor node={{ ...imageNode, data }} nodes={[imageNode, target]} onChange={setData} onUploadSupplement={onUploadSupplement} onClose={onClose} />
+    <output data-testid="annotation-state">{annotations.map((item) => `${item.title}:${item.region.x.toFixed(3)},${item.region.y.toFixed(3)},${item.camera?.zoom ?? 0}:${item.supplementalImages?.map((image) => image.caption ?? image.alt).join(',') ?? ''}`).join('|')}</output>
   </>;
 }

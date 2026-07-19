@@ -1,4 +1,9 @@
-import type { CanvasDocument, GuideStatus, GuideVersionSnapshot } from '@guideanything/contracts';
+import type {
+  CanvasDocument,
+  GuideDraftHistorySnapshot,
+  GuideStatus,
+  GuideVersionSnapshot,
+} from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
@@ -54,6 +59,19 @@ interface VersionRow {
   tags_json: string;
   document_json: string;
   published_at: string;
+}
+
+interface DraftHistoryRow {
+  id: string;
+  guide_id: string;
+  revision: number;
+  title: string;
+  summary: string;
+  tags_json: string;
+  draft_document_json: string;
+  saved_by: string;
+  saved_at: string;
+  saved_by_name: string;
 }
 
 export type GuideAccess = 'OWNER' | 'EDIT' | null;
@@ -257,7 +275,53 @@ export function updateGuideInTransaction(
     action: 'GUIDE_UPDATED',
     itemId: current.workspaceItemId,
   });
-  return getGuide(database, guideId)!;
+  const guide = getGuide(database, guideId)!;
+  recordDraftSnapshotInTransaction(database, guide, actorId);
+  return guide;
+}
+
+export function listDraftHistory(database: DatabaseSync, guideId: string): GuideDraftHistorySnapshot[] {
+  const rows = database.prepare(
+    `SELECT draft.revision, draft.title, draft.summary, draft.tags_json,
+            draft.saved_by, draft.saved_at, user.display_name AS saved_by_name
+     FROM guide_draft_revisions AS draft
+     JOIN users AS user ON user.id = draft.saved_by
+     WHERE draft.guide_id = ?
+     ORDER BY draft.saved_at DESC, draft.revision DESC`,
+  ).all(guideId) as unknown as DraftHistoryRow[];
+  return rows.map(mapDraftHistory);
+}
+
+export function restoreGuideDraft(
+  database: DatabaseSync,
+  guideId: string,
+  sourceRevision: number,
+  actorId: string,
+  currentRevision: number,
+): GuideDraft {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const source = database.prepare(
+      `SELECT draft.id, draft.guide_id, draft.revision, draft.title, draft.summary,
+              draft.tags_json, draft.draft_document_json, draft.saved_by, draft.saved_at,
+              user.display_name AS saved_by_name
+       FROM guide_draft_revisions AS draft
+       JOIN users AS user ON user.id = draft.saved_by
+       WHERE draft.guide_id = ? AND draft.revision = ?`,
+    ).get(guideId, sourceRevision) as unknown as DraftHistoryRow | undefined;
+    if (!source) throw httpError(404, 'DRAFT_HISTORY_NOT_FOUND', '目标草稿历史不存在');
+    const guide = updateGuideInTransaction(database, guideId, actorId, currentRevision, {
+      title: source.title,
+      summary: source.summary,
+      tags: JSON.parse(source.tags_json) as string[],
+      document: CanvasDocumentSchema.parse(JSON.parse(source.draft_document_json)),
+    });
+    database.exec('COMMIT');
+    return guide;
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function addCollaborator(
@@ -397,6 +461,46 @@ function mapGuide(row: GuideRow): GuideDraft {
     updatedAt: row.updated_at,
     ...(row.favorite === undefined ? {} : { favorite: row.favorite === 1 }),
     ...(row.can_manage_lifecycle === undefined ? {} : { canManageLifecycle: row.can_manage_lifecycle === 1 }),
+  };
+}
+
+function recordDraftSnapshotInTransaction(database: DatabaseSync, guide: GuideDraft, savedBy: string): void {
+  const id = randomUUID();
+  const savedAt = new Date().toISOString();
+  database.prepare(
+    `INSERT INTO guide_draft_revisions (
+      id, guide_id, revision, title, summary, tags_json, draft_document_json, saved_by, saved_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    guide.id,
+    guide.revision,
+    guide.title,
+    guide.summary,
+    JSON.stringify(guide.tags),
+    JSON.stringify(guide.document),
+    savedBy,
+    savedAt,
+  );
+  database.prepare(
+    `DELETE FROM guide_draft_revisions
+     WHERE guide_id = ? AND id IN (
+       SELECT id FROM guide_draft_revisions
+       WHERE guide_id = ?
+       ORDER BY saved_at DESC, revision DESC
+       LIMIT -1 OFFSET 200
+     )`,
+  ).run(guide.id, guide.id);
+}
+
+function mapDraftHistory(row: DraftHistoryRow): GuideDraftHistorySnapshot {
+  return {
+    revision: row.revision,
+    title: row.title,
+    summary: row.summary,
+    tags: JSON.parse(row.tags_json) as string[],
+    savedAt: row.saved_at,
+    savedBy: { id: row.saved_by, displayName: row.saved_by_name },
   };
 }
 

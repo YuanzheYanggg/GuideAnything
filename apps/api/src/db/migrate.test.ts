@@ -143,6 +143,7 @@ describe('database migrations', () => {
     ).all().map((row) => (row as { name: string }).name);
     expect(tables).toEqual(expect.arrayContaining([
       'guide_collaborators',
+      'guide_draft_revisions',
       'guide_search',
       'guide_versions',
       'guides',
@@ -178,7 +179,7 @@ describe('database migrations', () => {
     ]));
     expect(database.prepare(
       'SELECT version FROM schema_migrations ORDER BY version',
-    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }]);
+    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }]);
 
     const indexesAndTriggers = database.prepare(
       "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_%'",
@@ -206,6 +207,8 @@ describe('database migrations', () => {
       'workspace_folders_workspace_parent_idx',
       'workspace_resource_mounts_consumer_idx',
       'workspace_resource_mounts_provider_idx',
+      'guide_draft_revisions_latest_idx',
+      'guide_draft_revisions_immutable',
     ]));
 
     const strictByTable = new Map(
@@ -224,6 +227,7 @@ describe('database migrations', () => {
       'workspace_flow_proposal_evidence',
       'workspace_editorial_audit_events',
       'workspace_folders', 'workspace_resource_mounts',
+      'guide_draft_revisions',
     ]) {
       expect(strictByTable.get(table), `${table} should be STRICT`).toBe(1);
     }
@@ -240,6 +244,29 @@ describe('database migrations', () => {
     expect(database.prepare(`PRAGMA table_info('workspace_items')`).all()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'folder_id', notnull: 0 }),
     ]));
+  });
+
+  it('creates one recovery baseline for each guide that existed before draft history', () => {
+    database = createDatabase(':memory:');
+    migrateDatabase(database);
+    seedPrincipals(database);
+    database.prepare('DELETE FROM schema_migrations WHERE version = 8').run();
+    database.prepare(`INSERT INTO guides (
+      id, owner_id, title, summary, tags_json, status, visibility, revision,
+      draft_document, created_at, updated_at
+    ) VALUES ('legacy-guide', 'user-one', '升级前草稿', '保留当前版本', '["打样"]', 'DRAFT', 'INTERNAL', 41, '{"schemaVersion":1,"nodes":[],"edges":[],"viewport":{"x":0,"y":0,"zoom":1},"steps":[],"exitNodeIds":[]}', ?, ?)`)
+      .run(now, later);
+
+    migrateDatabase(database);
+    migrateDatabase(database);
+
+    expect(database.prepare(`SELECT guide_id, revision, title, summary, tags_json, draft_document_json, saved_by, saved_at
+      FROM guide_draft_revisions WHERE guide_id = 'legacy-guide'`).get()).toEqual({
+      guide_id: 'legacy-guide', revision: 41, title: '升级前草稿', summary: '保留当前版本', tags_json: '["打样"]',
+      draft_document_json: '{"schemaVersion":1,"nodes":[],"edges":[],"viewport":{"x":0,"y":0,"zoom":1},"steps":[],"exitNodeIds":[]}',
+      saved_by: 'user-one', saved_at: later,
+    });
+    expect(database.prepare(`SELECT COUNT(*) AS count FROM guide_draft_revisions WHERE guide_id = 'legacy-guide'`).get()).toEqual({ count: 1 });
   });
 
   it('enforces conversation scope and mutually exclusive source ownership', () => {

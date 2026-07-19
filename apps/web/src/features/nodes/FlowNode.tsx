@@ -1,6 +1,7 @@
 import type { NodeProps } from '@xyflow/react';
 import { memo, type MouseEvent as ReactMouseEvent } from 'react';
 
+import { SanitizedMarkdown } from '../markdown/SanitizedMarkdown';
 import { NodeChrome } from './NodeChrome';
 import { InlineNodeTextEditor } from './InlineNodeTextEditor';
 import { useNodeDetailPresentation } from './NodeDetailPresentation';
@@ -10,6 +11,7 @@ export const FlowNode = memo(function FlowNode({ data, selected, type, width, he
   const detailPresentation = useNodeDetailPresentation();
   const label = value.label ?? '未命名流程';
   const description = value.description ?? '';
+  const descriptionPreview = description.split('\n')[0] ?? '';
   const expanded = detailPresentation.expandedNodeIds.has(id);
   const openDetailEditor = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
@@ -27,7 +29,7 @@ export const FlowNode = memo(function FlowNode({ data, selected, type, width, he
       onClick={openDetailEditor}
       onDoubleClick={openDetailEditor}
     >{description
-      ? <p className={expanded ? 'flow-description flow-description-expanded' : 'flow-description'} data-testid={`flow-description-${id}`}>{expanded ? description : description.split('\n')[0]}</p>
+      ? <SanitizedMarkdown className={`flow-description flow-description-markdown${expanded ? ' flow-description-expanded' : ''}`} testId={`flow-description-${id}`}>{expanded ? description : descriptionPreview}</SanitizedMarkdown>
       : selected ? <span className="inline-node-text-placeholder">双击添加节点明细</span> : null}
     </button>
     {description ? <button className="flow-detail-toggle flow-detail-toggle-compact nodrag nopan nowheel" type="button" onClick={(event) => { event.stopPropagation(); detailPresentation.onToggleExpanded(id); }}>{expanded ? '收起' : '详情'}</button> : null}

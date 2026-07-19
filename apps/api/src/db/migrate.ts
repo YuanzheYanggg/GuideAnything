@@ -26,6 +26,14 @@ const migrations = [
     version: 6,
     sql: readFileSync(new URL('./migrations/0006_shared_resource_workspaces.sql', import.meta.url), 'utf8'),
   },
+  {
+    version: 7,
+    sql: readFileSync(new URL('./migrations/0007_guide_draft_history.sql', import.meta.url), 'utf8'),
+  },
+  {
+    version: 8,
+    sql: readFileSync(new URL('./migrations/0008_guide_draft_history_baseline.sql', import.meta.url), 'utf8'),
+  },
 ] as const;
 
 export function migrateDatabase(database: DatabaseSync): void {

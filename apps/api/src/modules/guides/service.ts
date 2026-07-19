@@ -16,8 +16,10 @@ import {
   getGuide,
   getGuideAccess,
   getVersion,
+  listDraftHistory,
   listGuides,
   publishGuide,
+  restoreGuideDraft,
   updateGuide,
   type GuideListScope,
 } from './repository';
@@ -49,6 +51,28 @@ export class GuideService {
   readDraft(user: { id: string; role: string }, guideId: string) {
     this.requireEditAccess(user, guideId);
     return getGuide(this.database, guideId)!;
+  }
+
+  draftHistory(user: { id: string; role: string }, guideId: string) {
+    this.requireEditAccess(user, guideId);
+    return listDraftHistory(this.database, guideId);
+  }
+
+  restoreDraft(user: { id: string; role: string }, guideId: string, sourceRevision: number, revision: number) {
+    this.requireEditAccess(user, guideId);
+    const guide = restoreGuideDraft(this.database, guideId, sourceRevision, user.id, revision);
+    this.bestEffortFlowSync({
+      workspaceId: guide.workspaceId,
+      workspaceItemId: guide.workspaceItemId,
+      guideId: guide.id,
+      ownerId: guide.ownerId,
+      title: guide.title,
+      summary: guide.summary,
+      tags: guide.tags,
+      origin: { kind: 'DRAFT', revision: guide.revision },
+      document: guide.document,
+    });
+    return guide;
   }
 
   save(

@@ -51,7 +51,7 @@ describe('LessonPage', () => {
     const edges = toLessonFlowEdges(version.document);
 
     expect(edges).toContainEqual(expect.objectContaining({
-      id: 'e1', sourceHandle: 'out', targetHandle: 'in', type: 'orthogonal', data: expect.objectContaining({ route: expect.objectContaining({ edgeId: 'e1' }) }),
+      id: 'e1', sourceHandle: 'edge:e1:source', targetHandle: 'edge:e1:target', type: 'orthogonal', data: expect.objectContaining({ route: expect.objectContaining({ edgeId: 'e1' }) }),
     }));
   });
 
@@ -152,6 +152,24 @@ describe('LessonPage', () => {
     expect(screen.getByText('复核验货异常。')).toBeVisible();
   });
 
+  it('renders Markdown in an unsequenced flow node detail', async () => {
+    const markdownVersion: GuideVersionSnapshot = {
+      ...version,
+      document: {
+        ...version.document,
+        nodes: [
+          ...version.document.nodes,
+          { id: 'review', type: 'process', position: { x: 640, y: 0 }, zIndex: 2, data: { label: '异常复核', description: '# 复核要求\n\n- 检查验货异常', shape: 'process' } },
+        ],
+      },
+    };
+    render(<LessonPage versionId="version-lesson" focusNodeId="review" api={{ getVersion: vi.fn().mockResolvedValue(markdownVersion) }} onBack={vi.fn()} />);
+
+    expect(await screen.findByRole('heading', { name: '异常复核' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '复核要求' })).toBeVisible();
+    expect(screen.getByText('检查验货异常')).toBeVisible();
+  });
+
   it('opens an image resource in a large preview and closes it without changing the step', async () => {
     const user = userEvent.setup();
     const imageVersion: GuideVersionSnapshot = {
@@ -210,7 +228,7 @@ describe('LessonPage', () => {
     expect(await screen.findByText('这个发布版本还没有编排教学步骤')).toBeVisible();
   });
 
-  it('plays image annotations, opens linked resources, and returns to the same annotation', async () => {
+  it('plays image annotations, opens linked resources and supplements, then returns to the same annotation', async () => {
     const user = userEvent.setup();
     const annotatedVersion: GuideVersionSnapshot = {
       ...hierarchyVersion,
@@ -220,7 +238,12 @@ describe('LessonPage', () => {
           hierarchyVersion.document.nodes[0]!,
           {
             id: 'screen', type: 'image', contentParentId: 'intro', position: { x: 320, y: 0 }, zIndex: 1,
-            data: { url: 'https://example.com/erp.png', alt: 'ERP 页面', annotations: [{ id: 'field', order: 0, title: '客户字段', shape: 'POINT', region: { x: 0.2, y: 0.3 }, targetNodeId: 'note' }] },
+            data: {
+              url: 'https://example.com/erp.png', alt: 'ERP 页面', annotations: [{
+                id: 'field', order: 0, title: '客户字段', shape: 'POINT', region: { x: 0.2, y: 0.3 }, targetNodeId: 'note',
+                supplementalImages: [{ id: 'menu', order: 0, assetId: 'asset-menu', url: 'https://example.com/menu.png', alt: '客户字段菜单', caption: '点击后的菜单' }],
+              }],
+            },
           },
           { id: 'note', type: 'markdown', contentParentId: 'intro', position: { x: 320, y: 280 }, zIndex: 2, data: { markdown: '# 字段解释\n填写售达方。' } },
         ],
@@ -238,6 +261,11 @@ describe('LessonPage', () => {
     expect(within(screen.getByRole('dialog', { name: '资料预览' })).getByRole('heading', { name: '字段解释' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: '返回上一项资料' }));
     expect(screen.getByRole('heading', { name: '客户字段' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '打开补充图 客户字段菜单' }));
+    expect(screen.getByRole('dialog', { name: '步骤补充图' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '返回图片讲解' }));
+    expect(screen.getByRole('heading', { name: '客户字段' })).toBeVisible();
+    expect(screen.getByText('讲解 1 / 1')).toBeVisible();
   });
 
   it('opens a pinned subguide from the lesson canvas and returns to the parent guide', async () => {

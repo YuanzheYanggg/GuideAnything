@@ -106,6 +106,11 @@ describe('flow knowledge contracts', () => {
         region: { x: 0.2, y: 0.4 },
         targetNodeId: 'start',
         targetLocator: locator('start'),
+        supplementalImages: [{
+          assetId: 'asset-menu',
+          alt: '成衣类型菜单',
+          caption: '点击字段后显示的选项',
+        }],
       }],
     });
     const video = FlowKnowledgeAttachmentV1Schema.parse({
@@ -124,6 +129,19 @@ describe('flow knowledge contracts', () => {
     });
 
     expect([markdown.kind, image.kind, video.kind]).toEqual(['MARKDOWN', 'IMAGE', 'VIDEO']);
+    if (image.kind !== 'IMAGE') throw new Error('expected image attachment');
+    expect(image.annotations[0]?.supplementalImages).toEqual([{
+      assetId: 'asset-menu',
+      alt: '成衣类型菜单',
+      caption: '点击字段后显示的选项',
+    }]);
+    expect(FlowKnowledgeAttachmentV1Schema.safeParse({
+      ...image,
+      annotations: [{
+        ...image.annotations[0],
+        supplementalImages: [{ assetId: 'asset-menu', alt: '成衣类型菜单', url: '/api/media/asset-menu' }],
+      }],
+    }).success).toBe(false);
     expect(FlowKnowledgeAttachmentV1Schema.safeParse({
       kind: 'IMAGE',
       nodeId: 'screen',

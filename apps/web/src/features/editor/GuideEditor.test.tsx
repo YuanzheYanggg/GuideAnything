@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import type { Connection, Edge, NodeChange } from '@xyflow/react';
 import { describe, expect, it, vi } from 'vitest';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { CanvasDocument, CanvasEdge, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
 
 import { GuideEditor, persistableNodeChanges, removeHierarchyItem, removeNodesFromDocument, toCanvasEdge, toFlowNodes, updateInlineNodeText, type EditorApi, type GuideDraftDetail } from './GuideEditor';
@@ -23,6 +24,9 @@ const { fitView, screenToFlowPosition, reactFlowCallbacks } = vi.hoisted(() => (
     onReconnect: undefined as undefined | ((oldEdge: Edge, connection: { source: string | null; sourceHandle?: string | null; target: string | null; targetHandle?: string | null }) => void),
     onReconnectStart: undefined as undefined | ((event: unknown, edge: Edge, handleType: 'source' | 'target') => void),
     onReconnectEnd: undefined as undefined | ((event: unknown, edge: Edge, handleType: 'source' | 'target', connectionState: { toNode?: { id: string } | null }) => void),
+    onPointerDownCapture: undefined as undefined | ((event: ReactPointerEvent<HTMLDivElement>) => void),
+    onPointerMoveCapture: undefined as undefined | ((event: ReactPointerEvent<HTMLDivElement>) => void),
+    onPointerUpCapture: undefined as undefined | ((event: ReactPointerEvent<HTMLDivElement>) => void),
     edges: [] as Edge[],
     edgeTypes: undefined as unknown,
     inlineEditing: undefined as undefined | { enabled: boolean; updateText: (nodeId: string, field: 'label' | 'description' | 'markdown' | 'imageCaption' | 'videoCaption', value: string) => void },
@@ -35,7 +39,7 @@ vi.mock('@xyflow/react', async () => {
   const { useInlineNodeEditing } = await import('../nodes/InlineNodeTextEditor');
   return {
     ...actual,
-    ReactFlow: ({ children, nodes = [], edges = [], edgeTypes, onInit, onNodesChange, onMove, onMoveEnd, onConnect, onConnectStart, onConnectEnd, onNodeDoubleClick, onEdgeClick, onEdgeDoubleClick, onReconnect, onReconnectStart, onReconnectEnd, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string; data?: { description?: string } }>; edges?: Edge[]; edgeTypes?: unknown; onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void; onNodesChange?: (changes: NodeChange[]) => void; onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onConnect?: (connection: Connection) => void; onConnectStart?: (event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void; onConnectEnd?: (event: unknown, connectionState?: unknown) => void; onNodeDoubleClick?: (event: { target: EventTarget | null; currentTarget: EventTarget | null }, node: { id: string }) => void; onEdgeClick?: (event: unknown, edge: Edge) => void; onEdgeDoubleClick?: (event: unknown, edge: Edge) => void; onReconnect?: (oldEdge: Edge, connection: { source: string | null; sourceHandle?: string | null; target: string | null; targetHandle?: string | null }) => void; onReconnectStart?: (event: unknown, edge: Edge, handleType: 'source' | 'target') => void; onReconnectEnd?: (event: unknown, edge: Edge, handleType: 'source' | 'target', connectionState: { toNode?: { id: string } | null }) => void; nodesDraggable?: boolean }) => {
+    ReactFlow: ({ children, nodes = [], edges = [], edgeTypes, onInit, onNodesChange, onMove, onMoveEnd, onConnect, onConnectStart, onConnectEnd, onNodeDoubleClick, onEdgeClick, onEdgeDoubleClick, onReconnect, onReconnectStart, onReconnectEnd, onPointerDownCapture, onPointerMoveCapture, onPointerUpCapture, nodesDraggable = true }: { children?: React.ReactNode; nodes?: Array<{ id: string; data?: { description?: string } }>; edges?: Edge[]; edgeTypes?: unknown; onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void; onNodesChange?: (changes: NodeChange[]) => void; onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onConnect?: (connection: Connection) => void; onConnectStart?: (event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void; onConnectEnd?: (event: unknown, connectionState?: unknown) => void; onNodeDoubleClick?: (event: { target: EventTarget | null; currentTarget: EventTarget | null }, node: { id: string }) => void; onEdgeClick?: (event: unknown, edge: Edge) => void; onEdgeDoubleClick?: (event: unknown, edge: Edge) => void; onReconnect?: (oldEdge: Edge, connection: { source: string | null; sourceHandle?: string | null; target: string | null; targetHandle?: string | null }) => void; onReconnectStart?: (event: unknown, edge: Edge, handleType: 'source' | 'target') => void; onReconnectEnd?: (event: unknown, edge: Edge, handleType: 'source' | 'target', connectionState: { toNode?: { id: string } | null }) => void; onPointerDownCapture?: (event: ReactPointerEvent<HTMLDivElement>) => void; onPointerMoveCapture?: (event: ReactPointerEvent<HTMLDivElement>) => void; onPointerUpCapture?: (event: ReactPointerEvent<HTMLDivElement>) => void; nodesDraggable?: boolean }) => {
       reactFlowCallbacks.inlineEditing = useInlineNodeEditing();
       reactFlowCallbacks.onNodesChange = onNodesChange;
       reactFlowCallbacks.onMove = onMove;
@@ -49,10 +53,13 @@ vi.mock('@xyflow/react', async () => {
       reactFlowCallbacks.onReconnect = onReconnect;
       reactFlowCallbacks.onReconnectStart = onReconnectStart;
       reactFlowCallbacks.onReconnectEnd = onReconnectEnd;
+      reactFlowCallbacks.onPointerDownCapture = onPointerDownCapture;
+      reactFlowCallbacks.onPointerMoveCapture = onPointerMoveCapture;
+      reactFlowCallbacks.onPointerUpCapture = onPointerUpCapture;
       reactFlowCallbacks.edges = edges;
       reactFlowCallbacks.edgeTypes = edgeTypes;
       React.useEffect(() => { onInit?.({ fitView, screenToFlowPosition }); }, [onInit]);
-      return <div className="react-flow"><div className="react-flow__pane" data-testid="flow-pane" />{nodes.map((node) => <div className={`react-flow__node${nodesDraggable ? ' draggable' : ''}`} data-id={node.id} key={node.id}>{node.data?.description ? <p className="flow-description" data-testid={`flow-description-${node.id}`}>{node.data.description}</p> : null}</div>)}{children}</div>;
+      return <div className="react-flow" onPointerDownCapture={onPointerDownCapture} onPointerMoveCapture={onPointerMoveCapture} onPointerUpCapture={onPointerUpCapture}><div className="react-flow__pane" data-testid="flow-pane" />{nodes.map((node) => <div className={`react-flow__node${nodesDraggable ? ' draggable' : ''}`} data-id={node.id} key={node.id}>{node.data?.description ? <p className="flow-description" data-testid={`flow-description-${node.id}`}>{node.data.description}</p> : null}</div>)}{children}</div>;
     },
     ViewportPortal: ({ children }: { children?: React.ReactNode }) => <div data-testid="viewport-portal">{children}</div>,
     Background: () => null,
@@ -409,6 +416,54 @@ describe('GuideEditor', () => {
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
     fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
     fireEvent.click(screen.getByRole('button', { name: '撤销' }));
+  });
+
+  it('moves a node into the selected business stage instead of leaving it at its old canvas position', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      stages: [{ id: 'proposal', title: '客人提案阶段', order: 0 }],
+      nodes: [{ id: 'start', type: 'start', position: { x: 680, y: 420 }, zIndex: 0, data: { label: '收到需求', shape: 'start' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 收到需求' }));
+
+    fireEvent.change(screen.getByLabelText('所属业务阶段'), { target: { value: 'proposal' } });
+    await waitFor(() => expect(screen.getByLabelText('所属业务阶段')).toHaveValue('proposal'));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+
+    const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
+    expect(saved.nodes[0]).toMatchObject({ stageId: 'proposal', position: { x: 0, y: 0 } });
+  });
+
+  it('moves the whole business stage when its blue frame is dragged', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      stages: [{ id: 'proposal', title: '客人提案阶段', order: 0 }],
+      nodes: [
+        { id: 'start', type: 'start', stageId: 'proposal', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '收到需求', shape: 'start' } },
+        { id: 'note', type: 'markdown', contentParentId: 'start', position: { x: 0, y: 128 }, zIndex: 1, data: { markdown: '说明' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    const pane = screen.getByTestId('flow-pane');
+    fireEvent.pointerDown(pane, { clientX: 100, clientY: 100, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(pane, { clientX: 220, clientY: 180, buttons: 1, pointerId: 1 });
+    fireEvent.pointerUp(pane, { clientX: 220, clientY: 180, button: 0, pointerId: 1 });
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+
+    const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
+    expect(saved.nodes.find((node) => node.id === 'start')!.position).toEqual({ x: 120, y: 80 });
+    expect(saved.nodes.find((node) => node.id === 'note')!.position).toEqual({ x: 120, y: 208 });
   });
 
   it('explains the hierarchy preview and focuses an offscreen node selected from the structure tree', async () => {
@@ -1049,6 +1104,65 @@ describe('GuideEditor', () => {
     }));
   });
 
+  it('asks before toolbar or keyboard deletion removes an image that contains annotations', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{
+        id: 'image', type: 'image', position: { x: 0, y: 0 }, zIndex: 0,
+        data: {
+          url: 'https://example.com/erp.png', alt: 'ERP 页面',
+          annotations: [{ id: 'annotation-1', order: 0, title: '客户字段', shape: 'POINT', region: { x: 0.2, y: 0.4 } }],
+        },
+      }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
+    await user.click(screen.getByRole('button', { name: '选择资料 ERP 页面' }));
+
+    await user.click(screen.getByRole('button', { name: '删除选中项' }));
+    expect(screen.getByRole('dialog', { name: '确认删除带标注的图片' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '取消删除' }));
+    expect(api.saveGuide).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: 'Delete' });
+    expect(screen.getByRole('dialog', { name: '确认删除带标注的图片' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '确认删除' }));
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
+      document: expect.objectContaining({ nodes: [] }),
+    }));
+  });
+
+  it('loads draft history and restores a selected revision through a separate confirmation', async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    const restoredDocument = sampleEditorDocument('恢复后的内容');
+    (api.listDraftHistory as ReturnType<typeof vi.fn>).mockResolvedValue([{
+      revision: 2,
+      title: '订单教学',
+      summary: '误删图片前',
+      tags: ['ERP'],
+      savedAt: '2026-07-19T01:00:00.000Z',
+      savedBy: { id: 'author', displayName: '王作者' },
+    }]);
+    (api.restoreDraft as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...structuredClone(emptyGuide), revision: 4, document: restoredDocument,
+    });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    await user.click(screen.getByRole('button', { name: '草稿历史' }));
+    await user.click(await screen.findByRole('button', { name: '恢复 revision 2' }));
+    expect(api.restoreDraft).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '确认恢复' }));
+    await waitFor(() => expect(api.restoreDraft).toHaveBeenCalledWith('guide-host', 2, 0));
+    expect(screen.getByText('恢复后的内容')).toBeInTheDocument();
+  });
+
   it('persists a flow-node detail and renders the short canvas description', async () => {
     const user = userEvent.setup();
     const document: CanvasDocument = {
@@ -1142,10 +1256,20 @@ function createApi(overrides: { document?: CanvasDocument } = {}): EditorApi & R
   return {
     getGuide: vi.fn().mockResolvedValue(guide),
     saveGuide: vi.fn().mockResolvedValue({ ...guide, revision: 1 }),
+    listDraftHistory: vi.fn().mockResolvedValue([]),
+    restoreDraft: vi.fn().mockResolvedValue({ ...guide, revision: 1 }),
     publishGuide: vi.fn().mockResolvedValue(sourceVersion),
     search: vi.fn().mockResolvedValue({ items: [{ versionId: 'version-source', guideId: 'guide-source', workspaceId: 'workspace-materials', workspaceItemId: 'item-guide-source', workspaceName: '物料管理', favorite: false, canManageLifecycle: false, title: '物料主数据检查', summary: '', tags: ['物料'], version: 1, authorName: '王作者' }], nextOffset: null }),
     referenceUpdates: vi.fn().mockResolvedValue([]),
     getVersion: vi.fn().mockResolvedValue(sourceVersion),
     uploadMedia: vi.fn(),
+  };
+}
+
+function sampleEditorDocument(markdown: string): CanvasDocument {
+  return {
+    schemaVersion: 1,
+    nodes: [{ id: 'note', type: 'markdown', position: { x: 0, y: 0 }, zIndex: 0, data: { markdown } }],
+    edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
   };
 }

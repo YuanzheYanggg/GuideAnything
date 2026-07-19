@@ -95,7 +95,13 @@ describe('compileFlowKnowledgeSnapshotV1', () => {
     expect(image.annotations[0]).toEqual(expect.objectContaining({
       targetNodeId: 'approve',
       targetLocator: { guideId: 'guide-1', snapshotId: 'snapshot-1', nodeId: 'approve' },
+      supplementalImages: [{
+        assetId: 'asset-menu',
+        alt: '成衣类型菜单',
+        caption: '点击后显示的菜单',
+      }],
     }));
+    expect(JSON.stringify(image)).not.toContain('/api/media/asset-menu');
     if (video?.kind !== 'VIDEO') throw new Error('expected video attachment');
     expect(video.keypoints[0]).toEqual(expect.objectContaining({
       targetLocator: { guideId: 'guide-1', snapshotId: 'snapshot-1', nodeId: 'done' },
@@ -243,6 +249,14 @@ function flowDocument(): CanvasDocument {
               shape: 'POINT',
               region: { x: 0.2, y: 0.4 },
               targetNodeId: 'approve',
+              supplementalImages: [{
+                id: 'supplement-menu',
+                order: 0,
+                assetId: 'asset-menu',
+                url: '/api/media/asset-menu',
+                alt: '成衣类型菜单',
+                caption: '点击后显示的菜单',
+              }],
             },
             {
               id: 'annotation-dangling',

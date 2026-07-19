@@ -1,15 +1,16 @@
 import { normalizeAnnotationOrder } from '@guideanything/canvas-core';
-import type { CanvasNode, ImageAnnotation } from '@guideanything/contracts';
+import type { CanvasNode, ImageAnnotation, ImageAnnotationSupplement } from '@guideanything/contracts';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 
 import { useMediaSource } from '../nodes/useMediaSource';
 
 type Tool = 'POINT' | 'RECT';
 
-export function ImageAnnotationEditor({ node, nodes, onChange, onClose }: {
+export function ImageAnnotationEditor({ node, nodes, onChange, onUploadSupplement, onClose }: {
   node: CanvasNode<'image'>;
   nodes: CanvasNode[];
   onChange: (data: CanvasNode<'image'>['data']) => void;
+  onUploadSupplement: (file: File) => Promise<{ assetId: string; url: string; alt: string }>;
   onClose: () => void;
 }) {
   const annotations = useMemo(() => normalizeAnnotationOrder(node.data.annotations ?? []), [node.data.annotations]);
@@ -18,11 +19,16 @@ export function ImageAnnotationEditor({ node, nodes, onChange, onClose }: {
   const [zoom, setZoom] = useState(2.5);
   const [titleDraft, setTitleDraft] = useState('');
   const [bodyDraft, setBodyDraft] = useState('');
+  const [supplementError, setSupplementError] = useState('');
+  const [supplementUploading, setSupplementUploading] = useState(false);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
   const source = useMediaSource(node.data.url);
   const selectedIndex = annotations.findIndex((annotation) => annotation.id === selectedId);
   const selected = selectedIndex >= 0 ? annotations[selectedIndex]! : null;
+
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     setTitleDraft(selected?.title ?? '');
@@ -34,7 +40,7 @@ export function ImageAnnotationEditor({ node, nodes, onChange, onClose }: {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener('keydown', handleKeyDown);
@@ -43,12 +49,15 @@ export function ImageAnnotationEditor({ node, nodes, onChange, onClose }: {
       document.removeEventListener('keydown', handleKeyDown);
       previous?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   const updateAnnotations = (next: ImageAnnotation[]) => onChange({ ...node.data, annotations: normalizeAnnotationOrder(next) });
   const updateSelected = (changes: Partial<ImageAnnotation>) => {
     if (!selected) return;
     updateAnnotations(annotations.map((annotation) => annotation.id === selected.id ? { ...annotation, ...changes } as ImageAnnotation : annotation));
+  };
+  const updateSelectedSupplements = (supplements: ImageAnnotationSupplement[]) => {
+    updateSelected({ supplementalImages: normalizeSupplements(supplements) });
   };
   const create = (annotation: ImageAnnotation) => {
     updateAnnotations([...annotations, annotation]);
@@ -57,6 +66,34 @@ export function ImageAnnotationEditor({ node, nodes, onChange, onClose }: {
   const commitText = () => {
     if (!selected) return;
     updateSelected({ title: titleDraft.trim() || '新标注', ...(bodyDraft.trim() ? { body: bodyDraft } : { body: undefined }) });
+  };
+  const uploadSupplement = async (file: File | undefined) => {
+    if (!file || !selected || supplementUploading) return;
+    if (!file.type.startsWith('image/')) {
+      setSupplementError('仅支持图片文件。');
+      return;
+    }
+    const current = normalizeSupplements(selected.supplementalImages ?? []);
+    if (current.length >= 8) {
+      setSupplementError('每条标注最多上传 8 张补充图。');
+      return;
+    }
+    setSupplementUploading(true);
+    setSupplementError('');
+    try {
+      const media = await onUploadSupplement(file);
+      updateSelectedSupplements([...current, {
+        id: uniqueId('annotation-supplement'),
+        order: current.length,
+        assetId: media.assetId,
+        url: media.url,
+        alt: media.alt,
+      }]);
+    } catch (reason) {
+      setSupplementError(reason instanceof Error ? reason.message : '补充图上传失败');
+    } finally {
+      setSupplementUploading(false);
+    }
   };
 
   const handlePoint = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -120,6 +157,22 @@ export function ImageAnnotationEditor({ node, nodes, onChange, onClose }: {
             <label>关联目标<select aria-label={`标注 ${selectedIndex + 1} 关联目标`} value={selected.targetNodeId ?? ''} onChange={(event) => updateSelected({ targetNodeId: event.target.value || undefined })}><option value="">不关联</option>{nodes.filter((candidate) => candidate.id !== node.id && !candidate.hidden).map((candidate) => <option key={candidate.id} value={candidate.id}>{nodeTitle(candidate)}</option>)}</select></label>
             <button type="button" onClick={() => updateSelected({ camera: { centerX: annotationCenter(selected).x, centerY: annotationCenter(selected).y, zoom } })} aria-label="保存当前镜头">保存当前镜头</button>
             {selected.camera ? <button type="button" onClick={() => updateSelected({ camera: undefined })}>清除镜头</button> : null}
+            <section className="annotation-supplements" aria-label="步骤补充图">
+              <div><strong>步骤补充图</strong><span>{selected.supplementalImages?.length ?? 0} / 8</span></div>
+              <label className="annotation-supplement-upload">上传步骤补充图<input aria-label="上传步骤补充图" type="file" accept="image/*" disabled={supplementUploading || (selected.supplementalImages?.length ?? 0) >= 8} onChange={(event) => { void uploadSupplement(event.target.files?.[0]); event.currentTarget.value = ''; }} /></label>
+              {supplementError ? <p className="error-message" role="alert">{supplementError}</p> : null}
+              {normalizeSupplements(selected.supplementalImages ?? []).map((supplement, index, supplements) => <article key={supplement.id} className="annotation-supplement-item">
+                <AnnotationSupplementThumbnail supplement={supplement} />
+                <div>
+                  <label>说明<textarea aria-label={`补充图 ${index + 1} 说明`} defaultValue={supplement.caption ?? ''} onBlur={(event) => updateSelectedSupplements(supplements.map((item) => item.id === supplement.id ? { ...item, ...(event.target.value.trim() ? { caption: event.target.value } : { caption: undefined }) } : item))} /></label>
+                  <div className="annotation-supplement-actions">
+                    <button type="button" disabled={index === 0} onClick={() => updateSelectedSupplements(moveSupplement(supplements, index, -1))} aria-label={`上移补充图 ${index + 1}`}>↑</button>
+                    <button type="button" disabled={index === supplements.length - 1} onClick={() => updateSelectedSupplements(moveSupplement(supplements, index, 1))} aria-label={`下移补充图 ${index + 1}`}>↓</button>
+                    <button type="button" onClick={() => updateSelectedSupplements(supplements.filter((item) => item.id !== supplement.id))} aria-label={`移除补充图 ${index + 1}`}>移除</button>
+                  </div>
+                </div>
+              </article>)}
+            </section>
             <button className="danger-button" type="button" onClick={() => { const next = annotations.filter((annotation) => annotation.id !== selected.id); updateAnnotations(next); setSelectedId(next[Math.min(selectedIndex, next.length - 1)]?.id ?? null); }} aria-label={`删除标注 ${selectedIndex + 1}`}>删除标注</button>
           </div> : null}
         </aside>
@@ -150,6 +203,25 @@ function moveAnnotation(annotations: ImageAnnotation[], index: number, direction
   if (target < 0 || target >= next.length) return;
   [next[index], next[target]] = [next[target]!, next[index]!];
   update(next.map((annotation, order) => ({ ...annotation, order })));
+}
+
+function normalizeSupplements(supplements: ImageAnnotationSupplement[]): ImageAnnotationSupplement[] {
+  return [...supplements]
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
+    .map((supplement, order) => ({ ...supplement, order }));
+}
+
+function moveSupplement(supplements: ImageAnnotationSupplement[], index: number, direction: -1 | 1): ImageAnnotationSupplement[] {
+  const next = [...supplements];
+  const target = index + direction;
+  if (target < 0 || target >= next.length) return next;
+  [next[index], next[target]] = [next[target]!, next[index]!];
+  return normalizeSupplements(next);
+}
+
+function AnnotationSupplementThumbnail({ supplement }: { supplement: ImageAnnotationSupplement }) {
+  const source = useMediaSource(supplement.url);
+  return source ? <img src={source} alt={supplement.alt} /> : <span className="annotation-supplement-loading">载入图片…</span>;
 }
 
 function nodeTitle(node: CanvasNode): string {

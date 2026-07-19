@@ -32,7 +32,20 @@ export const GuideSummarySchema = z.object({
   updatedAt: z.string().datetime(),
 });
 
+export const GuideDraftHistorySnapshotSchema = z.object({
+  revision: z.number().int().positive(),
+  title: z.string().min(1).max(200),
+  summary: z.string().max(2_000),
+  tags: z.array(z.string().min(1).max(50)).max(20),
+  savedAt: z.string().datetime(),
+  savedBy: z.object({
+    id: z.string().min(1),
+    displayName: z.string().min(1),
+  }).strict(),
+}).strict();
+
 export type UserRole = z.infer<typeof UserRoleSchema>;
 export type GuideStatus = z.infer<typeof GuideStatusSchema>;
 export type GuideVersionSnapshot = z.infer<typeof GuideVersionSnapshotSchema>;
 export type GuideSummary = z.infer<typeof GuideSummarySchema>;
+export type GuideDraftHistorySnapshot = z.infer<typeof GuideDraftHistorySnapshotSchema>;

@@ -52,6 +52,27 @@ const ImageAnnotationCameraSchema = z.object({
   zoom: z.number().min(1).max(8),
 });
 
+function isSafeMediaUrl(value: string): boolean {
+  if (value.startsWith('/api/media/')) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+const MediaUrlSchema = z.string().max(2_048).refine(isSafeMediaUrl, '媒体地址必须使用 HTTP(S) 或产品媒体路径');
+
+export const ImageAnnotationSupplementSchema = z.object({
+  id: IdSchema,
+  order: z.number().int().min(0),
+  assetId: IdSchema,
+  url: MediaUrlSchema,
+  alt: z.string().min(1).max(500),
+  caption: z.string().max(1_000).optional(),
+});
+
 export const ImageAnnotationSchema = z.object({
   id: IdSchema,
   order: z.number().int().min(0),
@@ -61,6 +82,7 @@ export const ImageAnnotationSchema = z.object({
   region: ImageAnnotationRegionSchema,
   camera: ImageAnnotationCameraSchema.optional(),
   targetNodeId: IdSchema.optional(),
+  supplementalImages: z.array(ImageAnnotationSupplementSchema).max(8).optional(),
 }).superRefine((annotation, context) => {
   const { width, height, x, y } = annotation.region;
   if (annotation.shape === 'POINT' && (width !== undefined || height !== undefined)) {
@@ -118,6 +140,7 @@ export const FlowStageSchema = z.object({
   title: z.string().min(1).max(120),
   order: z.number().int().min(0).max(10_000),
   description: z.string().max(1_000).optional(),
+  position: z.object({ x: z.number().finite(), y: z.number().finite() }).optional(),
 });
 
 export const FlowLaneSchema = z.object({
@@ -126,18 +149,6 @@ export const FlowLaneSchema = z.object({
   kind: z.enum(['ROLE', 'SYSTEM']),
   order: z.number().int().min(0).max(10_000),
 });
-
-function isSafeMediaUrl(value: string): boolean {
-  if (value.startsWith('/api/media/')) return true;
-  try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-const MediaUrlSchema = z.string().max(2_048).refine(isSafeMediaUrl, '媒体地址必须使用 HTTP(S) 或产品媒体路径');
 
 const node = <TType extends string, TData extends z.ZodType>(type: TType, data: TData) =>
   NodeBaseSchema.extend({ type: z.literal(type), data });
@@ -267,6 +278,18 @@ export const CanvasDocumentSchema = z.object({
         if (annotation.targetNodeId === node.id) {
           context.addIssue({ code: 'custom', path: ['nodes', index, 'data', 'annotations', annotationIndex, 'targetNodeId'], message: '图片标注不能关联自身' });
         }
+        const supplementalIds = new Set<string>();
+        const supplementalOrders = new Set<number>();
+        annotation.supplementalImages?.forEach((supplemental, supplementalIndex) => {
+          if (supplementalIds.has(supplemental.id)) {
+            context.addIssue({ code: 'custom', path: ['nodes', index, 'data', 'annotations', annotationIndex, 'supplementalImages', supplementalIndex, 'id'], message: '步骤补充图 ID 必须唯一' });
+          }
+          if (supplementalOrders.has(supplemental.order)) {
+            context.addIssue({ code: 'custom', path: ['nodes', index, 'data', 'annotations', annotationIndex, 'supplementalImages', supplementalIndex, 'order'], message: '步骤补充图顺序必须唯一' });
+          }
+          supplementalIds.add(supplemental.id);
+          supplementalOrders.add(supplemental.order);
+        });
         annotationIds.add(annotation.id);
         annotationOrders.add(annotation.order);
       });
@@ -306,6 +329,7 @@ export const CanvasDocumentSchema = z.object({
 
 export type SourceTrace = z.infer<typeof SourceTraceSchema>;
 export type ImageAnnotation = z.infer<typeof ImageAnnotationSchema>;
+export type ImageAnnotationSupplement = z.infer<typeof ImageAnnotationSupplementSchema>;
 export type FlowStage = z.infer<typeof FlowStageSchema>;
 export type FlowLane = z.infer<typeof FlowLaneSchema>;
 export type NodeKind = z.infer<typeof CanvasNodeSchema>['type'];

@@ -68,6 +68,17 @@ describe('inline node text integration', () => {
     expect(screen.queryByRole('button', { name: '收起' })).not.toBeInTheDocument();
   });
 
+  it('renders expanded flow details as sanitized Markdown', () => {
+    render(
+      <NodeDetailPresentationProvider value={{ expandedNodeIds: new Set(['process-1']), onOpenEditor: vi.fn(), onToggleExpanded: vi.fn() }}>
+        <FlowNode {...props('process-1', 'process', { label: '收到订单', description: '# 检查客户\n\n- 核对售达方' })} />
+      </NodeDetailPresentationProvider>,
+    );
+
+    expect(screen.getByRole('heading', { name: '检查客户' })).toBeVisible();
+    expect(screen.getByText('核对售达方')).toBeVisible();
+  });
+
   it('opens rendered Markdown as a raw multiline editor', async () => {
     const user = userEvent.setup();
     render(

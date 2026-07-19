@@ -214,6 +214,108 @@ describe('guide lifecycle', () => {
     ]);
   });
 
+  it('keeps editable draft snapshots, returns metadata only, and restores a source as a new revision', async () => {
+    const created = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { workspaceId, title: '草稿恢复测试' },
+    });
+    const guideId = created.json().guide.id as string;
+    const firstDocument = sampleDocument('# 第一版\n保留这段图片标注说明。');
+    const secondDocument = sampleDocument('# 第二版\n这段内容会被恢复覆盖。');
+
+    const firstSave = await context.app.inject({
+      method: 'PATCH', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.author),
+      payload: { revision: 0, summary: '第一版摘要', document: firstDocument },
+    });
+    const secondSave = await context.app.inject({
+      method: 'PATCH', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.author),
+      payload: { revision: 1, summary: '第二版摘要', document: secondDocument },
+    });
+    expect(firstSave.statusCode).toBe(200);
+    expect(secondSave.statusCode).toBe(200);
+
+    const history = await context.app.inject({
+      method: 'GET', url: `/api/guides/${guideId}/draft-history`, headers: authorization(context.tokens.author),
+    });
+    expect(history.statusCode).toBe(200);
+    expect(history.json().items).toEqual([
+      expect.objectContaining({ revision: 2, summary: '第二版摘要', savedBy: { id: context.userIds.author, displayName: '王作者' } }),
+      expect.objectContaining({ revision: 1, summary: '第一版摘要', savedBy: { id: context.userIds.author, displayName: '王作者' } }),
+    ]);
+    expect(history.body).not.toContain('"nodes"');
+
+    const restored = await context.app.inject({
+      method: 'POST', url: `/api/guides/${guideId}/draft-history/1/restore`, headers: authorization(context.tokens.author),
+      payload: { revision: 2 },
+    });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json().guide).toMatchObject({ revision: 3, summary: '第一版摘要', document: firstDocument });
+    expect(context.database.prepare(
+      'SELECT COUNT(*) AS count FROM guide_draft_revisions WHERE guide_id = ? AND revision = 1',
+    ).get(guideId)).toEqual({ count: 1 });
+
+    const staleRestore = await context.app.inject({
+      method: 'POST', url: `/api/guides/${guideId}/draft-history/1/restore`, headers: authorization(context.tokens.author),
+      payload: { revision: 2 },
+    });
+    expect(staleRestore.statusCode).toBe(409);
+    const missingSnapshot = await context.app.inject({
+      method: 'POST', url: `/api/guides/${guideId}/draft-history/999/restore`, headers: authorization(context.tokens.author),
+      payload: { revision: 3 },
+    });
+    expect(missingSnapshot.statusCode).toBe(404);
+    const deniedHistory = await context.app.inject({
+      method: 'GET', url: `/api/guides/${guideId}/draft-history`, headers: authorization(context.tokens.otherAuthor),
+    });
+    expect(deniedHistory.statusCode).toBe(404);
+  });
+
+  it('prunes only the oldest snapshots of the saved guide after the 200-entry limit', async () => {
+    const createdA = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { workspaceId, title: '快照上限 A' },
+    });
+    const createdB = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { workspaceId, title: '快照上限 B' },
+    });
+    const guideA = createdA.json().guide.id as string;
+    const guideB = createdB.json().guide.id as string;
+    const savedB = await context.app.inject({
+      method: 'PATCH', url: `/api/guides/${guideB}`, headers: authorization(context.tokens.author),
+      payload: { revision: 0, document: sampleDocument('# B 的快照') },
+    });
+    expect(savedB.statusCode).toBe(200);
+
+    const insertSnapshot = context.database.prepare(
+      `INSERT INTO guide_draft_revisions (
+        id, guide_id, revision, title, summary, tags_json, draft_document_json, saved_by, saved_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (let revision = 2; revision <= 201; revision += 1) {
+      insertSnapshot.run(
+        `${guideA}-snapshot-${revision}`, guideA, revision, '快照上限 A', '', '[]',
+        JSON.stringify(sampleDocument(`# 历史 ${revision}`)), context.userIds.author,
+        new Date(Date.UTC(2020, 0, 1) + revision * 1_000).toISOString(),
+      );
+    }
+
+    const savedA = await context.app.inject({
+      method: 'PATCH', url: `/api/guides/${guideA}`, headers: authorization(context.tokens.author),
+      payload: { revision: 0, document: sampleDocument('# 新快照') },
+    });
+    expect(savedA.statusCode).toBe(200);
+    const revisions = context.database.prepare(
+      'SELECT revision FROM guide_draft_revisions WHERE guide_id = ? ORDER BY revision',
+    ).all(guideA) as Array<{ revision: number }>;
+    expect(revisions).toHaveLength(200);
+    expect(revisions.map((row) => row.revision)).not.toContain(2);
+    expect(revisions.map((row) => row.revision)).toEqual(expect.arrayContaining([1, 201]));
+    expect(context.database.prepare(
+      'SELECT COUNT(*) AS count FROM guide_draft_revisions WHERE guide_id = ?',
+    ).get(guideB)).toEqual({ count: 1 });
+  });
+
   it('rejects stale revisions and invalid canvas documents', async () => {
     const created = await context.app.inject({
       method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),

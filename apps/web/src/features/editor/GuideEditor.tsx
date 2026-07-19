@@ -1,6 +1,6 @@
-import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgePresentation, FlowLane, FlowStage, GuideReferenceUpdate, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgePresentation, FlowLane, FlowStage, GuideDraftHistorySnapshot, GuideReferenceUpdate, GuideVersionSnapshot } from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
-import { duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, moveRouteSegment, reconcileSubguideEdges, replaceSubguideReference, routeCanvasEdges, setSubguideExpanded, snapNodeForStraightRoute, type HierarchyLayoutResult, type NodeAlignmentSnap, type OrthogonalRoute, type Point } from '@guideanything/canvas-core';
+import { defaultCanvasNodeSize, duplicateSelection, expandSubguide, getStageBounds, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, movePrimaryNodeToStage, moveRouteSegment, reconcileSubguideEdges, replaceSubguideReference, routeCanvasEdges, setSubguideExpanded, snapNodeForStraightRoute, translateStageNodes, type HierarchyLayoutResult, type NodeAlignmentSnap, type OrthogonalRoute, type Point } from '@guideanything/canvas-core';
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -24,7 +24,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { MouseEvent as ReactMouseEvent } from 'react';
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { CaretLeft, CaretRight } from '@phosphor-icons/react';
 
 import type { SearchItem } from '../library/LibraryPage';
@@ -40,6 +40,8 @@ import { AppearanceToggle } from '../theme/AppearanceToggle';
 import type { PersonalApi } from '../workspace/types';
 import { HierarchyPanel } from './HierarchyPanel';
 import { HierarchyDeletionDialog } from './HierarchyDeletionDialog';
+import { AnnotatedImageDeletionDialog } from './AnnotatedImageDeletionDialog';
+import { DraftHistoryDialog } from './DraftHistoryDialog';
 import { ImageAnnotationEditor } from './ImageAnnotationEditor';
 import { OrthogonalEdge } from './OrthogonalEdge';
 import { CanvasCreationMenu, type CanvasCreationKind } from './CanvasCreationMenu';
@@ -75,6 +77,8 @@ export interface SearchPage {
 export interface EditorApi {
   getGuide: (guideId: string) => Promise<GuideDraftDetail>;
   saveGuide: (guideId: string, revision: number, changes: { title: string; summary: string; tags: string[]; document: CanvasDocument }) => Promise<GuideDraftDetail>;
+  listDraftHistory: (guideId: string) => Promise<GuideDraftHistorySnapshot[]>;
+  restoreDraft: (guideId: string, sourceRevision: number, revision: number) => Promise<GuideDraftDetail>;
   publishGuide: (guideId: string) => Promise<GuideVersionSnapshot>;
   search: (query: string, offset?: number, consumerWorkspaceId?: string) => Promise<SearchPage>;
   referenceUpdates: (guideId: string) => Promise<GuideReferenceUpdate[]>;
@@ -117,6 +121,11 @@ type ManualRouteDraft = {
   points: Point[];
 };
 
+type StageDrag = {
+  stageId: string;
+  start: Point;
+};
+
 export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: { guideId: string; api: EditorApi; personalApi?: PersonalApi; focusNodeId?: string; onBack: () => void }) {
   const [guide, setGuide] = useState<GuideDraftDetail | null>(null);
   const [document, setDocument] = useState<CanvasDocument | null>(null);
@@ -138,6 +147,11 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const [creationMenu, setCreationMenu] = useState<{ sourceId: string; sourceHandle?: string; position: { x: number; y: number } } | null>(null);
   const [edgeLabelEditor, setEdgeLabelEditor] = useState<{ edgeId: string; label?: string; position: { x: number; y: number } } | null>(null);
   const [hierarchyDeletion, setHierarchyDeletion] = useState<{ kind: 'stage' | 'lane'; id: string } | null>(null);
+  const [annotatedImageDeletion, setAnnotatedImageDeletion] = useState<{ nodeIds: string[]; imageCount: number; annotationCount: number } | null>(null);
+  const [draftHistoryOpen, setDraftHistoryOpen] = useState(false);
+  const [draftHistory, setDraftHistory] = useState<GuideDraftHistorySnapshot[]>([]);
+  const [draftHistoryLoading, setDraftHistoryLoading] = useState(false);
+  const [draftHistoryError, setDraftHistoryError] = useState('');
   const [expandedDetailNodeIds, setExpandedDetailNodeIds] = useState<ReadonlySet<string>>(() => new Set());
   const [detailEditor, setDetailEditor] = useState<{ nodeId: string; title: string; value: string; opener: HTMLElement } | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -147,6 +161,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const [hierarchyOpen, setHierarchyOpen] = useState(false);
   const [dragPreviewDocument, setDragPreviewDocument] = useState<CanvasDocument | null>(null);
   const [alignmentGuide, setAlignmentGuide] = useState<NodeAlignmentSnap | null>(null);
+  const [draggedStageId, setDraggedStageId] = useState<string | null>(null);
   const historyRef = useRef<HistoryStack<CanvasDocument> | null>(null);
   const clipboardRef = useRef<string[]>([]);
   const connectSourceRef = useRef<PendingConnection | null>(null);
@@ -154,6 +169,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const saveInFlightRef = useRef<Promise<void> | null>(null);
   const saveRetryRef = useRef(false);
   const appliedFocusRef = useRef<string | null>(null);
+  const stageDragRef = useRef<StageDrag | null>(null);
   const latestEditorStateRef = useRef<{ document: CanvasDocument | null; title: string; summary: string; tags: string[] }>({ document: null, title: '', summary: '', tags: [] });
   const saveRef = useRef<() => Promise<void>>(async () => undefined);
   latestEditorStateRef.current = { document, title, summary, tags };
@@ -240,7 +256,10 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     ...hierarchyPresentationEdges(renderedDocument),
   ] : [], [manualDraftConflict, manualRouteDraft, renderedDocument, routing]);
   const nodeAnchorHandles = useMemo(() => renderedDocument && routing ? anchorHandlesByNodeId(renderedDocument, routing) : new Map<string, NodeAnchorHandle[]>(), [renderedDocument, routing]);
-  const renderedFlowNodes = useMemo(() => layoutPreview ? toFlowNodes(layoutPreview.document.nodes, selectedIds, layoutPreview.document.lanes, expandedDetailNodeIds) : flowNodes, [expandedDetailNodeIds, flowNodes, layoutPreview, selectedIds]);
+  const renderedFlowNodes = useMemo(() => {
+    const preview = layoutPreview?.document ?? (draggedStageId ? dragPreviewDocument : null);
+    return preview ? toFlowNodes(preview.nodes, selectedIds, preview.lanes, expandedDetailNodeIds) : flowNodes;
+  }, [dragPreviewDocument, draggedStageId, expandedDetailNodeIds, flowNodes, layoutPreview, selectedIds]);
   const stageBounds = useMemo(() => renderedDocument ? getStageBounds(renderedDocument) : [], [renderedDocument]);
   const selectedBusinessEdge = selectedEdgeId && document ? document.edges.find((edge) => edge.id === selectedEdgeId) ?? null : null;
   const selectedEdgeRoute = selectedBusinessEdge ? routing?.routesByEdgeId.get(selectedBusinessEdge.id) : undefined;
@@ -568,6 +587,59 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     setOverlayViewport((current) => sameViewport(current, viewport) ? current : viewport);
   }, []);
 
+  const startStageDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || layoutPreview || !document) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('.react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__edgelabel-renderer, .manual-route-editor, .edge-toolbar, .canvas-creation-menu, .edge-label-editor')) return;
+    const point = flowPointFromScreen(flowInstance, overlayViewport, { x: event.clientX, y: event.clientY });
+    const stageId = [...stageBounds].reverse().find((bound) => bound.stageId
+      && point.x >= bound.x
+      && point.x <= bound.x + bound.width
+      && point.y >= bound.y
+      && point.y <= bound.y + bound.height)?.stageId;
+    if (!stageId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.nativeEvent.stopImmediatePropagation();
+    stageDragRef.current = {
+      stageId,
+      start: point,
+    };
+    setDraggedStageId(stageId);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }, [document, flowInstance, layoutPreview, overlayViewport, stageBounds]);
+
+  const moveStageDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = stageDragRef.current;
+    if (!drag || layoutPreview || !document) return;
+    const point = flowPointFromScreen(flowInstance, overlayViewport, { x: event.clientX, y: event.clientY });
+    event.preventDefault();
+    event.stopPropagation();
+    event.nativeEvent.stopImmediatePropagation();
+    setDragPreviewDocument(translateStageNodes(document, drag.stageId, {
+      x: point.x - drag.start.x,
+      y: point.y - drag.start.y,
+    }));
+  }, [document, flowInstance, layoutPreview, overlayViewport]);
+
+  const finishStageDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = stageDragRef.current;
+    if (!drag || layoutPreview || !document) return;
+    const point = flowPointFromScreen(flowInstance, overlayViewport, { x: event.clientX, y: event.clientY });
+    event.preventDefault();
+    event.stopPropagation();
+    event.nativeEvent.stopImmediatePropagation();
+    const next = translateStageNodes(document, drag.stageId, {
+      x: point.x - drag.start.x,
+      y: point.y - drag.start.y,
+    });
+    stageDragRef.current = null;
+    setDraggedStageId(null);
+    setDragPreviewDocument(null);
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (next !== document) commit(next);
+  }, [commit, document, flowInstance, layoutPreview, overlayViewport]);
+
   const addNode = (type: CanvasNode['type']) => {
     if (!document || layoutPreview) return;
     const id = uniqueId(type);
@@ -691,6 +763,37 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     } catch { /* save surfaces the error */ }
   };
 
+  const openDraftHistory = useCallback(async () => {
+    if (!guide) return;
+    setDraftHistoryOpen(true);
+    setDraftHistoryLoading(true);
+    setDraftHistoryError('');
+    try {
+      setDraftHistory(await api.listDraftHistory(guide.id));
+    } catch (reason) {
+      setDraftHistoryError(reason instanceof Error ? reason.message : '草稿历史载入失败');
+    } finally {
+      setDraftHistoryLoading(false);
+    }
+  }, [api, guide]);
+
+  const restoreDraftHistory = useCallback(async (sourceRevision: number) => {
+    if (!guide) return;
+    const restored = await api.restoreDraft(guide.id, sourceRevision, guide.revision);
+    const normalized = reconcileSubguideEdges(CanvasDocumentSchema.parse(restored.document));
+    setGuide(restored);
+    setDocument(normalized);
+    setFlowNodes(toFlowNodes(normalized.nodes, [], normalized.lanes, expandedDetailNodeIds));
+    setTitle(restored.title);
+    setSummary(restored.summary);
+    setTags(restored.tags);
+    setSelectedIds([]);
+    setSelectedEdgeId(null);
+    setSaveState('已保存');
+    historyRef.current = new HistoryStack(normalized, 80);
+    setDraftHistoryOpen(false);
+  }, [api, expandedDetailNodeIds, guide]);
+
   const undo = useCallback(() => {
     if (layoutPreview || !historyRef.current?.canUndo) return;
     const previous = reconcileSubguideEdges(historyRef.current.undo());
@@ -714,12 +817,29 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     setSelectedIds(result.newNodeIds);
   }, [commit, document, layoutPreview]);
 
-  const removeNodes = useCallback((nodeIds: string[]) => {
+  const removeNodesImmediately = useCallback((nodeIds: string[]) => {
     if (!document || layoutPreview || nodeIds.length === 0) return;
     commit(removeNodesFromDocument(document, nodeIds));
     const removed = new Set(nodeIds);
     setSelectedIds((current) => current.filter((id) => !removed.has(id)));
   }, [commit, document, layoutPreview]);
+  const requestNodeDeletion = useCallback((nodeIds: string[]) => {
+    if (!document || layoutPreview || nodeIds.length === 0) return;
+    const uniqueNodeIds = [...new Set(nodeIds)];
+    const annotatedImages = uniqueNodeIds.flatMap((nodeId) => {
+      const node = document.nodes.find((candidate) => candidate.id === nodeId);
+      return node?.type === 'image' && (node.data.annotations?.length ?? 0) > 0 ? [node] : [];
+    });
+    if (annotatedImages.length > 0) {
+      setAnnotatedImageDeletion({
+        nodeIds: uniqueNodeIds,
+        imageCount: annotatedImages.length,
+        annotationCount: annotatedImages.reduce((count, node) => count + (node.data.annotations?.length ?? 0), 0),
+      });
+      return;
+    }
+    removeNodesImmediately(uniqueNodeIds);
+  }, [document, layoutPreview, removeNodesImmediately]);
   const removeEdges = useCallback((edgeIds: string[]) => {
     if (!document || layoutPreview || edgeIds.length === 0) return;
     const removable = document.edges.filter((edge) => edgeIds.includes(edge.id) && isEditableBusinessEdge(document, edge)).map((edge) => edge.id);
@@ -733,9 +853,15 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       removeEdges([selectedEdgeId]);
       return;
     }
-    removeNodes(selectedIds);
-  }, [removeEdges, removeNodes, selectedEdgeId, selectedIds]);
-  const removeNodeById = useCallback((nodeId: string) => removeNodes([nodeId]), [removeNodes]);
+    requestNodeDeletion(selectedIds);
+  }, [removeEdges, requestNodeDeletion, selectedEdgeId, selectedIds]);
+  const removeNodeById = useCallback((nodeId: string) => requestNodeDeletion([nodeId]), [requestNodeDeletion]);
+
+  const confirmAnnotatedImageDeletion = useCallback(() => {
+    if (!annotatedImageDeletion) return;
+    removeNodesImmediately(annotatedImageDeletion.nodeIds);
+    setAnnotatedImageDeletion(null);
+  }, [annotatedImageDeletion, removeNodesImmediately]);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -744,7 +870,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       else if (modifier && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
       else if (modifier && event.key.toLowerCase() === 'c') copy();
       else if (modifier && event.key.toLowerCase() === 'v') { event.preventDefault(); paste(); }
-      else if ((event.key === 'Delete' || event.key === 'Backspace') && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) removeSelected();
+      else if ((event.key === 'Delete' || event.key === 'Backspace') && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); removeSelected(); }
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
@@ -795,7 +921,11 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
 
   const updateSelectedNode = (next: CanvasNode) => {
     if (!document || layoutPreview) return;
-    commit({ ...document, nodes: document.nodes.map((node) => node.id === next.id ? next : node) });
+    const current = document.nodes.find((node) => node.id === next.id);
+    const nextDocument = { ...document, nodes: document.nodes.map((node) => node.id === next.id ? next : node) };
+    commit(current && isPrimaryFlowNode(current) && current.stageId !== next.stageId
+      ? movePrimaryNodeToStage(nextDocument, next.id, next.stageId)
+      : nextDocument);
   };
 
   const updateInlineText = useCallback((nodeId: string, field: InlineTextField, value: string) => {
@@ -874,7 +1004,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     <header className="editor-header">
       <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库">←</button>
       <div className="editor-title"><input aria-label="指南标题" value={title} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTitle(event.target.value); setSaveState('未保存'); }} /><span aria-live="polite">{guide.status === 'PUBLISHED' ? `已发布 v${guide.publishedVersion ?? 1}` : '草稿'} · {saveState}</span></div>
-      <div className="editor-actions"><AppearanceToggle /><button className="secondary-button" type="button" onClick={() => void save()} disabled={Boolean(layoutPreview)} aria-label="保存草稿">保存草稿</button><button className="primary-button" type="button" onClick={() => void publish()} disabled={Boolean(layoutPreview)} aria-label="发布指南">发布指南</button></div>
+      <div className="editor-actions"><AppearanceToggle /><button className="secondary-button" type="button" onClick={() => void openDraftHistory()} disabled={Boolean(layoutPreview)} aria-label="草稿历史">草稿历史</button><button className="secondary-button" type="button" onClick={() => void save()} disabled={Boolean(layoutPreview)} aria-label="保存草稿">保存草稿</button><button className="primary-button" type="button" onClick={() => void publish()} disabled={Boolean(layoutPreview)} aria-label="发布指南">发布指南</button></div>
     </header>
     <div className="editor-toolbar" aria-label="画布工具栏">
       <button type="button" onClick={() => addNode('start')} disabled={Boolean(layoutPreview)} aria-label="添加开始节点">开始</button>
@@ -927,6 +1057,9 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
           onReconnect={onReconnect}
           onReconnectStart={onReconnectStart}
           onReconnectEnd={onReconnectEnd}
+          onPointerDownCapture={startStageDrag}
+          onPointerMoveCapture={moveStageDrag}
+          onPointerUpCapture={finishStageDrag}
           onPaneClick={() => { setCreationMenu(null); setSelectedEdgeId(null); setManualRouteDraft(null); }}
           onSelectionChange={onSelectionChange}
           onMove={onMove}
@@ -947,7 +1080,12 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
           elementsSelectable={!layoutPreview}
         >
           <ViewportPortal>
-            {stageBounds.map((bound) => <div key={bound.stageId ?? 'none'} className="stage-lane" style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}><span className="stage-lane-label">{bound.title}</span></div>)}
+            {stageBounds.map((bound) => <div
+              key={bound.stageId ?? 'none'}
+              className={`stage-lane${draggedStageId === bound.stageId ? ' is-dragging' : ''}`}
+              data-stage-id={bound.stageId ?? 'none'}
+              style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}
+            ><span className="stage-lane-label">{bound.title}</span></div>)}
             {!layoutPreview && manualRouteDraft && flowInstance ? <ManualRouteEditor
               points={manualRouteDraft.points}
               conflict={manualDraftConflict}
@@ -992,8 +1130,15 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     </div>
     {error ? <div className="toast-error" role="alert">{error}</div> : null}
     {referenceOpen ? <div className="modal-backdrop" role="presentation"><section className="reference-modal" role="dialog" aria-modal="true" aria-labelledby="reference-title"><button className="modal-close" onClick={() => { setReferenceOpen(false); setReferenceSearching(false); }} aria-label="关闭子指南搜索">×</button><span className="eyebrow">REUSE PUBLISHED GUIDE</span><h2 id="reference-title">插入固定版本子指南</h2><p>打开后会载入全部已发布指南；输入标题、标签或内容关键词即可即时筛选。</p><label className="sr-only" htmlFor="reference-search">搜索可复用指南</label><input id="reference-search" type="search" autoFocus placeholder="例如：物料、销售订单、VA01" aria-label="搜索可复用指南" value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} /><div className="reference-results" aria-live="polite">{referenceSearching ? <p className="status-line">正在载入可复用指南…</p> : null}{referenceError ? <p className="error-message" role="alert">{referenceError}</p> : null}{!referenceSearching && !referenceError && referenceResults.length === 0 ? <p className="muted">没有找到可引用的已发布指南。</p> : null}{referenceResults.map((item) => <article key={item.versionId}><div><strong>{item.title}</strong><span>v{item.version} · {item.authorName}</span></div><button className="secondary-button" type="button" onClick={() => insertReference(item)} aria-label={`插入 ${item.title}`}>插入</button></article>)}</div></section></div> : null}
-    {annotationEditorNode ? <ImageAnnotationEditor node={annotationEditorNode} nodes={document.nodes} onClose={() => setAnnotationEditorNodeId(null)} onChange={(data) => commit({ ...document, nodes: document.nodes.map((node) => node.id === annotationEditorNode.id ? { ...annotationEditorNode, data } : node) })} /> : null}
+    {annotationEditorNode ? <ImageAnnotationEditor node={annotationEditorNode} nodes={document.nodes} onClose={() => setAnnotationEditorNodeId(null)} onChange={(data) => commit({ ...document, nodes: document.nodes.map((node) => node.id === annotationEditorNode.id ? { ...annotationEditorNode, data } : node) })} onUploadSupplement={async (file) => {
+      if (!file.type.startsWith('image/')) throw new Error('仅支持图片文件。');
+      const media = await api.uploadMedia(file);
+      if (media.kind !== 'IMAGE') throw new Error('仅支持图片文件。');
+      return { assetId: media.id, url: media.url, alt: file.name };
+    }} /> : null}
     {hierarchyDeletion && hierarchyDeletionItem ? <HierarchyDeletionDialog kind={hierarchyDeletion.kind} title={hierarchyDeletionItem.title} affectedNodeCount={hierarchyDeletionCount} onConfirm={confirmHierarchyDeletion} onCancel={() => setHierarchyDeletion(null)} /> : null}
+    {annotatedImageDeletion ? <AnnotatedImageDeletionDialog imageCount={annotatedImageDeletion.imageCount} annotationCount={annotatedImageDeletion.annotationCount} onConfirm={confirmAnnotatedImageDeletion} onCancel={() => setAnnotatedImageDeletion(null)} /> : null}
+    {draftHistoryOpen ? <DraftHistoryDialog items={draftHistory} currentRevision={guide.revision} loading={draftHistoryLoading} error={draftHistoryError} onRestore={restoreDraftHistory} onClose={() => setDraftHistoryOpen(false)} /> : null}
     {detailEditor ? <NodeDetailDialog nodeId={detailEditor.nodeId} title={detailEditor.title} value={detailEditor.value} openerRef={{ current: detailEditor.opener }} onSave={saveNodeDetail} onClose={() => setDetailEditor(null)} /> : null}
   </main>;
 }
@@ -1082,7 +1227,7 @@ function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleRe
   const updateData = (data: CanvasNode['data']) => onChange({ ...node, data } as CanvasNode);
   const flowData = ['start', 'end', 'process', 'decision', 'data'].includes(node.type) ? node.data as CanvasNode<'process'>['data'] : null;
   return <fieldset className="node-inspector" disabled={locked}><div className="inspector-node-heading"><span>{node.type.toUpperCase()}</span><code>{node.id.slice(0, 18)}</code></div>
-    {flowData ? <><label>节点标题<input value={flowData.label} onChange={(event) => updateData({ ...flowData, label: event.target.value } as CanvasNode['data'])} /></label><label>节点明细<textarea rows={4} value={flowData.description ?? ''} onChange={(event) => { const description = event.target.value.trim(); const { description: _previousDescription, ...withoutDescription } = flowData; updateData((description ? { ...withoutDescription, description: event.target.value } : withoutDescription) as CanvasNode['data']); }} /></label></> : null}
+    {flowData ? <><label>节点标题<input value={flowData.label} onChange={(event) => updateData({ ...flowData, label: event.target.value } as CanvasNode['data'])} /></label><label>节点明细<textarea rows={4} value={flowData.description ?? ''} onChange={(event) => { const description = event.target.value.trim(); const { description: _previousDescription, ...withoutDescription } = flowData; updateData((description ? { ...withoutDescription, description: event.target.value } : withoutDescription) as CanvasNode['data']); }} /></label><p className="node-inspector-hint">支持 Markdown 标题、列表、链接和代码块。</p></> : null}
     {node.type === 'markdown' ? <label>Markdown<textarea rows={12} value={node.data.markdown} onChange={(event) => updateData({ markdown: event.target.value })} /></label> : null}
     {node.type === 'image' ? <><label>图片地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>替代文字<input value={node.data.alt} onChange={(event) => updateData({ ...node.data, alt: event.target.value })} /></label><label>图片说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><button className="secondary-button" type="button" onClick={onEditAnnotations} aria-label="编辑图片标注">编辑图片标注（{node.data.annotations?.length ?? 0}）</button><label className="upload-label">上传图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
     {node.type === 'video' ? <><label>视频地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>视频说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><div className="keypoint-editor">{node.data.keypoints.map((point, index) => <div key={point.id}><input aria-label={`关键点 ${index + 1} 标题`} value={point.title} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, title: event.target.value } : item) })} /><input type="number" min="0" aria-label={`关键点 ${index + 1} 秒数`} value={point.timeSeconds} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, timeSeconds: Number(event.target.value) } : item) })} /></div>)}<button type="button" onClick={() => updateData({ ...node.data, keypoints: [...node.data.keypoints, { id: uniqueId('keypoint'), title: '新关键点', timeSeconds: 0 }] })}>添加视频关键点</button></div><label className="upload-label">上传视频<input type="file" accept="video/mp4,video/webm" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
@@ -1141,7 +1286,7 @@ export function removeEdgesFromDocument(document: CanvasDocument, edgeIds: strin
 export function toFlowNodes(nodes: CanvasDocument['nodes'], selectedIds: string[] = [], lanes: FlowLane[] = [], expandedNodeIds: ReadonlySet<string> = noExpandedDetails): Node[] {
   const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
   return nodes.map((node) => {
-    const size = node.size ?? defaultFlowNodeSize(node);
+    const size = node.size ?? defaultCanvasNodeSize(node);
     const detailExpanded = expandedNodeIds.has(node.id);
     return {
       id: node.id,
@@ -1197,6 +1342,14 @@ function EdgeToolbarAtRoute({ route, viewport, presentation, onChange, onClose, 
 
 function canvasPointToScreen(point: { x: number; y: number }, viewport: CanvasDocument['viewport']) {
   return { x: point.x * viewport.zoom + viewport.x, y: point.y * viewport.zoom + viewport.y };
+}
+
+function flowPointFromScreen(instance: ReactFlowInstance<Node, Edge> | null, viewport: CanvasDocument['viewport'], point: { x: number; y: number }): Point {
+  if (instance) return instance.screenToFlowPosition(point);
+  return {
+    x: (point.x - viewport.x) / viewport.zoom,
+    y: (point.y - viewport.y) / viewport.zoom,
+  };
 }
 
 function AlignmentGuide({ guide, viewport }: { guide: NodeAlignmentSnap; viewport: CanvasDocument['viewport'] }) {
@@ -1287,13 +1440,6 @@ function anchorForNodeClientPoint(nodeId: string, point: { x: number; y: number 
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return undefined;
   return edgeAnchorFromClientPoint(rect, point);
-}
-
-function defaultFlowNodeSize(node: CanvasNode): { width: number; height: number } {
-  if (node.type === 'markdown') return { width: 300, height: 180 };
-  if (node.type === 'image' || node.type === 'video') return { width: 320, height: 260 };
-  if (node.type === 'subguide') return { width: 240, height: 120 };
-  return { width: 240, height: 104 };
 }
 
 export function hierarchyPresentationEdges(document: CanvasDocument): Edge[] {

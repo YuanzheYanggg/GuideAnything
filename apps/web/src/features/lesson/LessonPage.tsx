@@ -1,31 +1,21 @@
-import type { CanvasDocument, CanvasNode, FlowLane, FlowStage, GuideVersionSnapshot } from '@guideanything/contracts';
-import { routeCanvasEdges } from '@guideanything/canvas-core';
+import type { CanvasDocument, CanvasNode, FlowLane, FlowStage, GuideVersionSnapshot, ImageAnnotationSupplement } from '@guideanything/contracts';
 import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  Handle,
-  MarkerType,
-  MiniMap,
-  Position,
-  ReactFlow,
   type Edge,
-  type EdgeTypes,
   type Node,
-  type NodeProps,
-  type NodeTypes,
   type ReactFlowInstance,
 } from '@xyflow/react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { MarkdownNodeView } from '../nodes/MarkdownNode';
 import { VideoNodeView } from '../nodes/VideoNode';
 import { useMediaSource } from '../nodes/useMediaSource';
+import { SanitizedMarkdown } from '../markdown/SanitizedMarkdown';
 import { AppearanceToggle } from '../theme/AppearanceToggle';
-import { OrthogonalEdge } from '../editor/OrthogonalEdge';
-import { resolveEdgeVisuals } from '../editor/edge-presentation';
 import type { PersonalApi } from '../workspace/types';
+import { LessonMap } from './LessonMap';
 import { MediaLightbox, type MediaPreview } from './MediaLightbox';
+
+export { toLessonFlowEdges } from './LessonMap';
 
 export interface LessonApi {
   getVersion: (versionId: string) => Promise<GuideVersionSnapshot>;
@@ -56,52 +46,6 @@ export function resourcesForStep(document: CanvasDocument, nodeId: string): Canv
     && node.contentParentId === nodeId
     && (node.type === 'markdown' || node.type === 'image' || node.type === 'video'),
   );
-}
-
-const LessonMapNode = memo(function LessonMapNode({ data, type }: NodeProps) {
-  const value = data as Record<string, unknown>;
-  const isSubguide = type === 'subguide';
-  const activate = () => {
-    if (isSubguide && typeof value.onOpenSubguide === 'function') value.onOpenSubguide();
-  };
-  return <div
-    className={`lesson-map-node lesson-map-${type}`}
-    role={isSubguide ? 'button' : undefined}
-    tabIndex={isSubguide ? 0 : undefined}
-    aria-label={isSubguide ? `打开子指南 ${nodeSummary(type, value)}` : undefined}
-    onKeyDown={isSubguide ? (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        activate();
-      }
-    } : undefined}
-  ><Handle className="lesson-map-handle" type="target" position={Position.Left} id="in" aria-label="输入端口" /><span>{typeLabel(type)}</span><strong>{nodeSummary(type, value)}</strong>{type === 'decision'
-      ? <><Handle className="lesson-map-handle" type="source" position={Position.Right} id="out" aria-label="输出端口" /><Handle className="lesson-map-handle" type="source" position={Position.Top} id="yes" aria-label="是分支端口" /><Handle className="lesson-map-handle" type="source" position={Position.Bottom} id="no" aria-label="否分支端口" /></>
-      : <Handle className="lesson-map-handle" type="source" position={Position.Right} id="out" aria-label="输出端口" />}</div>;
-});
-
-const nodeTypes: NodeTypes = {
-  start: LessonMapNode, end: LessonMapNode, process: LessonMapNode, decision: LessonMapNode, data: LessonMapNode,
-  markdown: LessonMapNode, image: LessonMapNode, video: LessonMapNode, subguide: LessonMapNode,
-};
-const edgeTypes: EdgeTypes = { orthogonal: OrthogonalEdge };
-const edgeOptions = { type: 'orthogonal', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: 'var(--ga-accent)', strokeWidth: 2 } };
-
-export function toLessonFlowEdges(document: CanvasDocument): Edge[] {
-  const routing = routeCanvasEdges(document);
-  return document.edges.map((edge) => {
-    const route = routing.routesByEdgeId.get(edge.id);
-    const source = document.nodes.find((node) => node.id === edge.source);
-    const visuals = resolveEdgeVisuals(edge.presentation);
-    return {
-      ...edge,
-      sourceHandle: edge.sourceHandle ?? (source?.type === 'decision' ? 'yes' : 'out'),
-      targetHandle: edge.targetHandle ?? 'in',
-      type: route ? 'orthogonal' : 'smoothstep',
-      ...visuals,
-      ...(route ? { data: { route } } : {}),
-    } as Edge;
-  });
 }
 
 export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }: { versionId: string; api: LessonApi; personalApi?: PersonalApi; focusNodeId?: string; onBack: () => void }) {
@@ -173,6 +117,13 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
       return [...stack.slice(0, -1), ...(restoredSource ? [restoredSource] : []), targetPreview];
     });
   }, [version]);
+  const openAnnotationSupplement = useCallback((supplement: ImageAnnotationSupplement, annotationIndex: number) => {
+    setPreviewStack((stack) => {
+      const source = stack[stack.length - 1];
+      const restoredSource = source?.kind === 'image' ? { ...source, initialAnnotationIndex: annotationIndex } : source;
+      return [...stack.slice(0, -1), ...(restoredSource ? [restoredSource] : []), { kind: 'annotation-supplement', supplement }];
+    });
+  }, []);
   const openSubguide = useCallback(async (guideVersionId: string) => {
     if (inFlightSubguidesRef.current.has(guideVersionId)) return;
     if (versionHistory.some((item) => item.id === guideVersionId)) {
@@ -206,19 +157,14 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
       onBack();
     }
   }, [onBack, versionHistory.length]);
-  const flowNodes = useMemo<Node[]>(() => version ? version.document.nodes.map((node) => ({
-    id: node.id,
-    type: node.type,
-    position: node.position,
-    data: {
-      ...(node.data as unknown as Record<string, unknown>),
-      ...(node.type === 'subguide' ? { onOpenSubguide: () => void openSubguide(node.data.guideVersionId) } : {}),
-    },
-    ...(node.hidden === undefined ? {} : { hidden: node.hidden }),
-    zIndex: node.zIndex,
-    selected: node.id === displayedNode?.id,
-  })) : [], [displayedNode?.id, openSubguide, version]);
-  const flowEdges = useMemo<Edge[]>(() => version ? toLessonFlowEdges(version.document) : [], [version]);
+  const selectMapNode = useCallback((nodeId: string) => {
+    const targetIndex = lessonSteps.findIndex(({ step }) => step.nodeId === nodeId);
+    if (targetIndex >= 0) {
+      setCurrentIndex(targetIndex);
+      return;
+    }
+    void instance?.fitView({ nodes: [{ id: nodeId }], duration: 280, padding: 1.1, minZoom: 0.4, maxZoom: 1.3 });
+  }, [instance, lessonSteps]);
 
   useEffect(() => {
     if (!instance || !displayedNode) return;
@@ -248,30 +194,13 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
         </div>)}
       </aside>
       <section className="lesson-canvas" aria-label="只读流程画布">
-        <ReactFlow
-          nodes={flowNodes}
-          edges={flowEdges}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          defaultEdgeOptions={edgeOptions}
+        <LessonMap
+          document={version.document}
+          {...(displayedNode ? { selectedNodeId: displayedNode.id } : {})}
+          onSelectNode={selectMapNode}
+          onOpenSubguide={(guideVersionId) => { void openSubguide(guideVersionId); }}
           onInit={setInstance}
-          nodesDraggable={false}
-          nodesConnectable={false}
-          elementsSelectable
-          onlyRenderVisibleElements
-          onNodeClick={(_, node) => {
-            if (node.type !== 'subguide') return;
-            const guideVersionId = (node.data as { guideVersionId?: unknown }).guideVersionId;
-            if (typeof guideVersionId === 'string') void openSubguide(guideVersionId);
-          }}
-          fitView
-          minZoom={0.15}
-          maxZoom={2}
-        >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--ga-border-strong)" />
-          <MiniMap pannable zoomable />
-          <Controls showInteractive={false} />
-        </ReactFlow>
+        />
       </section>
       <aside key={displayedStep?.id ?? focusedUnsequencedNode?.id} className="lesson-content" aria-label="当前步骤内容" aria-live="polite" data-step-id={displayedStep?.id}>
         {subguideLoading ? <p className="status-line">正在打开子指南…</p> : null}
@@ -292,6 +221,7 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
       onClose={() => setPreviewStack([])}
       {...(previewStack.length > 1 ? { onBack: () => setPreviewStack((stack) => stack.slice(0, -1)) } : {})}
       onOpenTarget={openAnnotationTarget}
+      onOpenSupplement={openAnnotationSupplement}
       isTargetValid={(targetNodeId) => Boolean(version.document.nodes.find((node) => node.id === targetNodeId && node.id !== (currentPreview.kind === 'image' ? currentPreview.node.id : '')))}
       onActivateNode={(node) => {
         if (node.type === 'subguide') {
@@ -313,7 +243,7 @@ function CurrentNodeContent({ node, onOpenPreview }: { node: CanvasNode; onOpenP
   if (node.type === 'video') return <VideoNodeView data={node.data} onOpenPreview={() => onOpenPreview(node)} />;
   if (node.type === 'image') return <LessonImage node={node} onOpenPreview={() => onOpenPreview(node)} />;
   if (node.type === 'subguide') return <div className="lesson-reference"><span>固定引用 · v{node.data.version}</span><strong>{node.data.title}</strong><p>{node.data.expanded ? '该子指南已在发布快照中展开。' : '这是一个固定版本子指南；作者可在编辑画布中展开查看完整流程。'}</p></div>;
-  return <div className="lesson-flow-detail"><span>{typeLabel(node.type)}</span><strong>{node.data.label}</strong>{node.data.description ? <p>{node.data.description}</p> : null}</div>;
+  return <div className="lesson-flow-detail"><span>{typeLabel(node.type)}</span><strong>{node.data.label}</strong>{node.data.description ? <SanitizedMarkdown className="lesson-flow-description">{node.data.description}</SanitizedMarkdown> : null}</div>;
 }
 
 function LessonImage({ node, onOpenPreview }: { node: CanvasNode<'image'>; onOpenPreview: () => void }) {

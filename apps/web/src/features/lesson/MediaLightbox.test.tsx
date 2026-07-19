@@ -26,4 +26,16 @@ describe('MediaLightbox', () => {
     expect(screen.getByRole('heading', { name: '字段解释' })).toBeVisible();
     expect(screen.getByRole('button', { name: '返回上一项资料' })).toBeVisible();
   });
+
+  it('renders an annotation supplement as a stackable private media preview', () => {
+    const preview: MediaPreview = {
+      kind: 'annotation-supplement',
+      supplement: { id: 'menu', order: 0, assetId: 'asset-menu', url: 'https://example.com/menu.png', alt: '成衣类型菜单', caption: '选择后的下拉菜单' },
+    };
+    render(<MediaLightbox preview={preview} onClose={vi.fn()} onBack={vi.fn()} onOpenTarget={vi.fn()} isTargetValid={() => true} />);
+    expect(screen.getByRole('dialog', { name: '步骤补充图' })).toBeVisible();
+    expect(screen.getByRole('img', { name: '成衣类型菜单' })).toBeVisible();
+    expect(screen.getByText('选择后的下拉菜单')).toBeVisible();
+    expect(screen.getByRole('button', { name: '返回图片讲解' })).toBeVisible();
+  });
 });

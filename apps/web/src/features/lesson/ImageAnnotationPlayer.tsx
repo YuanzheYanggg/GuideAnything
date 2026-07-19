@@ -1,13 +1,16 @@
 import { cameraForAnnotation, normalizeAnnotationOrder } from '@guideanything/canvas-core';
-import type { CanvasNode, ImageAnnotation } from '@guideanything/contracts';
+import type { CanvasNode, ImageAnnotationSupplement } from '@guideanything/contracts';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
-export function ImageAnnotationPlayer({ source, data, initialIndex, isTargetValid, onOpenTarget }: {
+import { useMediaSource } from '../nodes/useMediaSource';
+
+export function ImageAnnotationPlayer({ source, data, initialIndex, isTargetValid, onOpenTarget, onOpenSupplement }: {
   source: string;
   data: CanvasNode<'image'>['data'];
   initialIndex?: number;
   isTargetValid: (targetNodeId: string) => boolean;
   onOpenTarget: (targetNodeId: string, annotationIndex: number) => void;
+  onOpenSupplement?: (supplement: ImageAnnotationSupplement, annotationIndex: number) => void;
 }) {
   const annotations = useMemo(() => normalizeAnnotationOrder(data.annotations ?? []), [data.annotations]);
   const [activeIndex, setActiveIndex] = useState<number | null>(initialIndex ?? null);
@@ -54,21 +57,22 @@ export function ImageAnnotationPlayer({ source, data, initialIndex, isTargetVali
         style={cameraStyle(camera)}
       >
         <img src={source} alt={data.alt} />
-        {annotations.map((annotation, index) => <button
-          key={annotation.id}
-          type="button"
-          className={`annotation-player-marker shape-${annotation.shape.toLowerCase()}${index === activeIndex ? ' active' : ''}`}
-          style={markerStyle(annotation)}
-          onClick={() => navigate(index)}
-          aria-label={`播放标注 ${index + 1} ${annotation.title}`}
-        ><span>{index + 1}</span></button>)}
       </div>
       {annotations.length > 0 && activeIndex === null ? <button className="annotation-start" type="button" onClick={() => setActiveIndex(0)} aria-label="开始图片讲解">开始讲解 · {annotations.length} 个标注</button> : null}
     </div>
     {active ? <aside className="annotation-player-card" aria-live="polite">
-      <div><span>标注 {activeIndex! + 1} / {annotations.length}</span><button type="button" aria-pressed={autoplay} onClick={() => setAutoplay((value) => !value)} aria-label="自动播放">自动播放</button></div>
+      <div><span>讲解 {activeIndex! + 1} / {annotations.length}</span><button type="button" aria-pressed={autoplay} onClick={() => setAutoplay((value) => !value)} aria-label="自动播放">自动播放</button></div>
       <h3>{active.title}</h3>
       {active.body ? <p>{active.body}</p> : null}
+      {active.supplementalImages?.length ? <div className="annotation-player-supplements" aria-label="步骤补充图">
+        {active.supplementalImages
+          .slice()
+          .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
+          .map((supplement) => <button key={supplement.id} type="button" onClick={() => onOpenSupplement?.(supplement, activeIndex!)} aria-label={`打开补充图 ${supplement.alt}`}>
+            <AnnotationSupplementThumbnail supplement={supplement} />
+            <span>{supplement.caption || supplement.alt}</span>
+          </button>)}
+      </div> : null}
       {active.targetNodeId ? isTargetValid(active.targetNodeId)
         ? <button className="primary-button" type="button" onClick={() => onOpenTarget(active.targetNodeId!, activeIndex!)} aria-label="查看关联资料">查看关联资料</button>
         : <button type="button" disabled aria-label="关联资料已失效">关联资料已失效</button>
@@ -87,12 +91,9 @@ function cameraStyle(camera: { centerX: number; centerY: number; zoom: number })
   };
 }
 
-function markerStyle(annotation: ImageAnnotation): CSSProperties {
-  const { x, y, width, height } = annotation.region;
-  return {
-    left: `${x * 100}%`, top: `${y * 100}%`,
-    ...(annotation.shape === 'RECT' && width !== undefined && height !== undefined ? { width: `${width * 100}%`, height: `${height * 100}%` } : {}),
-  };
+function AnnotationSupplementThumbnail({ supplement }: { supplement: ImageAnnotationSupplement }) {
+  const source = useMediaSource(supplement.url);
+  return source ? <img src={source} alt={supplement.alt} /> : <span aria-hidden="true">载入中…</span>;
 }
 
 function useReducedMotion(): boolean {

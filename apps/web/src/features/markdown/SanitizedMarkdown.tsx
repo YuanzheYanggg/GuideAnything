@@ -3,8 +3,8 @@ import ReactMarkdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 
-export function SanitizedMarkdown({ children, className }: { children: string; className?: string }) {
-  return <div className={`sanitized-markdown${className ? ` ${className}` : ''}`}>
+export function SanitizedMarkdown({ children, className, testId }: { children: string; className?: string; testId?: string }) {
+  return <div className={`sanitized-markdown${className ? ` ${className}` : ''}`} data-testid={testId}>
     <ReactMarkdown
       rehypePlugins={[rehypeSanitize]}
       remarkPlugins={[remarkGfm]}

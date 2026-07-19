@@ -1,4 +1,4 @@
-import type { CanvasNode } from '@guideanything/contracts';
+import type { CanvasNode, ImageAnnotationSupplement } from '@guideanything/contracts';
 import { useEffect, useRef } from 'react';
 
 import { MarkdownNodeView } from '../nodes/MarkdownNode';
@@ -8,21 +8,23 @@ import { ImageAnnotationPlayer } from './ImageAnnotationPlayer';
 
 export type MediaPreview =
   | { kind: 'image'; node: CanvasNode<'image'>; initialAnnotationIndex?: number }
+  | { kind: 'annotation-supplement'; supplement: ImageAnnotationSupplement }
   | { kind: 'video'; node: CanvasNode<'video'> }
   | { kind: 'markdown'; node: CanvasNode<'markdown'> }
   | { kind: 'flow'; node: CanvasNode<'start' | 'end' | 'process' | 'decision' | 'data'> }
   | { kind: 'subguide'; node: CanvasNode<'subguide'> };
 
-export function MediaLightbox({ preview, onClose, onBack, onOpenTarget, isTargetValid, onActivateNode }: {
+export function MediaLightbox({ preview, onClose, onBack, onOpenTarget, onOpenSupplement, isTargetValid, onActivateNode }: {
   preview: MediaPreview;
   onClose: () => void;
   onBack?: () => void;
   onOpenTarget: (targetNodeId: string, annotationIndex: number) => void;
+  onOpenSupplement?: (supplement: ImageAnnotationSupplement, annotationIndex: number) => void;
   isTargetValid: (targetNodeId: string) => boolean;
   onActivateNode?: (node: CanvasNode) => void;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const dialogLabel = preview.kind === 'image' ? '图片预览' : preview.kind === 'video' ? '视频预览' : '资料预览';
+  const dialogLabel = preview.kind === 'image' ? '图片预览' : preview.kind === 'annotation-supplement' ? '步骤补充图' : preview.kind === 'video' ? '视频预览' : '资料预览';
 
   useEffect(() => {
     const previousActiveElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -40,34 +42,43 @@ export function MediaLightbox({ preview, onClose, onBack, onOpenTarget, isTarget
 
   return <div className="media-lightbox-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="media-lightbox" role="dialog" aria-modal="true" aria-label={dialogLabel}>
-      <div className="media-lightbox-actions">{onBack ? <button type="button" onClick={onBack} aria-label="返回上一项资料">←</button> : null}<button ref={closeButtonRef} type="button" onClick={onClose} aria-label="关闭媒体预览">×</button></div>
-      <PreviewContent preview={preview} onOpenTarget={onOpenTarget} isTargetValid={isTargetValid} {...(onActivateNode ? { onActivateNode } : {})} />
+      <div className="media-lightbox-actions">{onBack ? <button type="button" onClick={onBack} aria-label={preview.kind === 'annotation-supplement' ? '返回图片讲解' : '返回上一项资料'}>←</button> : null}<button ref={closeButtonRef} type="button" onClick={onClose} aria-label="关闭媒体预览">×</button></div>
+      <PreviewContent preview={preview} onOpenTarget={onOpenTarget} {...(onOpenSupplement ? { onOpenSupplement } : {})} isTargetValid={isTargetValid} {...(onActivateNode ? { onActivateNode } : {})} />
     </div>
   </div>;
 }
 
-function PreviewContent({ preview, onOpenTarget, isTargetValid, onActivateNode }: {
+function PreviewContent({ preview, onOpenTarget, onOpenSupplement, isTargetValid, onActivateNode }: {
   preview: MediaPreview;
   onOpenTarget: (targetNodeId: string, annotationIndex: number) => void;
+  onOpenSupplement?: (supplement: ImageAnnotationSupplement, annotationIndex: number) => void;
   isTargetValid: (targetNodeId: string) => boolean;
   onActivateNode?: (node: CanvasNode) => void;
 }) {
-  if (preview.kind === 'image') return <ImagePreview preview={preview} onOpenTarget={onOpenTarget} isTargetValid={isTargetValid} />;
+  if (preview.kind === 'image') return <ImagePreview preview={preview} onOpenTarget={onOpenTarget} {...(onOpenSupplement ? { onOpenSupplement } : {})} isTargetValid={isTargetValid} />;
+  if (preview.kind === 'annotation-supplement') return <AnnotationSupplementPreview supplement={preview.supplement} />;
   if (preview.kind === 'video') return <VideoPreview node={preview.node} />;
   if (preview.kind === 'markdown') return <div className="linked-resource-preview"><MarkdownNodeView data={preview.node.data} /></div>;
   if (preview.kind === 'subguide') return <div className="linked-resource-preview"><span className="eyebrow">PINNED SUBGUIDE</span><h3>{preview.node.data.title}</h3><p>固定发布版本 v{preview.node.data.version}</p>{onActivateNode ? <button className="primary-button" type="button" onClick={() => onActivateNode(preview.node)}>打开子指南</button> : null}</div>;
   return <div className="linked-resource-preview"><span className="eyebrow">FLOW STEP</span><h3>{preview.node.data.label}</h3>{preview.node.data.description ? <p>{preview.node.data.description}</p> : null}{onActivateNode ? <button className="primary-button" type="button" onClick={() => onActivateNode(preview.node)}>前往对应步骤</button> : null}</div>;
 }
 
-function ImagePreview({ preview, onOpenTarget, isTargetValid }: {
+function ImagePreview({ preview, onOpenTarget, onOpenSupplement, isTargetValid }: {
   preview: Extract<MediaPreview, { kind: 'image' }>;
   onOpenTarget: (targetNodeId: string, annotationIndex: number) => void;
+  onOpenSupplement?: (supplement: ImageAnnotationSupplement, annotationIndex: number) => void;
   isTargetValid: (targetNodeId: string) => boolean;
 }) {
   const source = useMediaSource(preview.node.data.url);
   if (!source) return <p className="error-message">图片载入失败</p>;
   if ((preview.node.data.annotations?.length ?? 0) === 0) return <figure className="plain-image-preview"><img src={source} alt={preview.node.data.alt} />{preview.node.data.caption ? <figcaption>{preview.node.data.caption}</figcaption> : null}</figure>;
-  return <ImageAnnotationPlayer source={source} data={preview.node.data} {...(preview.initialAnnotationIndex !== undefined ? { initialIndex: preview.initialAnnotationIndex } : {})} isTargetValid={isTargetValid} onOpenTarget={onOpenTarget} />;
+  return <ImageAnnotationPlayer source={source} data={preview.node.data} {...(preview.initialAnnotationIndex !== undefined ? { initialIndex: preview.initialAnnotationIndex } : {})} isTargetValid={isTargetValid} onOpenTarget={onOpenTarget} {...(onOpenSupplement ? { onOpenSupplement } : {})} />;
+}
+
+function AnnotationSupplementPreview({ supplement }: { supplement: ImageAnnotationSupplement }) {
+  const source = useMediaSource(supplement.url);
+  if (!source) return <p className="error-message">图片载入失败</p>;
+  return <figure className="plain-image-preview"><img src={source} alt={supplement.alt} />{supplement.caption ? <figcaption>{supplement.caption}</figcaption> : null}</figure>;
 }
 
 function VideoPreview({ node }: { node: CanvasNode<'video'> }) {

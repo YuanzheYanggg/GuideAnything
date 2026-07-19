@@ -1,7 +1,7 @@
 import type { CanvasDocument, CanvasNode } from '@guideanything/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { getSwimlaneBounds, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy } from './hierarchy';
+import { getStageBounds, getSwimlaneBounds, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, movePrimaryNodeToStage, translateStageNodes } from './hierarchy';
 
 const base = { position: { x: 0, y: 0 }, zIndex: 0 };
 const start = (id: string, stageId?: string) => ({ ...base, id, type: 'start' as const, ...(stageId ? { stageId } : {}), data: { label: '开始', shape: 'start' as const } });
@@ -15,6 +15,89 @@ const edge = (id: string, source: string, target: string) => ({ id, source, targ
 const makeDocument = (overrides: Partial<CanvasDocument>): CanvasDocument => ({ schemaVersion: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [], ...overrides });
 
 describe('flow hierarchy layout', () => {
+  it('moves a primary node into its new stage and keeps stage rows separated', () => {
+    const result = movePrimaryNodeToStage(makeDocument({
+      stages: [
+        { id: 'request', title: '客人提案', order: 0 },
+        { id: 'proposal', title: '客人提案阶段', order: 1 },
+      ],
+      nodes: [
+        { ...start('start', 'request'), position: { x: 0, y: 0 } },
+        { ...process('proposal-node', 'proposal'), position: { x: 0, y: 0 } },
+        { ...process('moved', 'request'), position: { x: 600, y: 0 } },
+        markdown('moved-note', 'moved'),
+      ],
+      edges: [],
+    }), 'moved', 'proposal');
+    const moved = result.nodes.find((node) => node.id === 'moved')!;
+    const note = result.nodes.find((node) => node.id === 'moved-note')!;
+    const bounds = getStageBounds(result);
+    const request = bounds.find((bound) => bound.stageId === 'request')!;
+    const proposal = bounds.find((bound) => bound.stageId === 'proposal')!;
+
+    expect(moved.stageId).toBe('proposal');
+    expect(moved.position.y).toBeGreaterThanOrEqual(proposal.y);
+    expect(note.position).toEqual({ x: moved.position.x, y: moved.position.y + 104 + 24 });
+    expect(proposal.y).toBeGreaterThan(request.y + request.height);
+  });
+
+  it('translates a stage together with its legacy attached content without moving other stages', () => {
+    const document = makeDocument({
+      stages: [{ id: 'request', title: '客人提案阶段', order: 0 }, { id: 'review', title: '复核', order: 1 }],
+      nodes: [
+        { ...start('start', 'request'), position: { x: 0, y: 0 } },
+        { ...process('review-node', 'review'), position: { x: 320, y: 400 } },
+        { ...markdown('note', 'start'), position: { x: 0, y: 128 } },
+      ],
+      edges: [],
+    });
+
+    const result = translateStageNodes(document, 'request', { x: 120, y: 80 });
+    const originalBounds = getStageBounds(document).find((bound) => bound.stageId === 'request')!;
+    const translatedBounds = getStageBounds(result).find((bound) => bound.stageId === 'request')!;
+
+    expect(result.nodes.find((node) => node.id === 'start')!.position).toEqual({ x: 120, y: 80 });
+    expect(result.nodes.find((node) => node.id === 'note')!.position).toEqual({ x: 120, y: 208 });
+    expect(result.nodes.find((node) => node.id === 'review-node')!.position).toEqual({ x: 320, y: 400 });
+    expect(translatedBounds.x).toBe(originalBounds.x + 120);
+    expect(translatedBounds.y).toBe(originalBounds.y + 80);
+  });
+
+  it('translates content linked by a real canvas edge and includes it in the stage bounds', () => {
+    const document = makeDocument({
+      stages: [{ id: 'request', title: '客人提案阶段', order: 0 }],
+      nodes: [
+        { ...start('start', 'request'), position: { x: 0, y: 0 } },
+        { ...markdown('linked-note'), position: { x: 0, y: 128 } },
+      ],
+      edges: [edge('start-note', 'start', 'linked-note')],
+    });
+
+    const result = translateStageNodes(document, 'request', { x: 120, y: 80 });
+    const bounds = getStageBounds(result).find((bound) => bound.stageId === 'request')!;
+    const linkedNote = result.nodes.find((node) => node.id === 'linked-note')!;
+
+    expect(linkedNote.position).toEqual({ x: 120, y: 208 });
+    expect(linkedNote.position.x).toBeGreaterThanOrEqual(bounds.x);
+    expect(linkedNote.position.y).toBeGreaterThanOrEqual(bounds.y);
+  });
+
+  it('persists a drag for an empty stage', () => {
+    const document = makeDocument({
+      stages: [{ id: 'request', title: '客人提案阶段', order: 0 }, { id: 'review', title: '复核', order: 1 }],
+      nodes: [{ ...start('start', 'request'), position: { x: 0, y: 0 } }],
+      edges: [],
+    });
+    const original = getStageBounds(document).find((bound) => bound.stageId === 'review')!;
+
+    const result = translateStageNodes(document, 'review', { x: 120, y: 80 });
+    const moved = getStageBounds(result).find((bound) => bound.stageId === 'review')!;
+
+    expect(result.stages?.find((stage) => stage.id === 'review')?.position).toEqual({ x: original.x + 120, y: original.y + 80 });
+    expect(moved.x).toBe(original.x + 120);
+    expect(moved.y).toBe(original.y + 80);
+  });
+
   it('places primary flow by business order while retaining responsibility metadata', () => {
     const derived: CanvasNode = {
       ...process('derived'),

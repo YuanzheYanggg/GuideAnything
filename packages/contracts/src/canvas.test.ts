@@ -347,6 +347,38 @@ describe('CanvasDocumentSchema', () => {
     expect(CanvasDocumentSchema.safeParse(imageDocument([{ ...base, targetNodeId: 'image' }])).success).toBe(false);
   });
 
+  it('preserves up to eight annotation supplemental images and rejects invalid duplicate metadata', () => {
+    const annotation = {
+      id: 'annotation-supplements', order: 0, title: '成衣类型', shape: 'POINT', region: { x: 0.2, y: 0.2 },
+      supplementalImages: Array.from({ length: 8 }, (_, order) => ({
+        id: `supplement-${order}`,
+        order,
+        assetId: `asset-${order}`,
+        url: `/api/media/asset-${order}`,
+        alt: `补充图 ${order}`,
+        ...(order === 0 ? { caption: '点击后显示的菜单' } : {}),
+      })),
+    };
+
+    const parsed = CanvasDocumentSchema.parse(imageDocument([annotation]));
+    const image = parsed.nodes.find((node) => node.id === 'image');
+    expect(image?.type === 'image' ? image.data.annotations?.[0]?.supplementalImages : undefined).toEqual(annotation.supplementalImages);
+    expect(CanvasDocumentSchema.safeParse(imageDocument([{
+      ...annotation,
+      supplementalImages: [...annotation.supplementalImages, {
+        id: 'supplement-8', order: 8, assetId: 'asset-8', url: '/api/media/asset-8', alt: '补充图 8',
+      }],
+    }])).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(imageDocument([{
+      ...annotation,
+      supplementalImages: [annotation.supplementalImages[0], { ...annotation.supplementalImages[0], order: 1 }],
+    }])).success).toBe(false);
+    expect(CanvasDocumentSchema.safeParse(imageDocument([{
+      ...annotation,
+      supplementalImages: [annotation.supplementalImages[0], { ...annotation.supplementalImages[1], id: 'supplement-other', order: 0 }],
+    }])).success).toBe(false);
+  });
+
   it('rejects unsafe video URLs and dangling lesson nodes', () => {
     const result = CanvasDocumentSchema.safeParse({
       schemaVersion: 1,

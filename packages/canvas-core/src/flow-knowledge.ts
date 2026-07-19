@@ -302,6 +302,15 @@ function buildAttachment(
           shape: annotation.shape,
           region: { ...annotation.region },
           ...(annotation.camera ? { camera: { ...annotation.camera } } : {}),
+          ...(annotation.supplementalImages?.length ? {
+            supplementalImages: [...annotation.supplementalImages]
+              .sort((left, right) => left.order - right.order || compareId(left.id, right.id))
+              .map(({ assetId, alt, caption }) => ({
+                assetId,
+                alt,
+                ...(caption ? { caption } : {}),
+              })),
+          } : {}),
           ...targetReference(annotation.targetNodeId, addressableIds, guideId, snapshotId, danglingTargetNodeIds),
         })),
     };

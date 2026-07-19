@@ -7,6 +7,7 @@ import { httpError } from '../../lib/http-error';
 import { GuideService } from './service';
 
 const IdParamsSchema = z.object({ id: z.string().min(1).max(200) });
+const DraftHistoryParamsSchema = IdParamsSchema.extend({ revision: z.coerce.number().int().positive() });
 const CreateGuideSchema = z.object({
   workspaceId: z.string().min(1).max(200),
   folderId: z.string().min(1).max(200).optional(),
@@ -21,6 +22,7 @@ const SaveGuideSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(50)).max(20).optional(),
   document: CanvasDocumentSchema.optional(),
 });
+const RestoreDraftSchema = z.object({ revision: z.number().int().min(0) });
 const CollaboratorSchema = z.object({ userId: z.string().min(1).max(200) });
 const GuideListQuerySchema = z.object({
   workspaceId: z.string().min(1).max(200).optional(),
@@ -57,6 +59,19 @@ export async function registerGuideRoutes(app: FastifyInstance, database: Databa
     const params = parseOrReply(IdParamsSchema, request.params, reply);
     if (!params) return;
     return { guide: service.readDraft(request.authUser!, params.id) };
+  });
+
+  app.get('/api/guides/:id/draft-history', { preHandler: app.authenticateRequest }, async (request, reply) => {
+    const params = parseOrReply(IdParamsSchema, request.params, reply);
+    if (!params) return;
+    return { items: service.draftHistory(request.authUser!, params.id) };
+  });
+
+  app.post('/api/guides/:id/draft-history/:revision/restore', { preHandler: app.authenticateRequest }, async (request, reply) => {
+    const params = parseOrReply(DraftHistoryParamsSchema, request.params, reply);
+    const input = parseOrReply(RestoreDraftSchema, request.body, reply);
+    if (!params || !input) return;
+    return { guide: service.restoreDraft(request.authUser!, params.id, params.revision, input.revision) };
   });
 
   app.get('/api/guides/:id/reference-updates', { preHandler: app.authenticateRequest }, async (request, reply) => {

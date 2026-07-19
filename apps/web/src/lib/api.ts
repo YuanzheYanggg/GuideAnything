@@ -7,7 +7,7 @@ import type { EditorApi, GuideDraftDetail, SearchPage } from '../features/editor
 import type { EditorialApi } from '../features/editorial/types';
 import type { KnowledgeApi, KnowledgeDocument, KnowledgeHealth, KnowledgeOverview, KnowledgeSearchHit } from '../features/knowledge/types';
 import type { SourcesApi, WorkspaceSource, WorkspaceSourcesResult, FlowSnapshotSummary } from '../features/sources/types';
-import type { GuideReferenceUpdate, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { GuideDraftHistorySnapshot, GuideReferenceUpdate, GuideVersionSnapshot } from '@guideanything/contracts';
 import type {
   CreateWorkspaceInput,
   PersonalApi,
@@ -71,6 +71,11 @@ export class ApiClient {
         method: 'PATCH',
         body: JSON.stringify({ revision, ...changes }),
       })).guide,
+      listDraftHistory: async (guideId) => (await this.request<{ items: GuideDraftHistorySnapshot[] }>(`/guides/${guideId}/draft-history`)).items,
+      restoreDraft: async (guideId, sourceRevision, revision) => (await this.request<{ guide: GuideDraftDetail }>(
+        `/guides/${guideId}/draft-history/${sourceRevision}/restore`,
+        { method: 'POST', body: JSON.stringify({ revision }) },
+      )).guide,
       publishGuide: async (guideId) => (await this.request<{ version: GuideVersionSnapshot }>(`/guides/${guideId}/publish`, { method: 'POST' })).version,
       search: async (query, offset = 0, consumerWorkspaceId) => this.request<SearchPage>(`/search?q=${encodeURIComponent(query)}&limit=50&offset=${offset}${consumerWorkspaceId ? `&consumerWorkspaceId=${encodeURIComponent(consumerWorkspaceId)}` : ''}`),
       referenceUpdates: async (guideId) => (await this.request<{ items: GuideReferenceUpdate[] }>(`/guides/${guideId}/reference-updates`)).items,

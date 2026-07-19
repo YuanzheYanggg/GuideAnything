@@ -599,11 +599,11 @@ function isOrthogonal(points: Point[]): boolean {
 }
 
 function nodeRect(node: CanvasNode): NodeRect {
-  const size = node.size ?? defaultSize(node);
+  const size = node.size ?? defaultCanvasNodeSize(node);
   return { id: node.id, x: node.position.x, y: node.position.y, width: size.width, height: size.height };
 }
 
-function defaultSize(node: CanvasNode): { width: number; height: number } {
+export function defaultCanvasNodeSize(node: CanvasNode): { width: number; height: number } {
   if (node.type === 'markdown') return { width: 300, height: 180 };
   if (node.type === 'image' || node.type === 'video') return { width: 320, height: 260 };
   if (node.type === 'subguide') return { width: 240, height: 120 };
