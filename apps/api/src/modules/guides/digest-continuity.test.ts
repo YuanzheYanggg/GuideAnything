@@ -108,6 +108,18 @@ describe('guide digest snapshot continuity', () => {
     ]));
   });
 
+  it('keeps both learning-path targets in the affected-source closure', () => {
+    const previous = snapshot();
+    const current = snapshot();
+    current.learningPath[0] = { ...current.learningPath[0]!, targetNodeId: 'node-2' };
+
+    const diff = buildGuideDigestSnapshotDiff(previous, current);
+
+    expect(diff.learningPath.updated).toEqual([expect.objectContaining({ id: 'learning-1' })]);
+    expect(diff.affectedSourceIds).toEqual(expect.arrayContaining(['node-1', 'node-2']));
+    expect(hasGuideDigestBusinessChanges(diff)).toBe(true);
+  });
+
   it.each([
     [{ kind: 'FLOW', id: 'relation-flow-new', sourceNodeId: 'node-1', targetNodeId: 'node-2' }, ['node-1', 'node-2']],
     [{ kind: 'USES_RESOURCE', id: 'relation-resource-new', sourceNodeId: 'node-1', resourceId: 'resource-note' }, ['node-1', 'resource-note']],
