@@ -1,5 +1,7 @@
+import type { BridgeEventV1, BridgeRunRequestV1 } from '@guideanything/contracts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { buildApp } from '../../app';
 import {
   authorization,
   createTestContext,
@@ -7,6 +9,7 @@ import {
   seedTestWorkspace,
   type TestContext,
 } from '../../test/test-app';
+import type { AgentRuntimeClient } from '../agents/runtime-client';
 
 describe('guide lifecycle', () => {
   let context: TestContext;
@@ -343,4 +346,151 @@ describe('guide lifecycle', () => {
     expect(invalid.statusCode).toBe(400);
     expect(invalid.json().code).toBe('VALIDATION_ERROR');
   });
+
+  it('exposes strict readiness, generation, review, apply, reject, and reconcile APIs', async () => {
+    const runtime = new RouteDigestRuntime();
+    const digestApp = await buildApp({
+      database: context.database,
+      jwtSecret: 'test-secret-that-is-long-enough-1234',
+      guideDigestRuntime: runtime,
+    });
+    try {
+      const created = await digestApp.inject({
+        method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+        payload: { workspaceId, title: '摘要 API 指南', summary: '旧摘要', tags: ['原标签'] },
+      });
+      const guideId = created.json().guide.id as string;
+      const saved = await digestApp.inject({
+        method: 'PATCH', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.author),
+        payload: { revision: 0, document: sampleDocument('# 摘要 API\n只读生成输入。') },
+      });
+      expect(saved.statusCode).toBe(200);
+
+      const status = await digestApp.inject({
+        method: 'GET', url: `/api/guides/${guideId}/flow-snapshot-status`,
+        headers: authorization(context.tokens.author),
+      });
+      expect(status.statusCode).toBe(200);
+      expect(status.json().status).toMatchObject({
+        guideRevision: 1, sourceStatus: 'READY', snapshotRevision: 1, snapshotSchemaVersion: 2,
+      });
+
+      const generated = await digestApp.inject({
+        method: 'POST', url: `/api/guides/${guideId}/digest-proposals`,
+        headers: authorization(context.tokens.author), payload: {},
+      });
+      expect(generated.statusCode).toBe(201);
+      const proposalId = generated.json().proposal.id as string;
+      expect(generated.json().proposal).toMatchObject({ status: 'DRAFT', baseRevision: 1 });
+
+      const reused = await digestApp.inject({
+        method: 'POST', url: `/api/guides/${guideId}/digest-proposals`,
+        headers: authorization(context.tokens.author), payload: {},
+      });
+      expect(reused.statusCode).toBe(200);
+      expect(reused.json().proposal.id).toBe(proposalId);
+      expect(runtime.requests).toHaveLength(1);
+
+      const list = await digestApp.inject({
+        method: 'GET', url: `/api/guides/${guideId}/digest-proposals`,
+        headers: authorization(context.tokens.author),
+      });
+      const detail = await digestApp.inject({
+        method: 'GET', url: `/api/guides/${guideId}/digest-proposals/${proposalId}`,
+        headers: authorization(context.tokens.author),
+      });
+      expect(list.json().items).toHaveLength(1);
+      expect(detail.json().proposal.id).toBe(proposalId);
+
+      const editedProse = await digestApp.inject({
+        method: 'POST', url: `/api/guides/${guideId}/digest-proposals/${proposalId}/apply`,
+        headers: authorization(context.tokens.author),
+        payload: {
+          applySummary: false, acceptedTagLabels: [], acceptMarkdown: true,
+          editedMarkdown: '# 客户端改写',
+        },
+      });
+      expect(editedProse.statusCode).toBe(400);
+
+      const applied = await digestApp.inject({
+        method: 'POST', url: `/api/guides/${guideId}/digest-proposals/${proposalId}/apply`,
+        headers: authorization(context.tokens.author),
+        payload: { applySummary: false, acceptedTagLabels: [], acceptMarkdown: true },
+      });
+      expect(applied.statusCode).toBe(200);
+      expect(applied.json()).toMatchObject({
+        guide: { revision: 1 },
+        proposal: { status: 'APPLIED', acceptedMarkdown: true },
+      });
+
+      const regenerated = await digestApp.inject({
+        method: 'POST', url: `/api/guides/${guideId}/digest-proposals`,
+        headers: authorization(context.tokens.author), payload: { regenerate: true },
+      });
+      expect(regenerated.statusCode).toBe(201);
+      const rejected = await digestApp.inject({
+        method: 'PATCH',
+        url: `/api/guides/${guideId}/digest-proposals/${regenerated.json().proposal.id}/status`,
+        headers: authorization(context.tokens.author), payload: { status: 'REJECTED' },
+      });
+      expect(rejected.statusCode).toBe(200);
+      expect(rejected.json().proposal.status).toBe('REJECTED');
+
+      const reconciled = await digestApp.inject({
+        method: 'POST', url: `/api/guides/${guideId}/flow-snapshot/reconcile`,
+        headers: authorization(context.tokens.author),
+      });
+      expect(reconciled.statusCode).toBe(200);
+      expect(reconciled.json().status.sourceStatus).toBe('READY');
+    } finally {
+      await digestApp.close();
+    }
+  });
+
+  it('keeps ordinary guide APIs available without digest runtime and returns 503 only for generation', async () => {
+    const created = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { workspaceId, title: '无摘要 Runtime 指南' },
+    });
+    const guideId = created.json().guide.id as string;
+    await context.app.inject({
+      method: 'PATCH', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.author),
+      payload: { revision: 0, document: sampleDocument() },
+    });
+
+    expect((await context.app.inject({
+      method: 'GET', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.author),
+    })).statusCode).toBe(200);
+    const generation = await context.app.inject({
+      method: 'POST', url: `/api/guides/${guideId}/digest-proposals`,
+      headers: authorization(context.tokens.author), payload: {},
+    });
+    expect(generation.statusCode).toBe(503);
+    expect(generation.json().code).toBe('GUIDE_DIGEST_RUNTIME_UNAVAILABLE');
+  });
 });
+
+class RouteDigestRuntime implements AgentRuntimeClient {
+  readonly requests: BridgeRunRequestV1[] = [];
+
+  async *run(request: BridgeRunRequestV1): AsyncIterable<BridgeEventV1> {
+    this.requests.push(request);
+    yield {
+      requestId: request.requestId, runId: request.runId, sequence: 1,
+      type: 'GUIDE_DIGEST',
+      payload: { digest: {
+        schemaVersion: 1,
+        shortSummary: `摘要 API 生成结果 ${this.requests.length}`,
+        scope: { audiences: [], businessObjects: [], systems: [] },
+        stageSections: [], keyRules: [], tagSuggestions: [], gaps: [],
+      } },
+    };
+    yield {
+      requestId: request.requestId, runId: request.runId, sequence: 2,
+      type: 'COMPLETED', payload: {},
+    };
+  }
+
+  async cancel(): Promise<void> {}
+  async steer(): Promise<void> {}
+}

@@ -1,0 +1,550 @@
+import type {
+  BridgeEventV1,
+  BridgeRunRequestV1,
+  GuideDigestDraftV1,
+} from '@guideanything/contracts';
+import type { DatabaseSync } from 'node:sqlite';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { createDatabase } from '../../db/client';
+import { migrateDatabase } from '../../db/migrate';
+import type { AgentRuntimeClient } from '../agents/runtime-client';
+import { syncGuideFlowSnapshot } from '../knowledge/flow-indexer';
+import { addTestWorkspaceMember, sampleDocument, seedTestWorkspace } from '../../test/test-app';
+import { addCollaborator, createGuide, updateGuide } from './repository';
+import {
+  createGuideDigestProposal,
+  getGuideDigestProposal,
+  listGuideDigestAuditEvents,
+  listGuideDigestProposals,
+} from './digest-repository';
+import { GuideDigestService } from './digest-service';
+
+describe('GuideDigestService access and snapshot gates', () => {
+  let database: DatabaseSync;
+  let runtime: RecordingRuntime;
+  let service: GuideDigestService;
+  let guideId: string;
+
+  const owner = { id: 'digest-owner', role: 'AUTHOR' };
+  const collaborator = { id: 'digest-collaborator', role: 'EDITOR' };
+  const workspaceEditor = { id: 'digest-workspace-editor', role: 'EDITOR' };
+  const outsider = { id: 'digest-outsider', role: 'AUTHOR' };
+
+  beforeEach(() => {
+    database = createDatabase(':memory:');
+    migrateDatabase(database);
+    seedUsers(database);
+    seedTestWorkspace(database, owner.id, {
+      id: 'digest-workspace', slug: 'digest-workspace', name: '摘要工作区',
+    });
+    addTestWorkspaceMember(database, 'digest-workspace', workspaceEditor.id, 'EDIT');
+
+    const created = createGuide(database, owner.id, 'digest-workspace', {
+      title: '订单审批流程', summary: '现有摘要', tags: ['订单'],
+    });
+    const guide = updateGuide(database, created.id, owner.id, 0, {
+      document: sampleDocument('# 订单审批\n提交订单并完成审批。'),
+    });
+    guideId = guide.id;
+    addCollaborator(database, guideId, owner.id, collaborator.id);
+    syncGuideFlowSnapshot(database, flowContext(guide));
+
+    runtime = new RecordingRuntime();
+    service = new GuideDigestService(database, runtime);
+  });
+
+  afterEach(() => database.close());
+
+  it('allows the guide owner and collaborator to read current READY V2 snapshot metadata', () => {
+    const ownerStatus = service.getFlowSnapshotStatus(owner, guideId);
+    const collaboratorStatus = service.getFlowSnapshotStatus(collaborator, guideId);
+
+    expect(ownerStatus).toEqual({
+      guideRevision: 1,
+      sourceStatus: 'READY',
+      snapshotId: expect.any(String),
+      snapshotRevision: 1,
+      snapshotSchemaVersion: 2,
+      failureCode: null,
+    });
+    expect(collaboratorStatus).toEqual(ownerStatus);
+  });
+
+  it('returns 403 to a metadata-visible workspace editor and 404 to a hidden user', () => {
+    expect(() => service.getFlowSnapshotStatus(workspaceEditor, guideId)).toThrow(expect.objectContaining({
+      statusCode: 403, code: 'FORBIDDEN',
+    }));
+    expect(() => service.getFlowSnapshotStatus(outsider, guideId)).toThrow(expect.objectContaining({
+      statusCode: 404, code: 'GUIDE_NOT_FOUND',
+    }));
+  });
+
+  it('blocks generation before runtime when the current snapshot is missing', async () => {
+    database.prepare('DELETE FROM flow_knowledge_snapshots WHERE guide_id = ?').run(guideId);
+
+    await expect(service.createProposal(owner, guideId, {})).rejects.toMatchObject({
+      statusCode: 409, code: 'FLOW_SNAPSHOT_NOT_READY',
+    });
+    expect(runtime.requests).toHaveLength(0);
+  });
+
+  it('blocks generation before runtime when the flow source failed', async () => {
+    database.prepare(
+      `UPDATE knowledge_sources
+       SET status = 'FAILED', config_json = json_set(config_json, '$.lastFailureCode', 'FLOW_COMPILE_FAILED')
+       WHERE kind = 'WORKSPACE_FLOW'`,
+    ).run();
+
+    await expect(service.createProposal(owner, guideId, {})).rejects.toMatchObject({
+      statusCode: 409, code: 'FLOW_SNAPSHOT_NOT_READY',
+    });
+    expect(service.getFlowSnapshotStatus(owner, guideId)).toMatchObject({
+      sourceStatus: 'FAILED', failureCode: 'FLOW_COMPILE_FAILED',
+    });
+    expect(runtime.requests).toHaveLength(0);
+
+    expect(service.reconcileFlowSnapshot(owner, guideId)).toMatchObject({
+      sourceStatus: 'READY', failureCode: null,
+      guideRevision: 1, snapshotRevision: 1, snapshotSchemaVersion: 2,
+    });
+    expect(runtime.requests).toHaveLength(0);
+  });
+
+  it('blocks generation before runtime when the READY snapshot revision is stale', async () => {
+    updateGuide(database, guideId, owner.id, 1, { summary: '人工更新后的摘要' });
+
+    await expect(service.createProposal(owner, guideId, {})).rejects.toMatchObject({
+      statusCode: 409, code: 'FLOW_SNAPSHOT_NOT_READY',
+    });
+    expect(service.getFlowSnapshotStatus(owner, guideId)).toMatchObject({
+      guideRevision: 2, sourceStatus: 'READY', snapshotRevision: 1,
+    });
+    expect(runtime.requests).toHaveLength(0);
+  });
+
+  it('uses source READY state without confusing its latest-origin revision with draft readiness', async () => {
+    database.prepare(
+      `UPDATE knowledge_sources SET revision = 'published-version-one'
+       WHERE kind = 'WORKSPACE_FLOW'`,
+    ).run();
+    runtime.enqueueDigest(digest());
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(generated.proposal).toMatchObject({ status: 'DRAFT', baseRevision: 1 });
+    expect(runtime.requests).toHaveLength(1);
+  });
+
+  it('reconciles the current draft deterministically without invoking runtime', () => {
+    database.prepare('DELETE FROM flow_knowledge_snapshots WHERE guide_id = ?').run(guideId);
+
+    const status = service.reconcileFlowSnapshot(collaborator, guideId);
+
+    expect(status).toEqual({
+      guideRevision: 1,
+      sourceStatus: 'READY',
+      snapshotId: expect.any(String),
+      snapshotRevision: 1,
+      snapshotSchemaVersion: 2,
+      failureCode: null,
+    });
+    expect(runtime.requests).toHaveLength(0);
+  });
+
+  it('generates once for a collaborator and idempotently reuses the current DRAFT for the owner', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '基于当前快照的结构化摘要' }));
+
+    const generated = await service.createProposal(collaborator, guideId, {});
+    const reused = await service.createProposal(owner, guideId, {});
+
+    expect(generated).toMatchObject({ created: true, proposal: {
+      status: 'DRAFT', baseRevision: 1, bundleRevision: 1,
+      draft: { shortSummary: '基于当前快照的结构化摘要' },
+      markdown: expect.stringContaining('## 流程摘要'),
+    } });
+    expect(reused).toEqual({ created: false, proposal: generated.proposal });
+    expect(runtime.requests).toHaveLength(1);
+    expect(runtime.requests[0]).toMatchObject({
+      type: 'RUN', planVersion: 1, role: 'FOCUSED_WORKER',
+      reasoningEffort: 'MEDIUM', outputKind: 'GUIDE_DIGEST', allowedRoots: [],
+    });
+    expect(runtime.requests[0]!.prompt).toContain('"schemaVersion":2');
+  });
+
+  it('regenerates only after valid output and atomically links a successor to the stale prior DRAFT', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '第一次摘要' }));
+    const prior = (await service.createProposal(owner, guideId, {})).proposal;
+    runtime.enqueueDigest(digest({ shortSummary: '第二次摘要' }));
+
+    const successor = await service.createProposal(owner, guideId, { regenerate: true });
+
+    expect(successor).toMatchObject({ created: true, proposal: {
+      status: 'DRAFT', supersedesProposalId: prior.id,
+      draft: { shortSummary: '第二次摘要' },
+    } });
+    expect(getGuideDigestProposal(database, guideId, prior.id)?.status).toBe('STALE');
+    expect(runtime.requests).toHaveLength(2);
+  });
+
+  it('repairs invalid structured output exactly once, then persists only a safe FAILED proposal', async () => {
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
+
+    const failed = await service.createProposal(owner, guideId, {});
+
+    expect(failed).toMatchObject({ created: true, proposal: {
+      status: 'FAILED', failureCode: 'INVALID_GUIDE_DIGEST_OUTPUT',
+      draft: null, markdown: null,
+      generationMetadata: {
+        modelRole: 'FOCUSED_WORKER', reasoningEffort: 'MEDIUM',
+        outputSchemaVersion: 1, attemptCount: 2, repairAttempted: true,
+        truncatedResourceCount: 0,
+      },
+    } });
+    expect(runtime.requests).toHaveLength(2);
+    expect(runtime.requests[1]!.requestId).not.toBe(runtime.requests[0]!.requestId);
+    expect(runtime.requests[1]!.runId).not.toBe(runtime.requests[0]!.runId);
+    expect(runtime.requests[1]!.prompt).toContain('"schemaRepairNote"');
+    expect(listGuideDigestAuditEvents(database, guideId, failed.proposal.id)).toEqual([
+      expect.objectContaining({
+        event: 'VALIDATION_FAILED',
+        metadata: expect.objectContaining({
+          failureCode: 'INVALID_GUIDE_DIGEST_OUTPUT', attemptCount: 2,
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(failed.proposal.generationMetadata)).not.toContain(runtime.requests[0]!.requestId);
+  });
+
+  it('repairs source validation once and never persists invalid content as a DRAFT', async () => {
+    const invalid = digest({
+      tagSuggestions: [{ label: '虚构标签', category: 'PROCESS', sourceIds: ['invented-source'] }],
+    });
+    runtime.enqueueDigest(invalid);
+    runtime.enqueueDigest(invalid);
+
+    const failed = await service.createProposal(owner, guideId, {});
+
+    expect(failed.proposal).toMatchObject({
+      status: 'FAILED', failureCode: 'DIGEST_SOURCE_INVALID', draft: null, markdown: null,
+    });
+    expect(runtime.requests).toHaveLength(2);
+    expect(listGuideDigestProposals(database, guideId).filter(({ status }) => status === 'DRAFT')).toEqual([]);
+  });
+
+  it('repairs a missing digest output once and persists the valid repaired result', async () => {
+    runtime.enqueueFailure('BRIDGE_OUTPUT_MISSING');
+    runtime.enqueueDigest(digest({ shortSummary: '修复后的有效摘要' }));
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(generated.proposal).toMatchObject({
+      status: 'DRAFT', draft: { shortSummary: '修复后的有效摘要' },
+      generationMetadata: { attemptCount: 2, repairAttempted: true },
+    });
+    expect(runtime.requests).toHaveLength(2);
+  });
+
+  it('does not retry or persist auth/runtime failures', async () => {
+    runtime.enqueueFailure('RUNTIME_AUTH_FAILED');
+
+    await expect(service.createProposal(owner, guideId, {})).rejects.toMatchObject({
+      statusCode: 503, code: 'RUNTIME_AUTH_FAILED',
+    });
+    expect(runtime.requests).toHaveLength(1);
+    expect(listGuideDigestProposals(database, guideId)).toEqual([]);
+  });
+
+  it('keeps a prior valid DRAFT when explicit regeneration fails validation', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '仍然有效的旧摘要' }));
+    const prior = (await service.createProposal(owner, guideId, {})).proposal;
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
+
+    const failed = await service.createProposal(owner, guideId, { regenerate: true });
+
+    expect(failed.proposal).toMatchObject({ status: 'FAILED', supersedesProposalId: null });
+    expect(getGuideDigestProposal(database, guideId, prior.id)?.status).toBe('DRAFT');
+  });
+
+  it('returns a concurrently-created DRAFT instead of persisting a later failed duplicate generation', async () => {
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT', () => {
+      const snapshot = database.prepare(
+        `SELECT id, revision FROM flow_knowledge_snapshots
+         WHERE guide_id = ? AND origin_type = 'DRAFT' ORDER BY revision DESC LIMIT 1`,
+      ).get(guideId) as { id: string; revision: number };
+      createGuideDigestProposal(database, {
+        guideId,
+        workspaceId: 'digest-workspace',
+        baseSnapshotId: snapshot.id,
+        baseRevision: snapshot.revision,
+        bundleRevision: 1,
+        rendererVersion: 'guide-digest-markdown-v1',
+        generationMetadata: { attemptCount: 1 },
+        draft: digest({ shortSummary: '并发成功摘要' }),
+        markdown: '# 并发成功摘要',
+        createdBy: owner.id,
+      });
+    });
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
+
+    const result = await service.createProposal(owner, guideId, {});
+
+    expect(result).toMatchObject({
+      created: false,
+      proposal: { status: 'DRAFT', draft: { shortSummary: '并发成功摘要' } },
+    });
+    expect(listGuideDigestProposals(database, guideId)).toHaveLength(1);
+  });
+
+  it('rechecks guide access for list, read, and reject and writes one rejection audit', async () => {
+    runtime.enqueueDigest(digest());
+    const proposal = (await service.createProposal(owner, guideId, {})).proposal;
+
+    expect(service.listProposals(collaborator, guideId)).toEqual([proposal]);
+    expect(service.getProposal(collaborator, guideId, proposal.id)).toEqual(proposal);
+    expect(() => service.listProposals(workspaceEditor, guideId)).toThrow(expect.objectContaining({
+      statusCode: 403, code: 'FORBIDDEN',
+    }));
+    expect(() => service.getProposal(outsider, guideId, proposal.id)).toThrow(expect.objectContaining({
+      statusCode: 404, code: 'GUIDE_NOT_FOUND',
+    }));
+
+    const rejected = service.rejectProposal(collaborator, guideId, proposal.id);
+    expect(rejected.status).toBe('REJECTED');
+    expect(listGuideDigestAuditEvents(database, guideId, proposal.id).map(({ event }) => event))
+      .toEqual(['GENERATED', 'REJECTED']);
+  });
+
+  it('applies a selected summary and individual proposed tags in one guide revision and one audit', async () => {
+    const documentBefore = database.prepare('SELECT draft_document FROM guides WHERE id = ?').get(guideId);
+    const historyBefore = count(database, 'guide_draft_revisions', 'guide_id', guideId);
+    const sourceId = snapshotSourceId(database, guideId);
+    runtime.enqueueDigest(digest({
+      shortSummary: '新的审核摘要',
+      tagSuggestions: [
+        { label: '审批', category: 'PROCESS', sourceIds: [sourceId] },
+        { label: '风险', category: 'RISK', sourceIds: [sourceId] },
+      ],
+    }));
+    const proposal = (await service.createProposal(owner, guideId, {})).proposal;
+
+    const applied = service.applyProposal(owner, guideId, proposal.id, {
+      applySummary: true,
+      acceptedTagLabels: ['审批'],
+      acceptMarkdown: false,
+    });
+
+    expect(applied.guide).toMatchObject({
+      revision: 2, summary: '新的审核摘要', tags: ['订单', '审批'],
+    });
+    expect(applied.proposal).toMatchObject({
+      status: 'APPLIED', appliedRevision: 2, selectedSummary: true,
+      acceptedTags: ['审批'], acceptedMarkdown: false,
+    });
+    expect(count(database, 'guide_draft_revisions', 'guide_id', guideId)).toBe(historyBefore + 1);
+    expect(listGuideDigestAuditEvents(database, guideId, proposal.id).map(({ event }) => event))
+      .toEqual(['GENERATED', 'APPLIED']);
+    const documentAfter = database.prepare('SELECT draft_document FROM guides WHERE id = ?').get(guideId) as {
+      draft_document: string;
+    };
+    expect(JSON.parse(documentAfter.draft_document)).toEqual(JSON.parse(
+      (documentBefore as { draft_document: string }).draft_document,
+    ));
+    expect(database.prepare(
+      `SELECT COUNT(*) AS count FROM knowledge_fragments WHERE content = ?`,
+    ).get(proposal.markdown)).toEqual({ count: 0 });
+    expect(service.getFlowSnapshotStatus(owner, guideId)).toMatchObject({
+      guideRevision: 2, sourceStatus: 'READY', snapshotRevision: 2, snapshotSchemaVersion: 2,
+    });
+  });
+
+  it('accepts Markdown only without changing the guide revision, history, document, or fragments', async () => {
+    const duplicateTags = ['ERP', 'ｅｒｐ'];
+    const updated = updateGuide(database, guideId, owner.id, 1, { tags: duplicateTags });
+    syncGuideFlowSnapshot(database, flowContext(updated));
+    runtime.enqueueDigest(digest({ shortSummary: '仅接受不可变 Markdown 的摘要' }));
+    const proposal = (await service.createProposal(owner, guideId, {})).proposal;
+    const guideBefore = database.prepare(
+      'SELECT revision, summary, tags_json, draft_document FROM guides WHERE id = ?',
+    ).get(guideId);
+    const historyBefore = count(database, 'guide_draft_revisions', 'guide_id', guideId);
+
+    const applied = service.applyProposal(collaborator, guideId, proposal.id, {
+      applySummary: false,
+      acceptedTagLabels: [],
+      acceptMarkdown: true,
+    });
+
+    expect(applied.guide).toMatchObject({ revision: 2, tags: duplicateTags });
+    expect(applied.proposal).toMatchObject({
+      status: 'APPLIED', appliedRevision: 2, selectedSummary: false,
+      acceptedTags: [], acceptedMarkdown: true,
+    });
+    expect(database.prepare(
+      'SELECT revision, summary, tags_json, draft_document FROM guides WHERE id = ?',
+    ).get(guideId)).toEqual(guideBefore);
+    expect(count(database, 'guide_draft_revisions', 'guide_id', guideId)).toBe(historyBefore);
+    expect(database.prepare(
+      `SELECT COUNT(*) AS count FROM knowledge_fragments WHERE content = ?`,
+    ).get(proposal.markdown)).toEqual({ count: 0 });
+  });
+
+  it('atomically marks a revision-drifted proposal STALE and returns 409', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '即将过期的摘要' }));
+    const proposal = (await service.createProposal(owner, guideId, {})).proposal;
+    updateGuide(database, guideId, owner.id, 1, { summary: '并发人工修改' });
+
+    expect(() => service.applyProposal(owner, guideId, proposal.id, {
+      applySummary: true, acceptedTagLabels: [], acceptMarkdown: false,
+    })).toThrow(expect.objectContaining({
+      statusCode: 409, code: 'GUIDE_DIGEST_PROPOSAL_STALE',
+    }));
+    expect(getGuideDigestProposal(database, guideId, proposal.id)?.status).toBe('STALE');
+    expect(listGuideDigestAuditEvents(database, guideId, proposal.id).map(({ event }) => event))
+      .toEqual(['GENERATED', 'MARKED_STALE']);
+  });
+
+  it('rejects unproposed labels and selections with no effective change without applying', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '现有摘要' }));
+    const proposal = (await service.createProposal(owner, guideId, {})).proposal;
+
+    expect(() => service.applyProposal(owner, guideId, proposal.id, {
+      applySummary: false, acceptedTagLabels: ['未提议'], acceptMarkdown: false,
+    })).toThrow(expect.objectContaining({ statusCode: 400, code: 'GUIDE_DIGEST_TAG_NOT_PROPOSED' }));
+    expect(() => service.applyProposal(owner, guideId, proposal.id, {
+      applySummary: true, acceptedTagLabels: [], acceptMarkdown: false,
+    })).toThrow(expect.objectContaining({ statusCode: 409, code: 'NO_EFFECTIVE_CHANGE' }));
+    expect(getGuideDigestProposal(database, guideId, proposal.id)?.status).toBe('DRAFT');
+  });
+
+  it('preserves every existing tag and rejects an accepted set that would exceed 20 normalized tags', async () => {
+    const existingTags = Array.from({ length: 19 }, (_, index) => `现有标签${index + 1}`);
+    const updated = updateGuide(database, guideId, owner.id, 1, { tags: existingTags });
+    syncGuideFlowSnapshot(database, flowContext(updated));
+    const sourceId = snapshotSourceId(database, guideId);
+    runtime.enqueueDigest(digest({
+      tagSuggestions: [
+        { label: '新增甲', category: 'PROCESS', sourceIds: [sourceId] },
+        { label: '新增乙', category: 'RISK', sourceIds: [sourceId] },
+      ],
+    }));
+    const proposal = (await service.createProposal(owner, guideId, {})).proposal;
+
+    expect(() => service.applyProposal(owner, guideId, proposal.id, {
+      applySummary: false,
+      acceptedTagLabels: ['新增甲', '新增乙'],
+      acceptMarkdown: false,
+    })).toThrow(expect.objectContaining({ statusCode: 400, code: 'GUIDE_TAG_LIMIT_EXCEEDED' }));
+    expect(database.prepare('SELECT tags_json FROM guides WHERE id = ?').get(guideId))
+      .toEqual({ tags_json: JSON.stringify(existingTags) });
+    expect(getGuideDigestProposal(database, guideId, proposal.id)?.status).toBe('DRAFT');
+  });
+});
+
+class RecordingRuntime implements AgentRuntimeClient {
+  readonly requests: BridgeRunRequestV1[] = [];
+  readonly #steps: Array<
+    | { kind: 'DIGEST'; digest: GuideDigestDraftV1 }
+    | { kind: 'FAILURE'; code: string; before?: () => void }
+  > = [];
+
+  enqueueDigest(digest: GuideDigestDraftV1): void {
+    this.#steps.push({ kind: 'DIGEST', digest });
+  }
+
+  enqueueFailure(code: string, before?: () => void): void {
+    this.#steps.push({ kind: 'FAILURE', code, ...(before ? { before } : {}) });
+  }
+
+  async *run(request: BridgeRunRequestV1): AsyncIterable<BridgeEventV1> {
+    this.requests.push(request);
+    const step = this.#steps.shift();
+    if (!step) throw new Error('runtime must not be invoked without a scripted result');
+    if (step.kind === 'FAILURE') {
+      step.before?.();
+      yield {
+        requestId: request.requestId,
+        runId: request.runId,
+        sequence: 1,
+        type: 'FAILED',
+        payload: { code: step.code, message: 'unsafe runtime detail', retryable: false },
+      };
+      return;
+    }
+    yield {
+      requestId: request.requestId,
+      runId: request.runId,
+      sequence: 1,
+      type: 'GUIDE_DIGEST',
+      payload: { digest: step.digest },
+    };
+    yield {
+      requestId: request.requestId,
+      runId: request.runId,
+      sequence: 2,
+      type: 'COMPLETED',
+      payload: {},
+    };
+  }
+
+  async cancel(): Promise<void> {}
+  async steer(): Promise<void> {}
+}
+
+function seedUsers(database: DatabaseSync): void {
+  const insert = database.prepare(
+    `INSERT INTO users (id, email, password_hash, display_name, role, created_at)
+     VALUES (?, ?, 'hash', ?, ?, ?)`,
+  );
+  const now = new Date().toISOString();
+  insert.run('digest-owner', 'digest-owner@example.com', '摘要所有者', 'AUTHOR', now);
+  insert.run('digest-collaborator', 'digest-collaborator@example.com', '摘要协作者', 'EDITOR', now);
+  insert.run('digest-workspace-editor', 'digest-editor@example.com', '工作区编辑者', 'EDITOR', now);
+  insert.run('digest-outsider', 'digest-outsider@example.com', '隐藏用户', 'AUTHOR', now);
+}
+
+function flowContext(guide: ReturnType<typeof updateGuide>) {
+  return {
+    workspaceId: guide.workspaceId,
+    workspaceItemId: guide.workspaceItemId,
+    guideId: guide.id,
+    ownerId: guide.ownerId,
+    title: guide.title,
+    summary: guide.summary,
+    tags: guide.tags,
+    origin: { kind: 'DRAFT' as const, revision: guide.revision },
+    document: guide.document,
+  };
+}
+
+function digest(overrides: Partial<GuideDigestDraftV1> = {}): GuideDigestDraftV1 {
+  return {
+    schemaVersion: 1,
+    shortSummary: '订单从提交到审批完成的流程。',
+    scope: { audiences: [], businessObjects: [], systems: [] },
+    stageSections: [],
+    keyRules: [],
+    tagSuggestions: [],
+    gaps: [],
+    ...overrides,
+  };
+}
+
+function snapshotSourceId(database: DatabaseSync, guideId: string): string {
+  const row = database.prepare(
+    `SELECT snapshot_json FROM flow_knowledge_snapshots
+     WHERE guide_id = ? AND origin_type = 'DRAFT'
+     ORDER BY revision DESC LIMIT 1`,
+  ).get(guideId) as { snapshot_json: string };
+  const snapshot = JSON.parse(row.snapshot_json) as { nodes: Array<{ id: string }> };
+  return snapshot.nodes[0]!.id;
+}
+
+function count(database: DatabaseSync, table: string, field: string, value: string): number {
+  const row = database.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${field} = ?`).get(value) as {
+    count: number;
+  };
+  return row.count;
+}

@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { registerArtifactRoutes } from './modules/artifacts/routes';
+import type { AgentRuntimeClient } from './modules/agents/runtime-client';
 import { registerAuthRoutes } from './modules/auth/routes';
 import { registerConversationAttachmentRoutes } from './modules/conversation-attachments/routes';
 import { registerConversationRoutes, type ConversationRouteRuntime } from './modules/conversations/routes';
@@ -25,6 +26,7 @@ export interface BuildAppOptions {
   logger?: boolean;
   uploadDir?: string;
   agentRuntime?: ConversationRouteRuntime;
+  guideDigestRuntime?: AgentRuntimeClient;
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -70,7 +72,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       options.uploadDir ?? resolve('data/uploads'),
     );
   }
-  await registerGuideRoutes(app, options.database);
+  await registerGuideRoutes(app, options.database, options.guideDigestRuntime);
   await registerWorkspaceEditorialRoutes(app, options.database);
   await registerKnowledgeRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
   await registerConversationAttachmentRoutes(

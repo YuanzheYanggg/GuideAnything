@@ -40,6 +40,7 @@ const app = await buildApp({
   logger: true,
   uploadDir: config.uploadDir,
   agentRuntime,
+  guideDigestRuntime: agentRuntime.client,
 });
 const vaultRefresh = config.santexwellVaultPath
   ? createSantexwellVaultRefreshController({

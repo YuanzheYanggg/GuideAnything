@@ -28,9 +28,13 @@ export interface CreateAgentRuntimeAssemblyOptions {
   trustedSantexwellHarness?: AgentOrchestratorOptions['trustedSantexwellHarness'];
 }
 
+export interface AgentRuntimeAssembly extends ConversationRouteRuntime {
+  client: AgentRuntimeClient;
+}
+
 export function createAgentRuntimeAssembly(
   options: CreateAgentRuntimeAssemblyOptions,
-): ConversationRouteRuntime {
+): AgentRuntimeAssembly {
   if (!options.knowledgeAdapters) {
     throw new Error('Agent production knowledge adapters must be explicitly provided');
   }
@@ -67,6 +71,7 @@ export function createAgentRuntimeAssembly(
   };
 
   return {
+    client: runtime,
     broker,
     scheduleRun,
     close: () => orchestrator.shutdown(),

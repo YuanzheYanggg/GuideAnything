@@ -8,6 +8,7 @@ import {
   seedTestWorkspace,
   type TestContext,
 } from '../../test/test-app';
+import { createGuideDigestProposal } from './digest-repository';
 
 describe('guide permissions', () => {
   let context: TestContext;
@@ -203,5 +204,83 @@ describe('guide permissions', () => {
       method: 'GET', url: searchUrl, headers: authorization(context.tokens.author),
     });
     expect(workspaceOwnerResult.json().items[0]).toMatchObject({ canManageLifecycle: true });
+  });
+
+  it('does not expand workspace membership into digest proposal access', async () => {
+    addTestWorkspaceMember(context.database, workspaceId, context.userIds.otherAuthor, 'EDIT');
+    const created = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { workspaceId, title: '摘要权限指南' },
+    });
+    const guideId = created.json().guide.id as string;
+    await context.app.inject({
+      method: 'PATCH', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.author),
+      payload: { revision: 0, document: sampleDocument('# 摘要权限') },
+    });
+    await context.app.inject({
+      method: 'POST', url: `/api/guides/${guideId}/collaborators`, headers: authorization(context.tokens.author),
+      payload: { userId: context.userIds.editor },
+    });
+    const snapshot = context.database.prepare(
+      `SELECT id, revision FROM flow_knowledge_snapshots
+       WHERE guide_id = ? AND origin_type = 'DRAFT' ORDER BY revision DESC LIMIT 1`,
+    ).get(guideId) as { id: string; revision: number };
+    const proposal = createGuideDigestProposal(context.database, {
+      guideId,
+      workspaceId,
+      baseSnapshotId: snapshot.id,
+      baseRevision: snapshot.revision,
+      bundleRevision: 1,
+      rendererVersion: 'guide-digest-markdown-v1',
+      generationMetadata: { attemptCount: 1, repairAttempted: false },
+      draft: {
+        schemaVersion: 1,
+        shortSummary: '权限测试摘要',
+        scope: { audiences: [], businessObjects: [], systems: [] },
+        stageSections: [], keyRules: [], tagSuggestions: [], gaps: [],
+      },
+      markdown: '# 权限测试摘要',
+      createdBy: context.userIds.author,
+    });
+
+    for (const [method, suffix, payload] of [
+      ['GET', '/flow-snapshot-status', undefined],
+      ['POST', '/flow-snapshot/reconcile', undefined],
+      ['POST', '/digest-proposals', {}],
+      ['GET', '/digest-proposals', undefined],
+      ['GET', `/digest-proposals/${proposal.id}`, undefined],
+      ['PATCH', `/digest-proposals/${proposal.id}/status`, { status: 'REJECTED' }],
+      ['POST', `/digest-proposals/${proposal.id}/apply`, {
+        applySummary: false, acceptedTagLabels: [], acceptMarkdown: true,
+      }],
+    ] as const) {
+      const visibleDenied = await context.app.inject({
+        method,
+        url: `/api/guides/${guideId}${suffix}`,
+        headers: authorization(context.tokens.otherAuthor),
+        ...(payload === undefined ? {} : { payload }),
+      });
+      expect(visibleDenied.statusCode, `${method} ${suffix} visible member`).toBe(403);
+
+      const hiddenDenied = await context.app.inject({
+        method,
+        url: `/api/guides/${guideId}${suffix}`,
+        headers: authorization(context.tokens.learner),
+        ...(payload === undefined ? {} : { payload }),
+      });
+      expect(hiddenDenied.statusCode, `${method} ${suffix} hidden member`).toBe(404);
+    }
+
+    expect((await context.app.inject({
+      method: 'GET', url: `/api/guides/${guideId}/digest-proposals/${proposal.id}`,
+      headers: authorization(context.tokens.editor),
+    })).statusCode).toBe(200);
+    const applied = await context.app.inject({
+      method: 'POST', url: `/api/guides/${guideId}/digest-proposals/${proposal.id}/apply`,
+      headers: authorization(context.tokens.editor),
+      payload: { applySummary: false, acceptedTagLabels: [], acceptMarkdown: true },
+    });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json().proposal.status).toBe('APPLIED');
   });
 });
