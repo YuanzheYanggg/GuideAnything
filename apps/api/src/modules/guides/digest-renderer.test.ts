@@ -78,6 +78,12 @@ describe('guide digest source validation', () => {
       gaps: [{ code: 'SNAPSHOT_DIAGNOSTIC', message: '存在悬空边。', sourceIds: [] }],
     })).gaps[0]?.sourceIds).toEqual([]);
   });
+
+  it('rejects an unanchored snapshot diagnostic when the snapshot has no diagnostics', () => {
+    expect(() => validateGuideDigestSources(snapshot(), draft({
+      gaps: [{ code: 'SNAPSHOT_DIAGNOSTIC', message: '模型虚构的诊断。', sourceIds: [] }],
+    }))).toThrow(expect.objectContaining({ code: 'DIGEST_SOURCE_INVALID' }));
+  });
 });
 
 describe('guide digest Markdown renderer', () => {

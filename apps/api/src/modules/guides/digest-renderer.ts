@@ -30,8 +30,9 @@ export function validateGuideDigestSources(
   ]);
   const resourceIds = new Set(snapshot.resources.map((resource) => resource.id));
   const allowedSourceIds = buildAllowedSourceIds(snapshot);
+  const diagnosticIds = Object.values(snapshot.diagnostics).flat();
   const addressableDiagnosticIds = new Set(
-    Object.values(snapshot.diagnostics).flat().filter((id) => allowedSourceIds.has(id)),
+    diagnosticIds.filter((id) => allowedSourceIds.has(id)),
   );
 
   for (const section of draft.stageSections) {
@@ -45,7 +46,11 @@ export function validateGuideDigestSources(
   draft.keyRules.forEach((rule) => assertSourceIds(allowedSourceIds, rule.sourceIds));
   draft.tagSuggestions.forEach((tag) => assertSourceIds(allowedSourceIds, tag.sourceIds));
   draft.gaps.forEach((gap) => {
-    if (gap.sourceIds.length === 0 && !canBeUnanchoredGap(gap.code, addressableDiagnosticIds.size > 0)) {
+    if (gap.sourceIds.length === 0 && !canBeUnanchoredGap(
+      gap.code,
+      diagnosticIds.length,
+      addressableDiagnosticIds.size,
+    )) {
       throw new GuideDigestSourceValidationError(`待完善项必须引用快照证据：${gap.code}`);
     }
     assertSourceIds(allowedSourceIds, gap.sourceIds);
@@ -65,11 +70,12 @@ export function validateGuideDigestSources(
 
 function canBeUnanchoredGap(
   code: GuideDigestDraftV1['gaps'][number]['code'],
-  hasAddressableDiagnostic: boolean,
+  diagnosticCount: number,
+  addressableDiagnosticCount: number,
 ): boolean {
   return code === 'MISSING_ENTRY'
     || code === 'MISSING_EXIT'
-    || (code === 'SNAPSHOT_DIAGNOSTIC' && !hasAddressableDiagnostic);
+    || (code === 'SNAPSHOT_DIAGNOSTIC' && diagnosticCount > 0 && addressableDiagnosticCount === 0);
 }
 
 export interface RenderGuideDigestInput {
