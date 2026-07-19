@@ -270,21 +270,21 @@ describe('GuideEditor', () => {
 
     fireEvent.change(screen.getByLabelText('指南标题'), { target: { value: '本地编辑的标题' } });
     fireEvent.change(screen.getByLabelText('摘要'), { target: { value: '应用期间的本地摘要' } });
-    fireEvent.change(screen.getByLabelText('标签'), { target: { value: '本地新增' } });
+    fireEvent.change(screen.getByLabelText('标签'), { target: { value: ' erp ，本地新增' } });
     resolveApply?.({
-      guide: { ...emptyGuide, revision: 1, summary: '服务端已应用的摘要', tags: ['ERP', '服务端标签'] },
+      guide: { ...emptyGuide, revision: 1, summary: '服务端已应用的摘要', tags: ['ERP', '服务端标签', ' erp '] },
       proposal: { ...digestProposal(), status: 'APPLIED', appliedRevision: 1 },
     });
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '生成指南总览' })).not.toBeInTheDocument());
     expect(screen.getByLabelText('指南标题')).toHaveValue('本地编辑的标题');
     expect(screen.getByLabelText('摘要')).toHaveValue('应用期间的本地摘要');
-    expect(screen.getByLabelText('标签')).toHaveValue('服务端标签，本地新增');
+    expect(screen.getByLabelText('标签')).toHaveValue('ERP，服务端标签，本地新增');
     expect(screen.getByRole('alert')).toHaveTextContent('摘要应用期间检测到本地修改');
     await waitFor(() => expect(screen.getByRole('button', { name: '生成指南总览' })).toHaveFocus());
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
     await waitFor(() => expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 1, expect.objectContaining({
-      title: '本地编辑的标题', summary: '应用期间的本地摘要', tags: ['服务端标签', '本地新增'],
+      title: '本地编辑的标题', summary: '应用期间的本地摘要', tags: ['ERP', '服务端标签', '本地新增'],
     })));
   });
 

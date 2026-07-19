@@ -1335,18 +1335,29 @@ function mergeAppliedEditorState(
 }
 
 function mergeAppliedTags(beforeApply: readonly string[], latest: readonly string[], authoritative: readonly string[]): string[] {
-  const baseline = new Set(beforeApply);
-  const latestSet = new Set(latest);
-  const locallyRemoved = new Set(beforeApply.filter((tag) => !latestSet.has(tag)));
-  const merged = authoritative.filter((tag) => !locallyRemoved.has(tag));
-  const mergedSet = new Set(merged);
+  const baseline = new Set(beforeApply.map(normalizeTagForMerge));
+  const latestKeys = new Set(latest.map(normalizeTagForMerge));
+  const locallyRemoved = new Set([...baseline].filter((key) => !latestKeys.has(key)));
+  const merged: string[] = [];
+  const mergedKeys = new Set<string>();
+  for (const tag of authoritative) {
+    const key = normalizeTagForMerge(tag);
+    if (!key || locallyRemoved.has(key) || mergedKeys.has(key)) continue;
+    merged.push(tag);
+    mergedKeys.add(key);
+  }
   for (const tag of latest) {
-    if (!baseline.has(tag) && !mergedSet.has(tag)) {
+    const key = normalizeTagForMerge(tag);
+    if (key && !baseline.has(key) && !mergedKeys.has(key)) {
       merged.push(tag);
-      mergedSet.add(tag);
+      mergedKeys.add(key);
     }
   }
   return merged;
+}
+
+function normalizeTagForMerge(tag: string): string {
+  return tag.normalize('NFKC').trim().toLocaleLowerCase('und');
 }
 
 function sameEditorValue(left: unknown, right: unknown): boolean {
