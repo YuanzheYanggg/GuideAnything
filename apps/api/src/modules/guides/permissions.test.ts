@@ -8,7 +8,9 @@ import {
   seedTestWorkspace,
   type TestContext,
 } from '../../test/test-app';
+import { GUIDE_DIGEST_BUNDLE } from '../agents/bundles/guide-digest';
 import { createGuideDigestProposal } from './digest-repository';
+import { DIGEST_RENDERER_VERSION } from './digest-renderer';
 
 describe('guide permissions', () => {
   let context: TestContext;
@@ -230,8 +232,8 @@ describe('guide permissions', () => {
       workspaceId,
       baseSnapshotId: snapshot.id,
       baseRevision: snapshot.revision,
-      bundleRevision: 1,
-      rendererVersion: 'guide-digest-markdown-v1',
+      bundleRevision: GUIDE_DIGEST_BUNDLE.revision,
+      rendererVersion: `guide-digest-markdown-v${DIGEST_RENDERER_VERSION}`,
       generationMetadata: { attemptCount: 1, repairAttempted: false },
       draft: {
         schemaVersion: 1,
