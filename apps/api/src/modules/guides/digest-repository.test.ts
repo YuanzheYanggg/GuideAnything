@@ -142,6 +142,30 @@ describe('guide digest repository', () => {
       .toThrow(expect.objectContaining({ code: 'GUIDE_DIGEST_INVALID_STATE' }));
   });
 
+  it('persists only safe scalar continuity generation metadata', () => {
+    const proposal = createGuideDigestProposal(database, {
+      ...generatedInput(),
+      generationMetadata: {
+        ...generationMetadata(),
+        continuityMode: 'RESIDUAL_CONTEXT',
+        baselineProposalId: 'baseline-proposal-one',
+        baselineRevision: 3,
+        changedSourceCount: 2,
+        continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
+      },
+    });
+
+    expect(proposal.generationMetadata).toMatchObject({
+      continuityMode: 'RESIDUAL_CONTEXT',
+      baselineProposalId: 'baseline-proposal-one',
+      baselineRevision: 3,
+      changedSourceCount: 2,
+      continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
+    });
+    expect(getGuideDigestProposal(database, 'guide-one', proposal.id)?.generationMetadata)
+      .toEqual(proposal.generationMetadata);
+  });
+
   it.each([
     ['rawOutput', { rawOutput: 'raw model output' }],
     ['reasoning', { reasoning: 'hidden reasoning' }],
@@ -152,6 +176,14 @@ describe('guide digest repository', () => {
     ['nested array', { attemptCount: [1] }],
     ['unbounded string', { runtimeMode: 'x'.repeat(201) }],
     ['undefined value', { runtimeMode: undefined }],
+    ['snapshot body', { snapshot: { schemaVersion: 2 } }],
+    ['snapshot diff body', { snapshotDiff: { schemaVersion: 1 } }],
+    ['previous digest body', { previousDigest: draft() }],
+    ['prompt body', { prompt: 'unsafe prompt body' }],
+    ['runtime request ID', { requestId: 'request-one' }],
+    ['runtime run ID', { runId: 'run-one' }],
+    ['invalid continuity mode', { continuityMode: 'UNKNOWN' }],
+    ['invalid continuity fallback', { continuityFallbackReason: 'UNKNOWN' }],
   ])('rejects unsafe generation metadata: %s', (_label, generationMetadata) => {
     expect(() => createGuideDigestProposal(database, {
       ...generatedInput(), generationMetadata,

@@ -188,6 +188,122 @@ describe('GuideDigestService access and snapshot gates', () => {
     expect(runtime.requests[0]!.prompt).toContain('"schemaVersion":2');
   });
 
+  it('preserves unchanged tag suggestions through a direct revision diff and one continuity repair', async () => {
+    const sourceId = snapshotSourceId(database, guideId);
+    const initialTags = [
+      { label: '原料', category: 'OBJECT' as const, sourceIds: [sourceId] },
+      { label: '打样', category: 'PROCESS' as const, sourceIds: [sourceId] },
+    ];
+    runtime.enqueueDigest(digest({ shortSummary: '第一版连续摘要', tagSuggestions: initialTags }));
+    const first = (await service.createProposal(owner, guideId, {})).proposal;
+    service.applyProposal(owner, guideId, first.id, {
+      applySummary: false,
+      acceptedTagLabels: ['原料', '打样'],
+      acceptMarkdown: false,
+    });
+
+    runtime.enqueueDigest(digest({
+      shortSummary: '不稳定摘要',
+      tagSuggestions: [{ label: '无变化依据的新标签', category: 'RISK', sourceIds: [sourceId] }],
+    }));
+    runtime.enqueueDigest(digest({ shortSummary: '稳定摘要', tagSuggestions: [] }));
+    const second = await service.createProposal(owner, guideId, {});
+
+    const secondEnvelope = promptEnvelope(runtime.requests[1]!.prompt);
+    expect(secondEnvelope).toMatchObject({
+      continuity: {
+        baselineProposalId: first.id,
+        baselineRevision: first.baseRevision,
+        previousDigest: { tagSuggestions: initialTags },
+        snapshotDiff: {
+          fromRevision: first.baseRevision,
+          toRevision: first.baseRevision + 1,
+          affectedSourceIds: [],
+        },
+      },
+      snapshot: { tags: ['订单', '原料', '打样'] },
+    });
+    expect(runtime.requests[2]!.prompt).toContain('缺乏变化证据');
+    expect(promptEnvelope(runtime.requests[2]!.prompt).continuity).toEqual(secondEnvelope.continuity);
+    expect(second.proposal).toMatchObject({
+      status: 'DRAFT',
+      draft: { shortSummary: '稳定摘要', tagSuggestions: [] },
+      generationMetadata: {
+        continuityMode: 'RESIDUAL_CONTEXT',
+        baselineProposalId: first.id,
+        baselineRevision: first.baseRevision,
+        changedSourceCount: 0,
+        attemptCount: 2,
+        repairAttempted: true,
+      },
+    });
+    expect(listGuideDigestProposals(database, guideId).filter(({ status }) => status === 'DRAFT'))
+      .toEqual([second.proposal]);
+    const persistedMetadata = JSON.stringify(second.proposal.generationMetadata);
+    expect(persistedMetadata).not.toContain('第一版连续摘要');
+    expect(persistedMetadata).not.toContain('snapshotDiff');
+    expect(persistedMetadata).not.toContain('previousDigest');
+    expect(persistedMetadata).not.toContain(runtime.requests[1]!.requestId);
+  });
+
+  it('skips a latest REJECTED proposal and uses the earlier trusted proposal', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '可信基线摘要' }));
+    const trusted = (await service.createProposal(owner, guideId, {})).proposal;
+    const rejected = createGuideDigestProposal(database, {
+      ...currentProposalIdentity(database, guideId),
+      bundleRevision: GUIDE_DIGEST_BUNDLE.revision + 1,
+      draft: digest({ shortSummary: '不可信拒绝摘要' }),
+      markdown: '# 不可信拒绝摘要',
+      createdBy: owner.id,
+    });
+    service.rejectProposal(owner, guideId, rejected.id);
+    advanceGuide(database, guideId, owner.id, { summary: '第二版人工摘要' });
+    runtime.enqueueDigest(digest({ shortSummary: '基于可信基线' }));
+
+    await service.createProposal(owner, guideId, {});
+
+    expect(promptEnvelope(runtime.requests[1]!.prompt).continuity).toMatchObject({
+      baselineProposalId: trusted.id,
+      baselineRevision: trusted.baseRevision,
+      previousDigest: { shortSummary: '可信基线摘要' },
+    });
+    expect(runtime.requests[1]!.prompt).not.toContain('不可信拒绝摘要');
+  });
+
+  it('uses a STALE proposal as the direct baseline across multiple revision endpoints', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '跨版本基线摘要' }));
+    const baseline = (await service.createProposal(owner, guideId, {})).proposal;
+    advanceGuide(database, guideId, owner.id, { summary: '第二版人工摘要' });
+    expect(() => service.applyProposal(owner, guideId, baseline.id, {
+      applySummary: true, acceptedTagLabels: [], acceptMarkdown: false,
+    })).toThrow(expect.objectContaining({ code: 'GUIDE_DIGEST_PROPOSAL_STALE' }));
+    advanceGuide(database, guideId, owner.id, { summary: '第三版人工摘要' });
+    runtime.enqueueDigest(digest({ shortSummary: '跨版本连续摘要' }));
+
+    await service.createProposal(owner, guideId, {});
+
+    expect(promptEnvelope(runtime.requests[1]!.prompt).continuity).toMatchObject({
+      baselineProposalId: baseline.id,
+      baselineRevision: 1,
+      snapshotDiff: { fromRevision: 1, toRevision: 3 },
+    });
+  });
+
+  it('uses a full prompt and safe baseline-unavailable metadata when no trusted baseline exists', async () => {
+    runtime.enqueueDigest(digest());
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(promptEnvelope(runtime.requests[0]!.prompt)).not.toHaveProperty('continuity');
+    expect(generated.proposal.generationMetadata).toMatchObject({
+      continuityMode: 'FULL',
+      continuityFallbackReason: 'BASELINE_UNAVAILABLE',
+    });
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineProposalId');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineRevision');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('changedSourceCount');
+  });
+
   it('regenerates only after valid output and atomically links a successor to the stale prior DRAFT', async () => {
     runtime.enqueueDigest(digest({ shortSummary: '第一次摘要' }));
     const prior = (await service.createProposal(owner, guideId, {})).proposal;
@@ -201,6 +317,88 @@ describe('GuideDigestService access and snapshot gates', () => {
     } });
     expect(getGuideDigestProposal(database, guideId, prior.id)?.status).toBe('STALE');
     expect(runtime.requests).toHaveLength(2);
+    expect(promptEnvelope(runtime.requests[1]!.prompt).continuity).toMatchObject({
+      baselineProposalId: prior.id,
+      baselineRevision: prior.baseRevision,
+      previousDigest: { shortSummary: '第一次摘要' },
+    });
+    expect(successor.proposal.generationMetadata).toMatchObject({
+      continuityMode: 'RESIDUAL_CONTEXT', baselineProposalId: prior.id,
+    });
+  });
+
+  it('falls back only the oversized continuity request to a full prompt that fits', async () => {
+    const sourceId = snapshotSourceId(database, guideId);
+    const baseline = createGuideDigestProposal(database, {
+      ...currentProposalIdentity(database, guideId),
+      draft: oversizedDigest(sourceId),
+      markdown: '# 大型历史摘要',
+      createdBy: owner.id,
+    });
+    advanceGuide(database, guideId, owner.id, { summary: '适合完整提示的当前摘要' });
+    runtime.enqueueDigest(digest({ shortSummary: '完整回退摘要' }));
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(runtime.requests).toHaveLength(1);
+    expect(promptEnvelope(runtime.requests[0]!.prompt)).not.toHaveProperty('continuity');
+    expect(generated.proposal.generationMetadata).toMatchObject({
+      continuityMode: 'FULL',
+      baselineProposalId: baseline.id,
+      baselineRevision: baseline.baseRevision,
+      continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
+    });
+  });
+
+  it('keeps GUIDE_DIGEST_INPUT_TOO_LARGE when continuity and the full prompt both overflow', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '历史摘要' }));
+    const baseline = (await service.createProposal(owner, guideId, {})).proposal;
+    advanceGuide(database, guideId, owner.id, { summary: '第二版摘要' });
+    const row = database.prepare(
+      `SELECT id, snapshot_json FROM flow_knowledge_snapshots
+       WHERE guide_id = ? AND origin_type = 'DRAFT' ORDER BY revision DESC LIMIT 1`,
+    ).get(guideId) as { id: string; snapshot_json: string };
+    const oversized = JSON.parse(row.snapshot_json) as FlowKnowledgeSnapshotV2;
+    oversized.title = `当前超限标记-${'大'.repeat(300_000)}`;
+    database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+    database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+      .run(JSON.stringify(oversized), row.id);
+
+    const failed = await service.createProposal(owner, guideId, {});
+
+    expect(failed.proposal).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'GUIDE_DIGEST_INPUT_TOO_LARGE',
+      generationMetadata: {
+        continuityMode: 'FULL',
+        baselineProposalId: baseline.id,
+        continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
+      },
+    });
+    expect(runtime.requests).toHaveLength(1);
+    expect(runtime.requests[0]!.prompt).not.toContain('当前超限标记');
+    expect(JSON.stringify(failed.proposal.generationMetadata)).not.toContain('当前超限标记');
+  });
+
+  it('rejects a structurally valid baseline snapshot whose embedded identity mismatches its row', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '身份错误的历史摘要' }));
+    const baseline = (await service.createProposal(owner, guideId, {})).proposal;
+    database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+    const row = database.prepare('SELECT snapshot_json FROM flow_knowledge_snapshots WHERE id = ?')
+      .get(baseline.baseSnapshotId) as { snapshot_json: string };
+    const mismatched = JSON.parse(row.snapshot_json) as FlowKnowledgeSnapshotV2;
+    mismatched.workspaceId = 'other-workspace';
+    database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+      .run(JSON.stringify(mismatched), baseline.baseSnapshotId);
+    advanceGuide(database, guideId, owner.id, { summary: '第二版当前摘要' });
+    runtime.enqueueDigest(digest({ shortSummary: '不使用错误身份基线' }));
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(promptEnvelope(runtime.requests[1]!.prompt)).not.toHaveProperty('continuity');
+    expect(generated.proposal.generationMetadata).toMatchObject({
+      continuityMode: 'FULL', continuityFallbackReason: 'BASELINE_UNAVAILABLE',
+    });
   });
 
   it('repairs invalid structured output exactly once, then persists only a safe FAILED proposal', async () => {
@@ -734,6 +932,35 @@ function digest(overrides: Partial<GuideDigestDraftV1> = {}): GuideDigestDraftV1
     gaps: [],
     ...overrides,
   };
+}
+
+function oversizedDigest(sourceId: string): GuideDigestDraftV1 {
+  return digest({
+    shortSummary: '只用于连续性预算回退的历史摘要',
+    keyRules: Array.from({ length: 200 }, () => ({
+      statement: '规'.repeat(2_000),
+      sourceIds: [sourceId],
+    })),
+  });
+}
+
+function promptEnvelope(prompt: string): Record<string, unknown> {
+  const marker = '<UNTRUSTED_SNAPSHOT_JSON>\n';
+  const markerIndex = prompt.indexOf(marker);
+  if (markerIndex < 0) throw new Error('guide digest prompt is missing its untrusted envelope marker');
+  return JSON.parse(prompt.slice(markerIndex + marker.length)) as Record<string, unknown>;
+}
+
+function advanceGuide(
+  database: DatabaseSync,
+  guideId: string,
+  userId: string,
+  patch: Parameters<typeof updateGuide>[4],
+): ReturnType<typeof updateGuide> {
+  const current = getGuide(database, guideId)!;
+  const updated = updateGuide(database, guideId, userId, current.revision, patch);
+  syncGuideFlowSnapshot(database, flowContext(updated));
+  return updated;
 }
 
 function snapshotSourceId(database: DatabaseSync, guideId: string): string {

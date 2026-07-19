@@ -2,6 +2,7 @@ import {
   FlowKnowledgeSnapshotV2Schema,
   type FlowKnowledgeSnapshotV2,
   type GuideDigestDraftV1,
+  type BridgeRunRequestV1,
 } from '@guideanything/contracts';
 import { normalizeFlowKnowledgeSnapshot } from '@guideanything/canvas-core';
 import { randomUUID } from 'node:crypto';
@@ -16,6 +17,7 @@ import {
   buildGuideDigestInputEnvelope,
   buildGuideDigestPrompt,
   buildGuideDigestValidationRepairNote,
+  type GuideDigestContinuityContext,
 } from '../agents/bundles/guide-digest';
 import type { AgentRuntimeClient } from '../agents/runtime-client';
 import { invokeGuideDigestRuntime } from '../agents/typed-runtime';
@@ -37,6 +39,7 @@ import {
   createFailedGuideDigestProposal,
   createGuideDigestProposal,
   findDraftGuideDigestProposal,
+  findGuideDigestContinuityBaseline,
   getGuideDigestProposal,
   GuideDigestRepositoryError,
   listGuideDigestProposals,
@@ -45,6 +48,11 @@ import {
   rejectGuideDigestProposal,
   type GuideDigestProposal,
 } from './digest-repository';
+import {
+  GuideDigestContinuityValidationError,
+  buildGuideDigestSnapshotDiff,
+  validateGuideDigestTagContinuity,
+} from './digest-continuity';
 import {
   DIGEST_RENDERER_VERSION,
   GuideDigestSourceValidationError,
@@ -95,6 +103,22 @@ interface GenerationMetadata extends Record<string, unknown> {
   attemptCount: number;
   repairAttempted: boolean;
   truncatedResourceCount: number;
+  continuityMode: 'FULL' | 'RESIDUAL_CONTEXT';
+  baselineProposalId?: string;
+  baselineRevision?: number;
+  changedSourceCount?: number;
+  continuityFallbackReason?: 'CONTINUITY_INPUT_TOO_LARGE' | 'BASELINE_UNAVAILABLE';
+}
+
+interface GuideDigestPreparedRequest {
+  request: BridgeRunRequestV1;
+  continuityMode: 'FULL' | 'RESIDUAL_CONTEXT';
+  continuityFallbackReason?: 'CONTINUITY_INPUT_TOO_LARGE' | 'BASELINE_UNAVAILABLE';
+}
+
+interface GuideDigestSelectedContinuity {
+  context: GuideDigestContinuityContext;
+  changedSourceCount: number;
 }
 
 type GenerationResult =
@@ -284,7 +308,8 @@ export class GuideDigestService {
     if (!runtime) {
       throw httpError(503, 'GUIDE_DIGEST_RUNTIME_UNAVAILABLE', '指南摘要生成服务暂不可用');
     }
-    const generation = await generateDigest(runtime, ready);
+    const continuity = resolveGuideDigestContinuity(this.database, ready);
+    const generation = await generateDigest(runtime, ready, continuity);
 
     this.database.exec('BEGIN IMMEDIATE');
     try {
@@ -516,7 +541,14 @@ function proposalGenerationStaleReason(
   return null;
 }
 
-function guideDigestRequest(snapshot: FlowKnowledgeSnapshotV2, repairNote?: string) {
+function guideDigestRequest(
+  snapshot: FlowKnowledgeSnapshotV2,
+  options: {
+    repairNote?: string;
+    continuity?: GuideDigestContinuityContext;
+    continuityFallbackReason?: 'CONTINUITY_INPUT_TOO_LARGE' | 'BASELINE_UNAVAILABLE';
+  } = {},
+): GuideDigestPreparedRequest {
   const request = {
     type: 'RUN' as const,
     requestId: randomUUID(),
@@ -525,13 +557,20 @@ function guideDigestRequest(snapshot: FlowKnowledgeSnapshotV2, repairNote?: stri
     role: GUIDE_DIGEST_BUNDLE.role,
     reasoningEffort: GUIDE_DIGEST_BUNDLE.reasoningEffort,
     outputKind: GUIDE_DIGEST_BUNDLE.outputKind,
-    prompt: buildGuideDigestPrompt(snapshot, repairNote === undefined
-      ? {}
-      : { schemaRepairNote: repairNote }),
+    prompt: buildGuideDigestPrompt(snapshot, {
+      ...(options.repairNote === undefined ? {} : { schemaRepairNote: options.repairNote }),
+      ...(options.continuity === undefined ? {} : { continuity: options.continuity }),
+    }),
     allowedRoots: [],
   };
   assertGuideDigestRuntimeRequestBudget(request);
-  return request;
+  return {
+    request,
+    continuityMode: options.continuity === undefined ? 'FULL' : 'RESIDUAL_CONTEXT',
+    ...(options.continuityFallbackReason === undefined
+      ? {}
+      : { continuityFallbackReason: options.continuityFallbackReason }),
+  };
 }
 
 function rendererVersion(): string {
@@ -547,20 +586,93 @@ function assertSameSnapshot(initial: ReadyGuideSnapshot, current: ReadyGuideSnap
   }
 }
 
+function resolveGuideDigestContinuity(
+  database: DatabaseSync,
+  ready: ReadyGuideSnapshot,
+): GuideDigestSelectedContinuity | null {
+  const baseline = findGuideDigestContinuityBaseline(database, {
+    guideId: ready.guide.id,
+    workspaceId: ready.guide.workspaceId,
+  });
+  if (!baseline?.proposal.draft) return null;
+
+  try {
+    const snapshot = normalizeFlowKnowledgeSnapshot(
+      FlowKnowledgeSnapshotV2Schema.parse(JSON.parse(baseline.snapshotJson)),
+    );
+    if (
+      snapshot.schemaVersion !== 2
+      || snapshot.snapshotId !== baseline.proposal.baseSnapshotId
+      || snapshot.guideId !== baseline.proposal.guideId
+      || snapshot.guideId !== ready.guide.id
+      || snapshot.workspaceId !== baseline.proposal.workspaceId
+      || snapshot.workspaceId !== ready.guide.workspaceId
+      || snapshot.origin.kind !== 'DRAFT'
+      || snapshot.origin.revision !== baseline.proposal.baseRevision
+      || snapshot.origin.revision > ready.guide.revision
+    ) {
+      return null;
+    }
+    const snapshotDiff = buildGuideDigestSnapshotDiff(snapshot, ready.snapshot);
+    return {
+      context: {
+        baselineProposalId: baseline.proposal.id,
+        baselineRevision: baseline.proposal.baseRevision,
+        previousDigest: baseline.proposal.draft,
+        snapshotDiff,
+      },
+      changedSourceCount: snapshotDiff.affectedSourceIds.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function generateDigest(
   runtime: AgentRuntimeClient,
   ready: ReadyGuideSnapshot,
+  selectedContinuity: GuideDigestSelectedContinuity | null,
 ): Promise<GenerationResult> {
+  let prepared: GuideDigestPreparedRequest;
+  let modeMetadata: Pick<
+    GuideDigestPreparedRequest,
+    'continuityMode' | 'continuityFallbackReason'
+  > = selectedContinuity
+    ? { continuityMode: 'RESIDUAL_CONTEXT' }
+    : { continuityMode: 'FULL', continuityFallbackReason: 'BASELINE_UNAVAILABLE' };
   let truncatedResourceCount = 0;
   try {
-    const envelope = buildGuideDigestInputEnvelope(ready.snapshot);
+    if (selectedContinuity) {
+      try {
+        prepared = guideDigestRequest(ready.snapshot, { continuity: selectedContinuity.context });
+      } catch (error) {
+        if (!(error instanceof GuideDigestInputTooLargeError)) throw error;
+        modeMetadata = {
+          continuityMode: 'FULL',
+          continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
+        };
+        prepared = guideDigestRequest(ready.snapshot, {
+          continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
+        });
+      }
+    } else {
+      prepared = guideDigestRequest(ready.snapshot, {
+        continuityFallbackReason: 'BASELINE_UNAVAILABLE',
+      });
+    }
+    modeMetadata = prepared;
+    const envelope = buildGuideDigestInputEnvelope(ready.snapshot, {
+      ...(prepared.continuityMode === 'RESIDUAL_CONTEXT' && selectedContinuity
+        ? { continuity: selectedContinuity.context }
+        : {}),
+    });
     truncatedResourceCount = envelope.truncation.truncatedResourceIds.length;
   } catch (error) {
     if (error instanceof GuideDigestInputTooLargeError) {
       return {
         ok: false,
         failureCode: error.code,
-        metadata: generationMetadata(0, 0),
+        metadata: generationMetadata(0, 0, modeMetadata, selectedContinuity),
       };
     }
     throw error;
@@ -568,10 +680,29 @@ async function generateDigest(
   let repairNote: string | undefined;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
+      if (attempt > 1) {
+        prepared = guideDigestRequest(ready.snapshot, {
+          ...(repairNote === undefined ? {} : { repairNote }),
+          ...(modeMetadata.continuityMode === 'RESIDUAL_CONTEXT' && selectedContinuity
+            ? { continuity: selectedContinuity.context }
+            : {}),
+          ...(modeMetadata.continuityFallbackReason === undefined
+            ? {}
+            : { continuityFallbackReason: modeMetadata.continuityFallbackReason }),
+        });
+      }
       const draft = validateGuideDigestSources(
         ready.snapshot,
-        await invokeGuideDigestRuntime(runtime, guideDigestRequest(ready.snapshot, repairNote)),
+        await invokeGuideDigestRuntime(runtime, prepared.request),
       );
+      if (modeMetadata.continuityMode === 'RESIDUAL_CONTEXT' && selectedContinuity) {
+        validateGuideDigestTagContinuity(
+          ready.snapshot,
+          selectedContinuity.context.previousDigest,
+          selectedContinuity.context.snapshotDiff,
+          draft,
+        );
+      }
       return {
         ok: true,
         draft,
@@ -580,14 +711,24 @@ async function generateDigest(
           draft,
           baseRevision: ready.guide.revision,
         }),
-        metadata: generationMetadata(attempt, truncatedResourceCount),
+        metadata: generationMetadata(
+          attempt,
+          truncatedResourceCount,
+          modeMetadata,
+          selectedContinuity,
+        ),
       };
     } catch (error) {
       if (error instanceof GuideDigestInputTooLargeError) {
         return {
           ok: false,
           failureCode: error.code,
-          metadata: generationMetadata(attempt - 1, truncatedResourceCount),
+          metadata: generationMetadata(
+            attempt - 1,
+            truncatedResourceCount,
+            modeMetadata,
+            selectedContinuity,
+          ),
         };
       }
       const failureCode = repairableFailureCode(error);
@@ -596,7 +737,12 @@ async function generateDigest(
         return {
           ok: false,
           failureCode,
-          metadata: generationMetadata(attempt, truncatedResourceCount),
+          metadata: generationMetadata(
+            attempt,
+            truncatedResourceCount,
+            modeMetadata,
+            selectedContinuity,
+          ),
         };
       }
       repairNote = buildGuideDigestValidationRepairNote(failureCode)
@@ -606,7 +752,12 @@ async function generateDigest(
   throw new Error('unreachable guide digest generation state');
 }
 
-function generationMetadata(attemptCount: number, truncatedResourceCount: number): GenerationMetadata {
+function generationMetadata(
+  attemptCount: number,
+  truncatedResourceCount: number,
+  mode: Pick<GuideDigestPreparedRequest, 'continuityMode' | 'continuityFallbackReason'>,
+  selectedContinuity: GuideDigestSelectedContinuity | null,
+): GenerationMetadata {
   return {
     modelRole: GUIDE_DIGEST_BUNDLE.role,
     reasoningEffort: GUIDE_DIGEST_BUNDLE.reasoningEffort,
@@ -614,11 +765,23 @@ function generationMetadata(attemptCount: number, truncatedResourceCount: number
     attemptCount,
     repairAttempted: attemptCount > 1,
     truncatedResourceCount,
+    continuityMode: mode.continuityMode,
+    ...(selectedContinuity === null
+      ? {}
+      : {
+          baselineProposalId: selectedContinuity.context.baselineProposalId,
+          baselineRevision: selectedContinuity.context.baselineRevision,
+          changedSourceCount: selectedContinuity.changedSourceCount,
+        }),
+    ...(mode.continuityFallbackReason === undefined
+      ? {}
+      : { continuityFallbackReason: mode.continuityFallbackReason }),
   };
 }
 
 function repairableFailureCode(error: unknown): string | null {
   if (error instanceof GuideDigestSourceValidationError) return error.code;
+  if (error instanceof GuideDigestContinuityValidationError) return error.code;
   if (error instanceof ZodError) return 'INVALID_GUIDE_DIGEST_OUTPUT';
   const code = errorCode(error);
   return code === 'INVALID_GUIDE_DIGEST_OUTPUT'

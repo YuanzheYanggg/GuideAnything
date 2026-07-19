@@ -34,6 +34,14 @@ const GenerationMetadataSchema = z.object({
   repairAttempted: MetadataScalarSchema.optional(),
   truncatedResourceCount: MetadataScalarSchema.optional(),
   runtimeMode: MetadataScalarSchema.optional(),
+  continuityMode: z.enum(['FULL', 'RESIDUAL_CONTEXT']).optional(),
+  baselineProposalId: MetadataScalarSchema.optional(),
+  baselineRevision: MetadataScalarSchema.optional(),
+  changedSourceCount: MetadataScalarSchema.optional(),
+  continuityFallbackReason: z.enum([
+    'CONTINUITY_INPUT_TOO_LARGE',
+    'BASELINE_UNAVAILABLE',
+  ]).optional(),
 }).strict();
 const AuditMetadataSchema = z.object({
   reasonCode: MetadataScalarSchema.optional(),
