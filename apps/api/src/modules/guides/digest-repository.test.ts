@@ -1,4 +1,8 @@
-import type { GuideDigestDraftV1 } from '@guideanything/contracts';
+import {
+  FlowKnowledgeSnapshotV2Schema,
+  type FlowKnowledgeSnapshotV2,
+  type GuideDigestDraftV1,
+} from '@guideanything/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -358,6 +362,94 @@ describe('guide digest repository', () => {
       guideId: 'guide-one', workspaceId: 'workspace-one',
     })).toMatchObject({ proposal: { id: safe.id } });
   });
+
+  it('skips a malformed newer snapshot and returns the next trusted baseline', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-19T00:00:01.000Z'));
+    const safe = createGuideDigestProposal(database, generatedInput());
+    vi.setSystemTime(new Date('2026-07-19T00:00:02.000Z'));
+    createGuideDigestProposal(database, {
+      ...generatedInput(), baseSnapshotId: 'snapshot-two', baseRevision: 5,
+    });
+    database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+    database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+      .run('{"schemaVersion":2}', 'snapshot-two');
+
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one',
+    })).toMatchObject({ proposal: { id: safe.id } });
+  });
+
+  it('returns null when every eligible candidate has a malformed snapshot', () => {
+    createGuideDigestProposal(database, generatedInput());
+    database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+    database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+      .run('{"schemaVersion":2}', 'snapshot-one');
+
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one',
+    })).toBeNull();
+  });
+
+  it('breaks same-created-at baseline ties by proposal ID descending', () => {
+    insertHistoricalDraft(database, {
+      id: 'candidate-a', baseSnapshotId: 'snapshot-one', baseRevision: 4, bundleRevision: 3,
+      createdAt: '2026-07-19T00:00:00.000Z',
+    });
+    insertHistoricalDraft(database, {
+      id: 'candidate-z', baseSnapshotId: 'snapshot-one', baseRevision: 4, bundleRevision: 4,
+      createdAt: '2026-07-19T00:00:00.000Z',
+    });
+
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one',
+    })?.proposal.id).toBe('candidate-z');
+  });
+
+  it('excludes candidates whose base revision or snapshot origin no longer match', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-19T00:00:01.000Z'));
+    const safe = createGuideDigestProposal(database, generatedInput());
+    vi.setSystemTime(new Date('2026-07-19T00:00:02.000Z'));
+    const mismatchedRevision = createGuideDigestProposal(database, {
+      ...generatedInput(), baseSnapshotId: 'snapshot-two', baseRevision: 5,
+    });
+    insertDraftSnapshot(database, {
+      id: 'snapshot-four', guideId: 'guide-one', workspaceId: 'workspace-one',
+      workspaceItemId: 'guide-one-item', revision: 6,
+    });
+    vi.setSystemTime(new Date('2026-07-19T00:00:03.000Z'));
+    const publishedOrigin = createGuideDigestProposal(database, {
+      ...generatedInput(), baseSnapshotId: 'snapshot-four', baseRevision: 6,
+    });
+
+    database.exec(`
+      DROP TRIGGER guide_digest_proposals_immutable_content;
+      DROP TRIGGER flow_knowledge_snapshots_immutable;
+    `);
+    database.prepare('UPDATE guide_digest_proposals SET base_revision = ? WHERE id = ?')
+      .run(6, mismatchedRevision.id);
+    insertGuideVersion(database, 'version-one', 'guide-one', 1);
+    database.prepare(
+      `UPDATE flow_knowledge_snapshots
+       SET origin_type = 'PUBLISHED', revision = NULL, version_id = ?, version = ?, snapshot_json = ?
+       WHERE id = ?`,
+    ).run(
+      'version-one',
+      1,
+      JSON.stringify(flowSnapshot({
+        snapshotId: 'snapshot-four', guideId: 'guide-one', workspaceId: 'workspace-one',
+        workspaceItemId: 'guide-one-item', origin: { kind: 'PUBLISHED', versionId: 'version-one', version: 1 },
+      })),
+      'snapshot-four',
+    );
+
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one',
+    })).toMatchObject({ proposal: { id: safe.id } });
+    expect(mismatchedRevision.status).toBe('DRAFT');
+    expect(publishedOrigin.status).toBe('DRAFT');
+  });
 });
 
 function generationIdentity() {
@@ -437,16 +529,14 @@ function seed(database: DatabaseSync): void {
       ) VALUES (?, 'workspace-one', 'GUIDE', ?, ?, '', 'user-one', ?, ?)`,
     ).run(`${guideId}-item`, guideId, guideId, now, now);
   }
-  database.prepare(
-    `INSERT INTO flow_knowledge_snapshots (
-      id, guide_id, workspace_id, origin_type, revision, document_checksum, snapshot_json, created_at
-    ) VALUES ('snapshot-one', 'guide-one', 'workspace-one', 'DRAFT', 4, 'checksum', '{"schemaVersion":2}', ?)`,
-  ).run(now);
-  database.prepare(
-    `INSERT INTO flow_knowledge_snapshots (
-      id, guide_id, workspace_id, origin_type, revision, document_checksum, snapshot_json, created_at
-    ) VALUES ('snapshot-two', 'guide-one', 'workspace-one', 'DRAFT', 5, 'checksum-two', '{"schemaVersion":2}', ?)`,
-  ).run(now);
+  insertDraftSnapshot(database, {
+    id: 'snapshot-one', guideId: 'guide-one', workspaceId: 'workspace-one',
+    workspaceItemId: 'guide-one-item', revision: 4,
+  });
+  insertDraftSnapshot(database, {
+    id: 'snapshot-two', guideId: 'guide-one', workspaceId: 'workspace-one',
+    workspaceItemId: 'guide-one-item', revision: 5,
+  });
   database.prepare(
     `INSERT INTO workspaces (
       id, slug, name, description, icon_key, color_key, owner_id, status, created_at, updated_at
@@ -463,9 +553,109 @@ function seed(database: DatabaseSync): void {
       id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
     ) VALUES ('guide-three-item', 'workspace-two', 'GUIDE', 'guide-three', 'guide-three', '', 'user-one', ?, ?)`,
   ).run(now, now);
+  insertDraftSnapshot(database, {
+    id: 'snapshot-three', guideId: 'guide-three', workspaceId: 'workspace-two',
+    workspaceItemId: 'guide-three-item', revision: 8,
+  });
+}
+
+function insertDraftSnapshot(
+  database: DatabaseSync,
+  input: {
+    id: string;
+    guideId: string;
+    workspaceId: string;
+    workspaceItemId: string;
+    revision: number;
+  },
+): void {
   database.prepare(
     `INSERT INTO flow_knowledge_snapshots (
       id, guide_id, workspace_id, origin_type, revision, document_checksum, snapshot_json, created_at
-    ) VALUES ('snapshot-three', 'guide-three', 'workspace-two', 'DRAFT', 8, 'checksum-three', '{"schemaVersion":2}', ?)`,
-  ).run(now);
+    ) VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?)`,
+  ).run(
+    input.id,
+    input.guideId,
+    input.workspaceId,
+    input.revision,
+    `checksum-${input.id}`,
+    JSON.stringify(flowSnapshot({
+      snapshotId: input.id,
+      guideId: input.guideId,
+      workspaceId: input.workspaceId,
+      workspaceItemId: input.workspaceItemId,
+      origin: { kind: 'DRAFT', revision: input.revision },
+    })),
+    now,
+  );
+}
+
+function insertHistoricalDraft(
+  database: DatabaseSync,
+  input: {
+    id: string;
+    baseSnapshotId: string;
+    baseRevision: number;
+    bundleRevision: number;
+    createdAt: string;
+  },
+): void {
+  database.prepare(
+    `INSERT INTO guide_digest_proposals (
+      id, guide_id, workspace_id, base_snapshot_id, base_revision, bundle_revision,
+      renderer_version, generation_metadata_json, status, draft_json, markdown,
+      created_by, created_at, updated_at
+    ) VALUES (?, 'guide-one', 'workspace-one', ?, ?, ?, 'guide-digest-markdown-v1', ?,
+      'DRAFT', ?, '# 历史摘要', 'user-one', ?, ?)`,
+  ).run(
+    input.id,
+    input.baseSnapshotId,
+    input.baseRevision,
+    input.bundleRevision,
+    JSON.stringify(generationMetadata()),
+    JSON.stringify(draft()),
+    input.createdAt,
+    input.createdAt,
+  );
+}
+
+function insertGuideVersion(database: DatabaseSync, id: string, guideId: string, version: number): void {
+  database.prepare(
+    `INSERT INTO guide_versions (
+      id, guide_id, version, title, summary, tags_json, document_json, search_text, published_by, published_at
+    ) VALUES (?, ?, ?, '已发布指南', '', '[]', '{}', '', 'user-one', ?)`,
+  ).run(id, guideId, version, now);
+}
+
+function flowSnapshot(input: {
+  snapshotId: string;
+  guideId: string;
+  workspaceId: string;
+  workspaceItemId: string;
+  origin: FlowKnowledgeSnapshotV2['origin'];
+}): FlowKnowledgeSnapshotV2 {
+  return FlowKnowledgeSnapshotV2Schema.parse({
+    schemaVersion: 2,
+    snapshotId: input.snapshotId,
+    workspaceId: input.workspaceId,
+    workspaceItemId: input.workspaceItemId,
+    guideId: input.guideId,
+    title: '指南快照',
+    summary: '',
+    tags: [],
+    origin: input.origin,
+    stages: [],
+    lanes: [],
+    nodes: [],
+    resources: [],
+    relations: [],
+    learningPath: [],
+    diagnostics: {
+      danglingFlowEdgeIds: [],
+      invalidResourceRelationIds: [],
+      unreferencedResourceIds: [],
+      invalidLearningTargetIds: [],
+      excludedDerivedNodeIds: [],
+    },
+  });
 }

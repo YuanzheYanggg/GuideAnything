@@ -1,4 +1,5 @@
 import {
+  FlowKnowledgeSnapshotV2Schema,
   GuideDigestDraftV1Schema,
   type GuideDigestDraftV1,
 } from '@guideanything/contracts';
@@ -293,9 +294,10 @@ export function findGuideDigestContinuityBaseline(
 
   for (const row of rows) {
     try {
+      FlowKnowledgeSnapshotV2Schema.parse(JSON.parse(row.snapshot_json));
       return { proposal: mapProposal(row), snapshotJson: row.snapshot_json };
     } catch {
-      // Historical generated output is immutable but may predate the current contract.
+      // Historical generated output or snapshots may predate the current contract.
     }
   }
   return null;
