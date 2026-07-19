@@ -901,7 +901,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       setSaveState(hasUnsavedEditorChanges(merged, authoritative) ? '未保存' : '已保存');
       saveRetryRef.current = false;
       setDigestProposal(result.proposal);
-      if (summaryConflict) setError('摘要应用期间检测到本地修改；已保留本地摘要，服务端建议摘要未覆盖。请确认后重新保存。');
+      if (summaryConflict) setError('摘要应用期间检测到本地修改；已保留本地摘要，服务端建议摘要未覆盖，本地内容将按自动保存规则继续保存。');
       closeDigest();
     } catch (reason) {
       const originalError = reason instanceof Error ? reason.message : '应用提案失败';
