@@ -202,6 +202,37 @@ describe('GuideEditor', () => {
     expect(api.getGuideDigestProposal).toHaveBeenCalledWith('guide-host', 'proposal-1');
   });
 
+  it('stales instead of applying when edits arrive after drain while the final snapshot check is pending', async () => {
+    const api = createApi();
+    const draft = digestProposal();
+    let resolveStatus: ((status: GuideFlowSnapshotStatus) => void) | undefined;
+    (api.createGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue(draft);
+    (api.getFlowSnapshotStatus as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(snapshotStatus(0))
+      .mockResolvedValueOnce(snapshotStatus(0))
+      .mockImplementationOnce(() => new Promise<GuideFlowSnapshotStatus>((resolve) => { resolveStatus = resolve; }));
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByLabelText('摘要');
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('button', { name: '生成结构化摘要' });
+    fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
+    await screen.findByText('建议的流程摘要');
+    fireEvent.click(screen.getByLabelText('采用建议摘要'));
+    fireEvent.click(screen.getByRole('button', { name: '接受并应用到草稿' }));
+    await waitFor(() => expect(api.getFlowSnapshotStatus).toHaveBeenCalledTimes(3));
+    fireEvent.change(screen.getByLabelText('摘要'), { target: { value: '等待期间的新摘要' } });
+    fireEvent.change(screen.getByLabelText('指南标题'), { target: { value: '等待期间的新标题' } });
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    resolveStatus?.(snapshotStatus(0));
+
+    await screen.findByText('提案基于旧 revision，无法应用。请重新生成。');
+    expect(api.applyGuideDigestProposal).not.toHaveBeenCalled();
+    expect(api.saveGuide).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('摘要')).toHaveValue('等待期间的新摘要');
+    expect(screen.getByLabelText('指南标题')).toHaveValue('等待期间的新标题');
+    expect(document.querySelectorAll('.react-flow__node')).toHaveLength(1);
+  });
+
   it('records the guide as recent only after a successful load', async () => {
     const personalApi = createPersonalApiMock();
     render(<GuideEditor guideId="guide-host" api={createApi()} personalApi={personalApi} onBack={vi.fn()} />);

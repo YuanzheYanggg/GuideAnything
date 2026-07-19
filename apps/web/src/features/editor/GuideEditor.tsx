@@ -837,15 +837,21 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     setDigestError('');
     try {
       const saved = await flushPendingSave();
+      const editorStateBeforeVerification = latestEditorStateRef.current;
       const activeProposal = digestProposal?.id === proposalId ? digestProposal : await api.getGuideDigestProposal(guide.id, proposalId);
       const currentStatus = await api.getFlowSnapshotStatus(guide.id);
       setDigestStatus(currentStatus);
-      if (!saved || activeProposal.baseRevision !== saved.revision || currentStatus.guideRevision !== saved.revision || currentStatus.snapshotRevision !== saved.revision) {
+      const changedWhileVerifying = !saved
+        || saveInFlightRef.current !== null
+        || saveRetryRef.current
+        || guideRef.current?.revision !== saved.revision
+        || hasUnsavedEditorChanges(latestEditorStateRef.current, savedEditorStateRef.current);
+      if (changedWhileVerifying || activeProposal.baseRevision !== saved.revision || currentStatus.guideRevision !== saved.revision || currentStatus.snapshotRevision !== saved.revision) {
         setDigestProposal({ ...activeProposal, status: 'STALE' });
         setDigestError('草稿已更新，提案必须重新生成后才能应用');
         return;
       }
-      const beforeApply = latestEditorStateRef.current;
+      const beforeApply = editorStateBeforeVerification;
       const result = await api.applyGuideDigestProposal(guide.id, proposalId, selection);
       guideRef.current = result.guide;
       setGuide(result.guide);
