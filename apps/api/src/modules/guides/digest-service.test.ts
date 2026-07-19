@@ -640,6 +640,44 @@ describe('GuideDigestService access and snapshot gates', () => {
       .filter(({ status }) => status === 'FAILED')).toEqual([]);
   });
 
+  it('falls back to FULL before runtime when a historical proposal ID would be trimmed', async () => {
+    const baselineIdentity = currentProposalIdentity(database, guideId);
+    advanceGuide(database, guideId, owner.id, { summary: '空白历史 ID 后的当前摘要' });
+    insertHistoricalProposalWithId(database, ' proposal-with-padding ', baselineIdentity);
+    runtime.enqueueDigest(digest({ shortSummary: '空白历史 ID 的安全完整生成' }));
+    let generated: Awaited<ReturnType<GuideDigestService['createProposal']>> | undefined;
+    let thrownCode: string | null = null;
+    try {
+      generated = await service.createProposal(owner, guideId, {});
+    } catch (error) {
+      thrownCode = typeof error === 'object' && error !== null && 'code' in error
+        && typeof error.code === 'string'
+        ? error.code
+        : 'UNKNOWN_ERROR';
+    }
+    const continuitySent = runtime.requests[0] === undefined
+      ? null
+      : Object.hasOwn(promptEnvelope(runtime.requests[0].prompt), 'continuity');
+
+    expect({
+      thrownCode,
+      runtimeCount: runtime.requests.length,
+      continuitySent,
+      resultStatus: generated?.proposal.status,
+    }).toEqual({
+      thrownCode: null,
+      runtimeCount: 1,
+      continuitySent: false,
+      resultStatus: 'DRAFT',
+    });
+    expect(generated?.proposal).toMatchObject({
+      draft: { shortSummary: '空白历史 ID 的安全完整生成' },
+      generationMetadata: {
+        continuityMode: 'FULL', continuityFallbackReason: 'BASELINE_UNAVAILABLE',
+      },
+    });
+  });
+
   it('repairs invalid structured output exactly once, then persists only a safe FAILED proposal', async () => {
     runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
     runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');

@@ -631,7 +631,13 @@ function resolveGuideDigestContinuity(
       previousDigest: baseline.proposal.draft,
       snapshotDiff,
     });
-    if (!context.success) return null;
+    if (
+      !context.success
+      || context.data.baselineProposalId !== baseline.proposal.id
+      || context.data.baselineRevision !== baseline.proposal.baseRevision
+    ) {
+      return null;
+    }
     return {
       context: context.data,
       changedSourceCount: snapshotDiff.affectedSourceIds.length,
