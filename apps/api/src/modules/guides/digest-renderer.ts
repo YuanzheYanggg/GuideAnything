@@ -8,6 +8,43 @@ import {
 
 export const DIGEST_RENDERER_VERSION = 1;
 
+const MAX_ID_MANIFEST_CHARACTERS = 80_000;
+
+/** The sole source of truth for model-addressable digest IDs. */
+export interface GuideDigestIdManifest {
+  stageId: string[];
+  targetId: string[];
+  resourceIds: string[];
+  sourceIds: string[];
+}
+
+export function buildGuideDigestIdManifest(snapshot: FlowKnowledgeSnapshotV2): GuideDigestIdManifest {
+  const stageId = sortedIds(snapshot.stages.map((stage) => stage.id));
+  const targetId = sortedIds([
+    ...snapshot.nodes.map((node) => node.id),
+    ...snapshot.resources.map((resource) => resource.id),
+  ]);
+  const resourceIds = sortedIds(snapshot.resources.map((resource) => resource.id));
+  const sourceIds = sortedIds([
+    ...stageId,
+    ...snapshot.lanes.map((lane) => lane.id),
+    ...snapshot.nodes.map((node) => node.id),
+    ...snapshot.relations.map((relation) => relation.id),
+    ...snapshot.learningPath.map((step) => step.id),
+    ...resourceIds,
+    ...snapshot.resources.flatMap((resource) => {
+      if (resource.kind === 'IMAGE') return resource.annotations.map((annotation) => annotation.id);
+      if (resource.kind === 'VIDEO') return resource.keypoints.map((keypoint) => keypoint.id);
+      return [];
+    }),
+  ]);
+  const manifest = { stageId, targetId, resourceIds, sourceIds };
+  if (JSON.stringify(manifest).length > MAX_ID_MANIFEST_CHARACTERS) {
+    throw new Error('指南摘要 ID 清单超出安全大小限制');
+  }
+  return manifest;
+}
+
 export class GuideDigestSourceValidationError extends Error {
   readonly code = 'DIGEST_SOURCE_INVALID';
 
@@ -23,13 +60,11 @@ export function validateGuideDigestSources(
 ): GuideDigestDraftV1 {
   const snapshot = FlowKnowledgeSnapshotV2Schema.parse(untrustedSnapshot);
   const draft = GuideDigestDraftV1Schema.parse(untrustedDraft);
-  const stageIds = new Set(snapshot.stages.map((stage) => stage.id));
-  const targetIds = new Set([
-    ...snapshot.nodes.map((node) => node.id),
-    ...snapshot.resources.map((resource) => resource.id),
-  ]);
-  const resourceIds = new Set(snapshot.resources.map((resource) => resource.id));
-  const allowedSourceIds = buildAllowedSourceIds(snapshot);
+  const idManifest = buildGuideDigestIdManifest(snapshot);
+  const stageIds = new Set(idManifest.stageId);
+  const targetIds = new Set(idManifest.targetId);
+  const resourceIds = new Set(idManifest.resourceIds);
+  const allowedSourceIds = new Set(idManifest.sourceIds);
   const diagnosticIds = Object.values(snapshot.diagnostics).flat();
   const addressableDiagnosticIds = new Set(
     diagnosticIds.filter((id) => allowedSourceIds.has(id)),
@@ -140,21 +175,6 @@ export function renderGuideDigestMarkdown(input: RenderGuideDigestInput): string
   ];
 
   return lines.join('\n');
-}
-
-function buildAllowedSourceIds(snapshot: FlowKnowledgeSnapshotV2): Set<string> {
-  const ids = new Set<string>();
-  snapshot.stages.forEach((stage) => ids.add(stage.id));
-  snapshot.lanes.forEach((lane) => ids.add(lane.id));
-  snapshot.nodes.forEach((node) => ids.add(node.id));
-  snapshot.relations.forEach((relation) => ids.add(relation.id));
-  snapshot.learningPath.forEach((step) => ids.add(step.id));
-  snapshot.resources.forEach((resource) => {
-    ids.add(resource.id);
-    if (resource.kind === 'IMAGE') resource.annotations.forEach((annotation) => ids.add(annotation.id));
-    if (resource.kind === 'VIDEO') resource.keypoints.forEach((keypoint) => ids.add(keypoint.id));
-  });
-  return ids;
 }
 
 function assertKnownId(allowed: Set<string>, id: string, field: string): void {
@@ -306,6 +326,10 @@ function yamlScalar(value: string): string {
 
 function normalizeLabel(value: string): string {
   return value.normalize('NFKC').trim().toLocaleLowerCase('und');
+}
+
+function sortedIds(ids: readonly string[]): string[] {
+  return [...new Set(ids)].sort(compareCodePoints);
 }
 
 function compareCodePoints(left: string, right: string): number {

@@ -598,7 +598,11 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     if (layoutPreview) return;
     setDocument((current) => {
       if (!current || (current.viewport.x === viewport.x && current.viewport.y === viewport.y && current.viewport.zoom === viewport.zoom)) return current;
-      return { ...current, viewport };
+      const next = { ...current, viewport };
+      if (_event === null && !hasUnsavedEditorChanges(latestEditorStateRef.current, savedEditorStateRef.current)) {
+        savedEditorStateRef.current = { ...savedEditorStateRef.current, document: next };
+      }
+      return next;
     });
   }, [layoutPreview]);
 
@@ -747,7 +751,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
         setGuide(updated);
         savedEditorStateRef.current = { document: snapshot.document, title: snapshot.title, summary: snapshot.summary, tags: snapshot.tags };
         const latest = latestEditorStateRef.current;
-        const unchanged = latest.document === snapshot.document && latest.title === snapshot.title && latest.summary === snapshot.summary && latest.tags === snapshot.tags;
+        const unchanged = !hasUnsavedEditorChanges(latest, { document: snapshot.document, title: snapshot.title, summary: snapshot.summary, tags: snapshot.tags });
         setSaveState(unchanged ? '已保存' : '未保存');
         if (!unchanged) saveRetryRef.current = true;
         return updated;
@@ -855,7 +859,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       const result = await api.applyGuideDigestProposal(guide.id, proposalId, selection);
       guideRef.current = result.guide;
       setGuide(result.guide);
-      const unchangedDuringApply = latestEditorStateRef.current.document === beforeApply.document && latestEditorStateRef.current.title === beforeApply.title && latestEditorStateRef.current.summary === beforeApply.summary && latestEditorStateRef.current.tags === beforeApply.tags;
+      const unchangedDuringApply = !hasUnsavedEditorChanges(latestEditorStateRef.current, beforeApply);
       if (unchangedDuringApply) {
         const currentDocument = document ?? result.guide.document;
         savedEditorStateRef.current = { document: currentDocument, title: result.guide.title, summary: result.guide.summary, tags: result.guide.tags };
@@ -1285,7 +1289,11 @@ function hasUnsavedEditorChanges(
   latest: { document: CanvasDocument | null; title: string; summary: string; tags: string[] },
   saved: { document: CanvasDocument | null; title: string; summary: string; tags: string[] },
 ): boolean {
-  return latest.document !== saved.document || latest.title !== saved.title || latest.summary !== saved.summary || latest.tags !== saved.tags;
+  return editorStateFingerprint(latest) !== editorStateFingerprint(saved);
+}
+
+function editorStateFingerprint(state: { document: CanvasDocument | null; title: string; summary: string; tags: string[] }): string {
+  return JSON.stringify({ document: state.document, title: state.title, summary: state.summary, tags: state.tags });
 }
 
 export function removeHierarchyItem(document: CanvasDocument, kind: 'stage' | 'lane', itemId: string): CanvasDocument {

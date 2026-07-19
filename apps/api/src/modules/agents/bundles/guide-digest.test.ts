@@ -9,10 +9,10 @@ import {
 } from './guide-digest';
 
 describe('guide digest bundle', () => {
-  it('declares the app-owned focused-worker contract', () => {
+  it('declares the app-owned focused-worker contract with the source-manifest revision', () => {
     expect(GUIDE_DIGEST_BUNDLE).toEqual({
       id: 'guideanything-guide-digest',
-      revision: 1,
+      revision: 2,
       role: 'FOCUSED_WORKER',
       reasoningEffort: 'MEDIUM',
       outputKind: 'GUIDE_DIGEST',
@@ -58,10 +58,12 @@ describe('guide digest bundle', () => {
       { kind: 'USES_RESOURCE', id: 'relation-private', sourceNodeId: 'node-1', resourceId: 'resource-' },
     ];
 
-    expect(buildGuideDigestInputEnvelope(tied).snapshot.resources.map((resource) => resource.id)).toEqual([
+    const envelope = buildGuideDigestInputEnvelope(tied);
+    expect(envelope.snapshot.resources.map((resource) => resource.id)).toEqual([
       'resource-',
       'resource-😀',
     ]);
+    expect(envelope.idManifest.resourceIds).toEqual(['resource-', 'resource-😀']);
   });
 
   it('serializes only the budgeted snapshot and one optional schema-repair note', () => {
@@ -73,8 +75,14 @@ describe('guide digest bundle', () => {
     if (!json) throw new Error('missing prompt envelope');
     const envelope = JSON.parse(json) as Record<string, unknown>;
 
-    expect(Object.keys(envelope).sort()).toEqual(['schemaRepairNote', 'snapshot', 'truncation']);
+    expect(Object.keys(envelope).sort()).toEqual(['idManifest', 'schemaRepairNote', 'snapshot', 'truncation']);
     expect(envelope.schemaRepairNote).toBe('上一次输出包含未知字段；只修复 JSON schema。');
+    expect(envelope.idManifest).toEqual({
+      stageId: ['stage-1'],
+      targetId: ['node-1', 'resource-a', 'resource-b'],
+      resourceIds: ['resource-a', 'resource-b'],
+      sourceIds: ['annotation-1', 'lane-1', 'learning-1', 'node-1', 'relation-a', 'relation-b', 'resource-a', 'resource-b', 'stage-1'],
+    });
     expect(prompt).not.toContain('generatedMarkdown');
     expect(prompt).not.toContain('file:///');
     expect(prompt).not.toContain('"url"');

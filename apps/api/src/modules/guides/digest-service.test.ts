@@ -159,14 +159,14 @@ describe('GuideDigestService access and snapshot gates', () => {
     const reused = await service.createProposal(owner, guideId, {});
 
     expect(generated).toMatchObject({ created: true, proposal: {
-      status: 'DRAFT', baseRevision: 1, bundleRevision: 1,
+      status: 'DRAFT', baseRevision: 1, bundleRevision: 2,
       draft: { shortSummary: '基于当前快照的结构化摘要' },
       markdown: expect.stringContaining('## 流程摘要'),
     } });
     expect(reused).toEqual({ created: false, proposal: generated.proposal });
     expect(runtime.requests).toHaveLength(1);
     expect(runtime.requests[0]).toMatchObject({
-      type: 'RUN', planVersion: 1, role: 'FOCUSED_WORKER',
+      type: 'RUN', planVersion: 2, role: 'FOCUSED_WORKER',
       reasoningEffort: 'MEDIUM', outputKind: 'GUIDE_DIGEST', allowedRoots: [],
     });
     expect(runtime.requests[0]!.prompt).toContain('"schemaVersion":2');
@@ -230,6 +230,9 @@ describe('GuideDigestService access and snapshot gates', () => {
       status: 'FAILED', failureCode: 'DIGEST_SOURCE_INVALID', draft: null, markdown: null,
     });
     expect(runtime.requests).toHaveLength(2);
+    expect(runtime.requests[1]!.prompt).toContain('逐字复制');
+    expect(runtime.requests[1]!.prompt).toContain('不得改写或杜撰');
+    expect(runtime.requests[1]!.prompt).toContain('"idManifest"');
     expect(listGuideDigestProposals(database, guideId).filter(({ status }) => status === 'DRAFT')).toEqual([]);
   });
 
@@ -296,7 +299,7 @@ describe('GuideDigestService access and snapshot gates', () => {
         workspaceId: 'digest-workspace',
         baseSnapshotId: snapshot.id,
         baseRevision: snapshot.revision,
-        bundleRevision: 1,
+        bundleRevision: 2,
         rendererVersion: 'guide-digest-markdown-v1',
         generationMetadata: { attemptCount: 1 },
         draft: digest({ shortSummary: '并发成功摘要' }),

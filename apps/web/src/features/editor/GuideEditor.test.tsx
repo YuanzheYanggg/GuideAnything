@@ -93,6 +93,44 @@ function openHierarchyPanel() {
 }
 
 describe('GuideEditor', () => {
+  it('does not save after a programmatic React Flow move before generating from the loaded revision', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: ['start'],
+    };
+    const api = createApi({ document });
+    (api.createGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue(digestProposal());
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByLabelText('摘要');
+
+    act(() => reactFlowCallbacks.onMoveEnd?.(null, { x: -184, y: 36, zoom: 0.72 }));
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('button', { name: '生成结构化摘要' });
+    fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
+
+    await waitFor(() => expect(api.createGuideDigestProposal).toHaveBeenCalledWith('guide-host', { regenerate: false }));
+    expect(api.saveGuide).not.toHaveBeenCalled();
+    expect(api.getFlowSnapshotStatus).toHaveBeenLastCalledWith('guide-host');
+  });
+
+  it('still saves a real editor change after a programmatic React Flow move', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: ['start'],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    const summary = await screen.findByLabelText('摘要');
+
+    act(() => reactFlowCallbacks.onMoveEnd?.(null, { x: -184, y: 36, zoom: 0.72 }));
+    fireEvent.change(summary, { target: { value: '真实编辑' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledWith('guide-host', 0, expect.objectContaining({ summary: '真实编辑' })));
+  });
+
   it('saves pending guide fields before explicitly generating a digest and uses the saved revision', async () => {
     const api = createApi();
     (api.saveGuide as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ...emptyGuide, revision: 7, summary: '待保存摘要', document: emptyGuide.document });
