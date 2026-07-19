@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { httpError } from '../../lib/http-error';
 import type { AgentRuntimeClient } from '../agents/runtime-client';
+import { withGuideDigestSourceDescriptors } from './digest-provenance';
 import { GuideDigestService } from './digest-service';
 import { GuideService } from './service';
 
@@ -104,33 +105,52 @@ export async function registerGuideRoutes(
     const result = await digestService.createProposal(request.authUser!, params.id, {
       ...(input.regenerate === undefined ? {} : { regenerate: input.regenerate }),
     });
-    return reply.code(result.created ? 201 : 200).send({ proposal: result.proposal });
+    return reply.code(result.created ? 201 : 200).send({
+      proposal: withGuideDigestSourceDescriptors(database, result.proposal),
+    });
   });
 
   app.get('/api/guides/:id/digest-proposals', { preHandler: app.authenticateRequest }, async (request, reply) => {
     const params = parseOrReply(IdParamsSchema, request.params, reply);
     if (!params) return;
-    return { items: digestService.listProposals(request.authUser!, params.id) };
+    return {
+      items: digestService.listProposals(request.authUser!, params.id)
+        .map((proposal) => withGuideDigestSourceDescriptors(database, proposal)),
+    };
   });
 
   app.get('/api/guides/:id/digest-proposals/:proposalId', { preHandler: app.authenticateRequest }, async (request, reply) => {
     const params = parseOrReply(DigestProposalParamsSchema, request.params, reply);
     if (!params) return;
-    return { proposal: digestService.getProposal(request.authUser!, params.id, params.proposalId) };
+    return {
+      proposal: withGuideDigestSourceDescriptors(
+        database,
+        digestService.getProposal(request.authUser!, params.id, params.proposalId),
+      ),
+    };
   });
 
   app.patch('/api/guides/:id/digest-proposals/:proposalId/status', { preHandler: app.authenticateRequest }, async (request, reply) => {
     const params = parseOrReply(DigestProposalParamsSchema, request.params, reply);
     const input = parseOrReply(RejectDigestProposalSchema, request.body, reply);
     if (!params || !input) return;
-    return { proposal: digestService.rejectProposal(request.authUser!, params.id, params.proposalId) };
+    return {
+      proposal: withGuideDigestSourceDescriptors(
+        database,
+        digestService.rejectProposal(request.authUser!, params.id, params.proposalId),
+      ),
+    };
   });
 
   app.post('/api/guides/:id/digest-proposals/:proposalId/apply', { preHandler: app.authenticateRequest }, async (request, reply) => {
     const params = parseOrReply(DigestProposalParamsSchema, request.params, reply);
     const input = parseOrReply(ApplyDigestProposalSchema, request.body, reply);
     if (!params || !input) return;
-    return digestService.applyProposal(request.authUser!, params.id, params.proposalId, input);
+    const result = digestService.applyProposal(request.authUser!, params.id, params.proposalId, input);
+    return {
+      ...result,
+      proposal: withGuideDigestSourceDescriptors(database, result.proposal),
+    };
   });
 
   app.get('/api/guides/:id/draft-history', { preHandler: app.authenticateRequest }, async (request, reply) => {

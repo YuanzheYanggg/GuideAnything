@@ -1545,6 +1545,7 @@ function digestProposal(): GuideDigestProposal {
     markdown: '# 建议总览', failureCode: null, supersedesProposalId: null, appliedRevision: null,
     selectedSummary: null, acceptedTags: null, acceptedMarkdown: null, createdBy: 'author',
     createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z',
+    sourceDescriptors: [],
   };
 }
 

@@ -381,7 +381,11 @@ describe('guide lifecycle', () => {
       });
       expect(generated.statusCode).toBe(201);
       const proposalId = generated.json().proposal.id as string;
-      expect(generated.json().proposal).toMatchObject({ status: 'DRAFT', baseRevision: 1 });
+      expect(generated.json().proposal).toMatchObject({
+        status: 'DRAFT',
+        baseRevision: 1,
+        sourceDescriptors: [{ id: 'start', kind: 'NODE', label: '步骤：开始' }],
+      });
 
       const reused = await digestApp.inject({
         method: 'POST', url: `/api/guides/${guideId}/digest-proposals`,
@@ -482,7 +486,9 @@ class RouteDigestRuntime implements AgentRuntimeClient {
         schemaVersion: 1,
         shortSummary: `摘要 API 生成结果 ${this.requests.length}`,
         scope: { audiences: [], businessObjects: [], systems: [] },
-        stageSections: [], keyRules: [], tagSuggestions: [], gaps: [],
+        stageSections: [], keyRules: [],
+        tagSuggestions: [{ label: '流程开始', category: 'PROCESS', sourceIds: ['start'] }],
+        gaps: [],
       } },
     };
     yield {

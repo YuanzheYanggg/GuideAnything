@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -16,6 +16,11 @@ const proposal: GuideDigestProposal = {
   markdown: '# 指南总览\n\n安全内容\n\n<script>alert(1)</script>', failureCode: null, supersedesProposalId: null,
   appliedRevision: null, selectedSummary: null, acceptedTags: null, acceptedMarkdown: null,
   createdBy: 'author', createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z',
+  sourceDescriptors: [
+    { id: 'stage-1', kind: 'STAGE', label: '阶段：权威准备阶段' },
+    { id: 'node-1', kind: 'NODE', label: '步骤：权威确认订单' },
+    { id: 'resource-1', kind: 'RESOURCE', label: '图片：权威订单界面' },
+  ],
 };
 
 describe('GuideDigestDialog', () => {
@@ -38,9 +43,10 @@ describe('GuideDigestDialog', () => {
     expect(screen.getByText('安全内容')).toBeInTheDocument();
     expect(screen.getByText('缺少明确出口')).toBeInTheDocument();
     expect(screen.getByText('类别：流程')).toBeInTheDocument();
-    expect(screen.getByText('阶段：准备')).toBeInTheDocument();
-    expect(screen.getByText('步骤：确认订单')).toBeInTheDocument();
-    expect(screen.getByText('资料：确认订单中的关联资料')).toBeInTheDocument();
+    expect(screen.getByText('阶段：权威准备阶段')).toBeInTheDocument();
+    expect(screen.getByText('步骤：权威确认订单')).toBeInTheDocument();
+    expect(screen.getByText('图片：权威订单界面')).toBeInTheDocument();
+    expect(screen.queryByText('阶段：准备')).not.toBeInTheDocument();
     expect(screen.getByText(/sourceIds=stage-1,node-1,resource-1/)).toBeInTheDocument();
   });
 
@@ -121,7 +127,7 @@ describe('GuideDigestDialog', () => {
     await user.keyboard('{Escape}');
 
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(opener).toHaveFocus();
+    await waitFor(() => expect(opener).toHaveFocus());
     opener.remove();
   });
 });

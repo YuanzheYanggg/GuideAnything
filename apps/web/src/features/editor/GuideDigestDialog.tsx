@@ -33,6 +33,11 @@ export type GuideDigestProposal = {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  sourceDescriptors: Array<{
+    id: string;
+    kind: 'STAGE' | 'LANE' | 'NODE' | 'RESOURCE' | 'RELATION' | 'LEARNING_STEP' | 'ANNOTATION' | 'KEYPOINT';
+    label: string;
+  }>;
 };
 
 type GuideDigestSelection = { applySummary: boolean; acceptedTagLabels: string[]; acceptMarkdown: boolean };
@@ -74,7 +79,10 @@ export function GuideDigestDialog({
   const isStale = proposal?.status === 'STALE' || (proposal?.baseRevision !== undefined && proposal.baseRevision !== guide.revision);
   const suggestedTags = proposal?.draft?.tagSuggestions ?? [];
   const selectedTagLabels = useMemo(() => suggestedTags.map((tag) => tag.label).filter((label) => selectedTags.has(label)), [selectedTags, suggestedTags]);
-  const sourceIndex = useMemo(() => buildSourceIndex(proposal?.draft), [proposal?.draft]);
+  const sourceIndex = useMemo(
+    () => new Map((proposal?.sourceDescriptors ?? []).map(({ id, label }) => [id, label])),
+    [proposal?.sourceDescriptors],
+  );
   const sourceIds = useMemo(() => collectSourceIds(proposal?.draft), [proposal?.draft]);
 
   useEffect(() => {
@@ -90,8 +98,9 @@ export function GuideDigestDialog({
   }, []);
 
   const close = () => {
+    const opener = openerRef.current;
     onClose();
-    openerRef.current?.focus();
+    queueMicrotask(() => opener?.focus());
   };
 
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
@@ -169,21 +178,9 @@ export function GuideDigestDialog({
   </div>;
 }
 
-function buildSourceIndex(draft: GuideDigestDraftV1 | null | undefined): ReadonlyMap<string, string> {
-  const sources = new Map<string, string>();
-  for (const section of draft?.stageSections ?? []) {
-    sources.set(section.stageId, `阶段：${section.title}`);
-    for (const step of section.steps) {
-      sources.set(step.targetId, `步骤：${step.title}`);
-      for (const resourceId of step.resourceIds) sources.set(resourceId, `资料：${step.title}中的关联资料`);
-    }
-  }
-  return sources;
-}
-
 function describeSources(sourceIds: readonly string[], sources: ReadonlyMap<string, string>): string[] {
   if (sourceIds.length === 0) return ['未提供可追溯来源'];
-  return sourceIds.map((sourceId) => sources.get(sourceId) ?? '未命名流程证据（来源类型未知）');
+  return sourceIds.map((sourceId) => sources.get(sourceId) ?? '来源信息不可用');
 }
 
 function collectSourceIds(draft: GuideDigestDraftV1 | null | undefined): string[] {
