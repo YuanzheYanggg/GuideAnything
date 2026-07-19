@@ -11,6 +11,8 @@ import { ZodError } from 'zod';
 import { httpError } from '../../lib/http-error';
 import {
   GUIDE_DIGEST_BUNDLE,
+  GuideDigestInputTooLargeError,
+  assertGuideDigestRuntimeRequestBudget,
   buildGuideDigestInputEnvelope,
   buildGuideDigestPrompt,
   buildGuideDigestValidationRepairNote,
@@ -507,7 +509,7 @@ function generationIdentity(ready: ReadyGuideSnapshot) {
 }
 
 function guideDigestRequest(snapshot: FlowKnowledgeSnapshotV2, repairNote?: string) {
-  return {
+  const request = {
     type: 'RUN' as const,
     requestId: randomUUID(),
     runId: randomUUID(),
@@ -520,6 +522,8 @@ function guideDigestRequest(snapshot: FlowKnowledgeSnapshotV2, repairNote?: stri
       : { schemaRepairNote: repairNote }),
     allowedRoots: [],
   };
+  assertGuideDigestRuntimeRequestBudget(request);
+  return request;
 }
 
 function rendererVersion(): string {
@@ -539,7 +543,20 @@ async function generateDigest(
   runtime: AgentRuntimeClient,
   ready: ReadyGuideSnapshot,
 ): Promise<GenerationResult> {
-  const envelope = buildGuideDigestInputEnvelope(ready.snapshot);
+  let truncatedResourceCount = 0;
+  try {
+    const envelope = buildGuideDigestInputEnvelope(ready.snapshot);
+    truncatedResourceCount = envelope.truncation.truncatedResourceIds.length;
+  } catch (error) {
+    if (error instanceof GuideDigestInputTooLargeError) {
+      return {
+        ok: false,
+        failureCode: error.code,
+        metadata: generationMetadata(0, 0),
+      };
+    }
+    throw error;
+  }
   let repairNote: string | undefined;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
@@ -555,16 +572,23 @@ async function generateDigest(
           draft,
           baseRevision: ready.guide.revision,
         }),
-        metadata: generationMetadata(attempt, envelope.truncation.truncatedResourceIds.length),
+        metadata: generationMetadata(attempt, truncatedResourceCount),
       };
     } catch (error) {
+      if (error instanceof GuideDigestInputTooLargeError) {
+        return {
+          ok: false,
+          failureCode: error.code,
+          metadata: generationMetadata(attempt - 1, truncatedResourceCount),
+        };
+      }
       const failureCode = repairableFailureCode(error);
       if (!failureCode) throw runtimeFailure(error);
       if (attempt === 2) {
         return {
           ok: false,
           failureCode,
-          metadata: generationMetadata(attempt, envelope.truncation.truncatedResourceIds.length),
+          metadata: generationMetadata(attempt, truncatedResourceCount),
         };
       }
       repairNote = buildGuideDigestValidationRepairNote(failureCode)

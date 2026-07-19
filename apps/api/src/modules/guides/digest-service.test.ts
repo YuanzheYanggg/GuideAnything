@@ -1,6 +1,7 @@
 import type {
   BridgeEventV1,
   BridgeRunRequestV1,
+  FlowKnowledgeSnapshotV2,
   GuideDigestDraftV1,
 } from '@guideanything/contracts';
 import type { DatabaseSync } from 'node:sqlite';
@@ -159,14 +160,14 @@ describe('GuideDigestService access and snapshot gates', () => {
     const reused = await service.createProposal(owner, guideId, {});
 
     expect(generated).toMatchObject({ created: true, proposal: {
-      status: 'DRAFT', baseRevision: 1, bundleRevision: 3,
+      status: 'DRAFT', baseRevision: 1, bundleRevision: 4,
       draft: { shortSummary: '基于当前快照的结构化摘要' },
       markdown: expect.stringContaining('## 流程摘要'),
     } });
     expect(reused).toEqual({ created: false, proposal: generated.proposal });
     expect(runtime.requests).toHaveLength(1);
     expect(runtime.requests[0]).toMatchObject({
-      type: 'RUN', planVersion: 3, role: 'FOCUSED_WORKER',
+      type: 'RUN', planVersion: 4, role: 'FOCUSED_WORKER',
       reasoningEffort: 'MEDIUM', outputKind: 'GUIDE_DIGEST', allowedRoots: [],
     });
     expect(runtime.requests[0]!.prompt).toContain('"schemaVersion":2');
@@ -251,11 +252,15 @@ describe('GuideDigestService access and snapshot gates', () => {
 
   it('repairs an unanchored gap with its targeted rule', async () => {
     runtime.enqueueDigest(digest({ gaps: [{ code: 'INCOMPLETE_DESCRIPTION', message: '缺少依据。', sourceIds: [] }] }));
-    runtime.enqueueDigest(digest({ gaps: [{ code: 'MISSING_EXIT', message: '缺少出口。', sourceIds: [] }] }));
+    const sourceId = snapshotSourceId(database, guideId);
+    runtime.enqueueDigest(digest({ gaps: [{ code: 'INCOMPLETE_DESCRIPTION', message: '缺少依据。', sourceIds: [sourceId] }] }));
 
     const generated = await service.createProposal(owner, guideId, {});
 
-    expect(generated.proposal).toMatchObject({ status: 'DRAFT', draft: { gaps: [{ code: 'MISSING_EXIT', sourceIds: [] }] } });
+    expect(generated.proposal.status).toBe('DRAFT');
+    expect(generated.proposal.draft?.gaps).toContainEqual({
+      code: 'INCOMPLETE_DESCRIPTION', message: '缺少依据。', sourceIds: [sourceId],
+    });
     expect(runtime.requests[1]!.prompt).toContain('gaps');
     expect(runtime.requests[1]!.prompt).toContain('sourceIds');
   });
@@ -312,6 +317,33 @@ describe('GuideDigestService access and snapshot gates', () => {
     expect(listGuideDigestProposals(database, guideId)).toEqual([]);
   });
 
+  it('persists one safe local input-too-large failure without invoking runtime or repair', async () => {
+    const row = database.prepare(
+      `SELECT id, snapshot_json FROM flow_knowledge_snapshots
+       WHERE guide_id = ? AND origin_type = 'DRAFT' ORDER BY revision DESC LIMIT 1`,
+    ).get(guideId) as { id: string; snapshot_json: string };
+    const oversized = JSON.parse(row.snapshot_json) as FlowKnowledgeSnapshotV2;
+    oversized.title = `超限标记-${'大'.repeat(300_000)}`;
+    database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+    database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+      .run(JSON.stringify(oversized), row.id);
+
+    const failed = await service.createProposal(owner, guideId, {});
+
+    expect(failed.proposal).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'GUIDE_DIGEST_INPUT_TOO_LARGE',
+      draft: null,
+      markdown: null,
+      generationMetadata: {
+        attemptCount: 0,
+        repairAttempted: false,
+      },
+    });
+    expect(runtime.requests).toEqual([]);
+    expect(JSON.stringify(failed.proposal)).not.toContain('超限标记');
+  });
+
   it('atomically stales and links a prior DRAFT when explicit regeneration fails validation', async () => {
     runtime.enqueueDigest(digest({ shortSummary: '仍然有效的旧摘要' }));
     const prior = (await service.createProposal(owner, guideId, {})).proposal;
@@ -339,7 +371,7 @@ describe('GuideDigestService access and snapshot gates', () => {
         workspaceId: 'digest-workspace',
         baseSnapshotId: snapshot.id,
         baseRevision: snapshot.revision,
-        bundleRevision: 3,
+        bundleRevision: 4,
         rendererVersion: 'guide-digest-markdown-v1',
         generationMetadata: { attemptCount: 1 },
         draft: digest({ shortSummary: '并发成功摘要' }),

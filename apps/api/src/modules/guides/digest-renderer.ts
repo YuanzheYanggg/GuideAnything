@@ -6,7 +6,7 @@ import {
   type GuideDigestDraftV1,
 } from '@guideanything/contracts';
 
-export const DIGEST_RENDERER_VERSION = 1;
+export const DIGEST_RENDERER_VERSION = 2;
 
 const MAX_ID_MANIFEST_CHARACTERS = 80_000;
 
@@ -16,6 +16,13 @@ export interface GuideDigestIdManifest {
   targetId: string[];
   resourceIds: string[];
   sourceIds: string[];
+}
+
+export class GuideDigestIdManifestTooLargeError extends Error {
+  constructor() {
+    super('Guide digest ID manifest exceeds the safe size limit');
+    this.name = 'GuideDigestIdManifestTooLargeError';
+  }
 }
 
 export function buildGuideDigestIdManifest(snapshot: FlowKnowledgeSnapshotV2): GuideDigestIdManifest {
@@ -40,7 +47,7 @@ export function buildGuideDigestIdManifest(snapshot: FlowKnowledgeSnapshotV2): G
   ]);
   const manifest = { stageId, targetId, resourceIds, sourceIds };
   if (JSON.stringify(manifest).length > MAX_ID_MANIFEST_CHARACTERS) {
-    throw new Error('指南摘要 ID 清单超出安全大小限制');
+    throw new GuideDigestIdManifestTooLargeError();
   }
   return manifest;
 }
@@ -51,7 +58,10 @@ export type GuideDigestSourceValidationReason =
   | 'UNKNOWN_RESOURCE_ID'
   | 'UNKNOWN_SOURCE_ID'
   | 'UNANCHORED_GAP'
-  | 'DUPLICATE_TAG';
+  | 'DUPLICATE_TAG'
+  | 'CONTRADICTORY_STRUCTURAL_GAP'
+  | 'STEP_STAGE_MISMATCH'
+  | 'STEP_RESOURCE_MISMATCH';
 
 export class GuideDigestSourceValidationError extends Error {
   readonly code: GuideDigestSourceValidationReason;
@@ -74,6 +84,18 @@ export function validateGuideDigestSources(
   const targetIds = new Set(idManifest.targetId);
   const resourceIds = new Set(idManifest.resourceIds);
   const allowedSourceIds = new Set(idManifest.sourceIds);
+  const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+  const resourceById = new Map(snapshot.resources.map((resource) => [resource.id, resource]));
+  const resourceIdsByNodeId = new Map<string, Set<string>>();
+  const stageIdsByResourceId = new Map<string, Set<string>>();
+  const usedResourceIds = new Set<string>();
+  for (const relation of snapshot.relations) {
+    if (relation.kind !== 'USES_RESOURCE') continue;
+    addToSetMap(resourceIdsByNodeId, relation.sourceNodeId, relation.resourceId);
+    usedResourceIds.add(relation.resourceId);
+    const stageId = nodeById.get(relation.sourceNodeId)?.stage?.id;
+    if (stageId) addToSetMap(stageIdsByResourceId, relation.resourceId, stageId);
+  }
   const diagnosticIds = Object.values(snapshot.diagnostics).flat();
   const addressableDiagnosticIds = new Set(
     diagnosticIds.filter((id) => allowedSourceIds.has(id)),
@@ -84,12 +106,40 @@ export function validateGuideDigestSources(
     for (const step of section.steps) {
       assertKnownId(targetIds, step.targetId, 'UNKNOWN_TARGET_ID');
       step.resourceIds.forEach((id) => assertKnownId(resourceIds, id, 'UNKNOWN_RESOURCE_ID'));
+      const node = nodeById.get(step.targetId);
+      if (node && node.stage?.id !== section.stageId) {
+        throw new GuideDigestSourceValidationError('STEP_STAGE_MISMATCH');
+      }
+      const resource = resourceById.get(step.targetId);
+      const representedStageIds = resource ? stageIdsByResourceId.get(resource.id) : undefined;
+      if (
+        resource
+        && usedResourceIds.has(resource.id)
+        && !representedStageIds?.has(section.stageId)
+      ) {
+        throw new GuideDigestSourceValidationError('STEP_STAGE_MISMATCH');
+      }
+      if (node) {
+        const representedResourceIds = resourceIdsByNodeId.get(node.id) ?? new Set<string>();
+        if (step.resourceIds.some((id) => !representedResourceIds.has(id))) {
+          throw new GuideDigestSourceValidationError('STEP_RESOURCE_MISMATCH');
+        }
+      }
     }
   }
 
   draft.keyRules.forEach((rule) => assertSourceIds(allowedSourceIds, rule.sourceIds));
   draft.tagSuggestions.forEach((tag) => assertSourceIds(allowedSourceIds, tag.sourceIds));
-  draft.gaps.forEach((gap) => {
+  const structuralGaps = deterministicStructuralGaps(snapshot);
+  const structuralGapKeys = new Set(structuralGaps.map(structuralGapKey));
+  const modelGaps = draft.gaps.filter((gap) => {
+    if (!isStructuralGap(gap.code)) return true;
+    if (!structuralGapKeys.has(structuralGapKey(gap))) {
+      throw new GuideDigestSourceValidationError('CONTRADICTORY_STRUCTURAL_GAP');
+    }
+    return false;
+  });
+  modelGaps.forEach((gap) => {
     if (gap.sourceIds.length === 0 && !canBeUnanchoredGap(
       gap.code,
       diagnosticIds.length,
@@ -109,7 +159,45 @@ export function validateGuideDigestSources(
     normalizedTagLabels.add(key);
   }
 
-  return draft;
+  return { ...draft, gaps: [...modelGaps, ...structuralGaps] };
+}
+
+function deterministicStructuralGaps(
+  snapshot: FlowKnowledgeSnapshotV2,
+): GuideDigestDraftV1['gaps'] {
+  const result: GuideDigestDraftV1['gaps'] = [];
+  if (!snapshot.nodes.some((node) => node.isEntry)) {
+    result.push({ code: 'MISSING_ENTRY', message: '流程没有明确入口节点。', sourceIds: [] });
+  }
+  if (!snapshot.nodes.some((node) => node.isExit)) {
+    result.push({ code: 'MISSING_EXIT', message: '流程没有明确出口节点。', sourceIds: [] });
+  }
+  const occupiedStageIds = new Set(
+    snapshot.nodes.flatMap((node) => node.stage ? [node.stage.id] : []),
+  );
+  [...snapshot.stages]
+    .sort((left, right) => left.order - right.order || compareCodePoints(left.id, right.id))
+    .filter((stage) => !occupiedStageIds.has(stage.id))
+    .forEach((stage) => result.push({
+      code: 'EMPTY_STAGE',
+      message: `阶段“${stage.title}”没有业务节点。`,
+      sourceIds: [stage.id],
+    }));
+  return result;
+}
+
+function isStructuralGap(code: GuideDigestDraftV1['gaps'][number]['code']): boolean {
+  return code === 'MISSING_ENTRY' || code === 'MISSING_EXIT' || code === 'EMPTY_STAGE';
+}
+
+function structuralGapKey(gap: GuideDigestDraftV1['gaps'][number]): string {
+  return `${gap.code}\u0000${gap.sourceIds.join('\u0000')}`;
+}
+
+function addToSetMap(map: Map<string, Set<string>>, key: string, value: string): void {
+  const values = map.get(key) ?? new Set<string>();
+  values.add(value);
+  map.set(key, values);
 }
 
 function canBeUnanchoredGap(

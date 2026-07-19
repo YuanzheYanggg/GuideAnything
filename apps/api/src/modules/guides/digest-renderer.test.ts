@@ -27,7 +27,7 @@ describe('guide digest source validation', () => {
     ['invented step target', { stageSections: [{ ...draft().stageSections[0]!, steps: [{ ...draft().stageSections[0]!.steps[0]!, targetId: 'invented-target' }] }] }, 'UNKNOWN_TARGET_ID'],
     ['invented resource', { stageSections: [{ ...draft().stageSections[0]!, steps: [{ ...draft().stageSections[0]!.steps[0]!, resourceIds: ['invented-resource'] }] }] }, 'UNKNOWN_RESOURCE_ID'],
     ['invented tag evidence', { tagSuggestions: [{ label: '打样', category: 'PROCESS', sourceIds: ['invented-source'] }] }, 'UNKNOWN_SOURCE_ID'],
-    ['supplied invalid gap evidence', { gaps: [{ code: 'MISSING_EXIT', message: '缺少出口。', sourceIds: ['invented-source'] }] }, 'UNKNOWN_SOURCE_ID'],
+    ['supplied invalid gap evidence', { gaps: [{ code: 'INCOMPLETE_DESCRIPTION', message: '缺少说明。', sourceIds: ['invented-source'] }] }, 'UNKNOWN_SOURCE_ID'],
   ])('rejects %s with a safe reason', (_label, overrides, code) => {
     expect(() => validateGuideDigestSources(snapshot(), draft(overrides))).toThrow(expect.objectContaining({
       code,
@@ -53,9 +53,11 @@ describe('guide digest source validation', () => {
     expect(() => validateGuideDigestSources(snapshot(), draft({
       gaps: [{ code: 'INCOMPLETE_DESCRIPTION', message: '说明不完整。', sourceIds: [] }],
     }))).toThrow(expect.objectContaining({ code: 'UNANCHORED_GAP' }));
-    expect(validateGuideDigestSources(snapshot(), draft({
+    const missingExit = snapshot();
+    missingExit.nodes = missingExit.nodes.map((node) => ({ ...node, isExit: false }));
+    expect(validateGuideDigestSources(missingExit, draft({
       gaps: [{ code: 'MISSING_EXIT', message: '缺少出口。', sourceIds: [] }],
-    })).gaps[0]?.sourceIds).toEqual([]);
+    })).gaps).toContainEqual({ code: 'MISSING_EXIT', message: '流程没有明确出口节点。', sourceIds: [] });
   });
 
   it('requires evidence for a snapshot diagnostic when its diagnostic ID is addressable', () => {
@@ -84,6 +86,77 @@ describe('guide digest source validation', () => {
       gaps: [{ code: 'SNAPSHOT_DIAGNOSTIC', message: '模型虚构的诊断。', sourceIds: [] }],
     }))).toThrow(expect.objectContaining({ code: 'UNANCHORED_GAP' }));
   });
+
+  it('replaces model structural gaps with exact deterministic missing-entry, missing-exit, and empty-stage facts', () => {
+    const structurallyIncomplete = snapshot();
+    const emptyStage = { id: 'stage-empty', title: '归档', order: 2 };
+    structurallyIncomplete.stages.push(emptyStage);
+    structurallyIncomplete.nodes = structurallyIncomplete.nodes.map((node) => ({
+      ...node,
+      isEntry: false,
+      isExit: false,
+    }));
+
+    const parsed = validateGuideDigestSources(structurallyIncomplete, draft({ gaps: [] }));
+
+    expect(parsed.gaps).toEqual([
+      { code: 'MISSING_ENTRY', message: '流程没有明确入口节点。', sourceIds: [] },
+      { code: 'MISSING_EXIT', message: '流程没有明确出口节点。', sourceIds: [] },
+      { code: 'EMPTY_STAGE', message: '阶段“归档”没有业务节点。', sourceIds: ['stage-empty'] },
+    ]);
+  });
+
+  it('rejects a model-authored structural gap that contradicts the snapshot graph', () => {
+    expect(() => validateGuideDigestSources(snapshot(), draft({
+      gaps: [{ code: 'MISSING_ENTRY', message: '模型声称缺少入口。', sourceIds: [] }],
+    }))).toThrow(expect.objectContaining({ code: 'CONTRADICTORY_STRUCTURAL_GAP' }));
+  });
+
+  it.each([
+    ['node stage', {
+      stageSections: [{
+        ...draft().stageSections[0]!,
+        stageId: 'stage-prepare',
+        steps: [{ ...draft().stageSections[0]!.steps[0]!, targetId: 'node-review' }],
+      }],
+    }, 'STEP_STAGE_MISMATCH'],
+    ['resource stage', {
+      stageSections: [{
+        ...draft().stageSections[0]!,
+        stageId: 'stage-prepare',
+        steps: [{ ...draft().stageSections[0]!.steps[0]!, targetId: 'resource-image', resourceIds: [] }],
+      }],
+    }, 'STEP_STAGE_MISMATCH'],
+    ['node resource relation', {
+      stageSections: [{
+        ...draft().stageSections[0]!,
+        steps: [{ ...draft().stageSections[0]!.steps[0]!, resourceIds: ['resource-note'] }],
+      }],
+    }, 'STEP_RESOURCE_MISMATCH'],
+  ])('rejects a deterministic %s mismatch instead of trusting the model', (_label, overrides, code) => {
+    expect(() => validateGuideDigestSources(snapshot(), draft(overrides))).toThrow(expect.objectContaining({ code }));
+  });
+
+  it.each([
+    ['unassigned node', 'node-start'],
+    ['resource used only by an unassigned node', 'resource-note'],
+  ])('does not let the model assign an %s to a stage', (_label, targetId) => {
+    const unassigned = snapshot();
+    unassigned.nodes = unassigned.nodes.map((node) => (
+      node.id === 'node-start' ? { ...node, stage: null } : node
+    ));
+    const section = draft().stageSections.find(({ stageId }) => stageId === 'stage-prepare')!;
+    const untrusted = draft({
+      stageSections: [{
+        ...section,
+        steps: [{ ...section.steps[0]!, targetId, resourceIds: targetId === 'node-start' ? ['resource-note'] : [] }],
+      }],
+    });
+
+    expect(() => validateGuideDigestSources(unassigned, untrusted)).toThrow(expect.objectContaining({
+      code: 'STEP_STAGE_MISMATCH',
+    }));
+  });
 });
 
 describe('guide digest Markdown renderer', () => {
@@ -94,7 +167,7 @@ describe('guide digest Markdown renderer', () => {
       baseRevision: 180,
     });
 
-    expect(DIGEST_RENDERER_VERSION).toBe(1);
+    expect(DIGEST_RENDERER_VERSION).toBe(2);
     expect(markdown).toBe(String.raw`---
 schema: guide-digest-v1
 guideId: guide-id

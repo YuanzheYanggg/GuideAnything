@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import {
   GUIDE_DIGEST_BUNDLE,
   GUIDE_DIGEST_TRUSTED_INSTRUCTION,
+  GuideDigestInputTooLargeError,
+  assertGuideDigestRuntimeRequestBudget,
   buildGuideDigestInputEnvelope,
   buildGuideDigestPrompt,
 } from './guide-digest';
@@ -12,7 +14,7 @@ describe('guide digest bundle', () => {
   it('declares the app-owned focused-worker contract with the source-manifest revision', () => {
     expect(GUIDE_DIGEST_BUNDLE).toEqual({
       id: 'guideanything-guide-digest',
-      revision: 3,
+      revision: 4,
       role: 'FOCUSED_WORKER',
       reasoningEffort: 'MEDIUM',
       outputKind: 'GUIDE_DIGEST',
@@ -99,6 +101,75 @@ describe('guide digest bundle', () => {
     };
 
     expect(() => buildGuideDigestPrompt(unsafe as FlowKnowledgeSnapshotV2)).toThrow();
+  });
+
+  it('budgets the full serialized runtime request, including oversized non-resource snapshot metadata', () => {
+    const oversized = snapshot();
+    oversized.title = '超'.repeat(4_000);
+    const prompt = buildGuideDigestPrompt(oversized);
+
+    expect(() => assertGuideDigestRuntimeRequestBudget({
+      type: 'RUN',
+      requestId: 'request-id',
+      runId: 'run-id',
+      planVersion: 4,
+      role: 'FOCUSED_WORKER',
+      reasoningEffort: 'MEDIUM',
+      outputKind: 'GUIDE_DIGEST',
+      prompt,
+      allowedRoots: [],
+    }, 2_000)).toThrow(expect.objectContaining({
+      code: 'GUIDE_DIGEST_INPUT_TOO_LARGE',
+    }));
+  });
+
+  it.each([
+    ['nodes', (value: FlowKnowledgeSnapshotV2) => {
+      value.nodes[0] = { ...value.nodes[0]!, description: '节点'.repeat(2_500) };
+    }],
+    ['relations', (value: FlowKnowledgeSnapshotV2) => {
+      value.relations = Array.from({ length: 12 }, (_, index) => ({
+        kind: 'FLOW' as const,
+        id: `relation-${index}`,
+        sourceNodeId: 'node-1',
+        targetNodeId: 'node-1',
+        label: '关系'.repeat(100),
+      }));
+    }],
+    ['annotations', (value: FlowKnowledgeSnapshotV2) => {
+      const image = value.resources.find((resource) => resource.kind === 'IMAGE');
+      if (!image || image.kind !== 'IMAGE') throw new Error('missing image fixture');
+      image.annotations = Array.from({ length: 20 }, (_, index) => ({
+        id: `annotation-${index}`,
+        order: index,
+        title: '标注'.repeat(100),
+        shape: 'POINT' as const,
+        region: { x: 0.2, y: 0.4 },
+      }));
+    }],
+  ])('includes oversized valid %s in the full request budget', (_label, mutate) => {
+    const oversized = snapshot();
+    mutate(oversized);
+    const prompt = buildGuideDigestPrompt(oversized);
+
+    expect(() => assertGuideDigestRuntimeRequestBudget({ prompt }, 2_000)).toThrow(
+      GuideDigestInputTooLargeError,
+    );
+  });
+
+  it('maps an oversized ID manifest to the same safe local input error', () => {
+    const oversized = snapshot();
+    oversized.nodes = Array.from({ length: 450 }, (_, index) => ({
+      ...oversized.nodes[0]!,
+      id: `node-${index}-${'x'.repeat(190)}`,
+      locator: locator(`node-${index}-${'x'.repeat(190)}`),
+      isEntry: index === 0,
+      isExit: index === 449,
+    }));
+    oversized.relations = [];
+    oversized.learningPath = [];
+
+    expect(() => buildGuideDigestPrompt(oversized)).toThrow(GuideDigestInputTooLargeError);
   });
 });
 
