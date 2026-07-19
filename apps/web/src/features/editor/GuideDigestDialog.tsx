@@ -97,6 +97,19 @@ export function GuideDigestDialog({
     focusableElements(dialogRef.current)?.[0]?.focus();
   }, []);
 
+  useEffect(() => {
+    const handleEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || busy || generating) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const opener = openerRef.current;
+      onClose();
+      queueMicrotask(() => opener?.focus());
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [busy, generating, onClose]);
+
   const close = () => {
     const opener = openerRef.current;
     onClose();
@@ -104,12 +117,6 @@ export function GuideDigestDialog({
   };
 
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!busy && !generating) close();
-      return;
-    }
     if (event.key !== 'Tab') return;
     const focusable = focusableElements(dialogRef.current);
     if (focusable.length === 0) {

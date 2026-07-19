@@ -130,4 +130,32 @@ describe('GuideDigestDialog', () => {
     await waitFor(() => expect(opener).toHaveFocus());
     opener.remove();
   });
+
+  it('closes on Escape even when focus has temporarily left the dialog', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const opener = document.createElement('button');
+    document.body.append(opener);
+    opener.focus();
+    render(<GuideDigestDialog
+      guide={{ id: 'guide-1', revision: 4, summary: '当前摘要', tags: ['ERP'] }}
+      status={{ guideRevision: 4, sourceStatus: 'READY', snapshotId: 'snapshot-1', snapshotRevision: 4, snapshotSchemaVersion: 2, failureCode: null }}
+      proposal={proposal}
+      onReconcile={vi.fn()}
+      onGenerate={vi.fn()}
+      onReject={vi.fn()}
+      onApply={vi.fn()}
+      onClose={onClose}
+    />);
+
+    document.body.tabIndex = -1;
+    document.body.focus();
+    expect(document.body).toHaveFocus();
+    await user.keyboard('{Escape}');
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(opener).toHaveFocus());
+    document.body.removeAttribute('tabindex');
+    opener.remove();
+  });
 });
