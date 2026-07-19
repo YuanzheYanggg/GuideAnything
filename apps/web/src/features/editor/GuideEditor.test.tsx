@@ -252,7 +252,7 @@ describe('GuideEditor', () => {
     expect(screen.getByLabelText('摘要')).toHaveValue('本地改动');
   });
 
-  it('merges applied digest fields with edits made while the apply request is in flight', async () => {
+  it('three-way merges tags and preserves an explicitly reported summary conflict while apply is in flight', async () => {
     const api = createApi();
     let resolveApply: ((result: { guide: GuideDraftDetail; proposal: GuideDigestProposal }) => void) | undefined;
     (api.createGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue(digestProposal());
@@ -269,6 +269,8 @@ describe('GuideEditor', () => {
     await waitFor(() => expect(api.applyGuideDigestProposal).toHaveBeenCalledTimes(1));
 
     fireEvent.change(screen.getByLabelText('指南标题'), { target: { value: '本地编辑的标题' } });
+    fireEvent.change(screen.getByLabelText('摘要'), { target: { value: '应用期间的本地摘要' } });
+    fireEvent.change(screen.getByLabelText('标签'), { target: { value: '本地新增' } });
     resolveApply?.({
       guide: { ...emptyGuide, revision: 1, summary: '服务端已应用的摘要', tags: ['ERP', '服务端标签'] },
       proposal: { ...digestProposal(), status: 'APPLIED', appliedRevision: 1 },
@@ -276,12 +278,52 @@ describe('GuideEditor', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '生成指南总览' })).not.toBeInTheDocument());
     expect(screen.getByLabelText('指南标题')).toHaveValue('本地编辑的标题');
-    expect(screen.getByLabelText('摘要')).toHaveValue('服务端已应用的摘要');
-    expect(screen.getByLabelText('标签')).toHaveValue('ERP，服务端标签');
+    expect(screen.getByLabelText('摘要')).toHaveValue('应用期间的本地摘要');
+    expect(screen.getByLabelText('标签')).toHaveValue('服务端标签，本地新增');
+    expect(screen.getByRole('alert')).toHaveTextContent('摘要应用期间检测到本地修改');
+    await waitFor(() => expect(screen.getByRole('button', { name: '生成指南总览' })).toHaveFocus());
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
     await waitFor(() => expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 1, expect.objectContaining({
-      title: '本地编辑的标题', summary: '服务端已应用的摘要', tags: ['ERP', '服务端标签'],
+      title: '本地编辑的标题', summary: '应用期间的本地摘要', tags: ['服务端标签', '本地新增'],
     })));
+  });
+
+  it('restores focus after a successful digest rejection removes the inert editor state', async () => {
+    const user = userEvent.setup();
+    const api = createApi();
+    (api.createGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue(digestProposal());
+    (api.rejectGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue({ ...digestProposal(), status: 'REJECTED' });
+    (api.getFlowSnapshotStatus as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotStatus(0));
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    const opener = await screen.findByRole('button', { name: '生成指南总览' });
+    await user.click(opener);
+    await user.click(await screen.findByRole('button', { name: '生成结构化摘要' }));
+    await screen.findByText('建议的流程摘要');
+
+    await user.click(screen.getByRole('button', { name: '拒绝提案' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '生成指南总览' })).not.toBeInTheDocument());
+    expect(document.querySelector('.editor-page-content')).not.toHaveAttribute('inert');
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it.each([
+    ['关闭按钮', 'button'],
+    ['Escape', 'escape'],
+  ] as const)('restores focus after %s removes the inert editor state', async (_label, closePath) => {
+    const user = userEvent.setup();
+    const api = createApi();
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    const opener = await screen.findByRole('button', { name: '生成指南总览' });
+    await user.click(opener);
+    await screen.findByRole('dialog', { name: '生成指南总览' });
+
+    if (closePath === 'button') await user.click(screen.getByRole('button', { name: '关闭指南总览' }));
+    else await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '生成指南总览' })).not.toBeInTheDocument());
+    expect(document.querySelector('.editor-page-content')).not.toHaveAttribute('inert');
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 
   it('suspends editor shortcuts while the digest review modal is open', async () => {

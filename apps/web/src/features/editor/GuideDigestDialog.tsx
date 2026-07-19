@@ -71,7 +71,6 @@ export function GuideDigestDialog({
   const [selectionError, setSelectionError] = useState('');
   const [busy, setBusy] = useState(false);
   const dialogRef = useRef<HTMLElement>(null);
-  const openerRef = useRef<HTMLElement | null>(null);
   const ready = status?.sourceStatus === 'READY'
     && status.snapshotId !== null
     && status.snapshotRevision === guide.revision
@@ -93,7 +92,6 @@ export function GuideDigestDialog({
   }, [proposal?.id]);
 
   useEffect(() => {
-    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     focusableElements(dialogRef.current)?.[0]?.focus();
   }, []);
 
@@ -102,19 +100,11 @@ export function GuideDigestDialog({
       if (event.key !== 'Escape' || busy || generating) return;
       event.preventDefault();
       event.stopPropagation();
-      const opener = openerRef.current;
       onClose();
-      queueMicrotask(() => opener?.focus());
     };
     document.addEventListener('keydown', handleEscape);
     return () => document.removeEventListener('keydown', handleEscape);
   }, [busy, generating, onClose]);
-
-  const close = () => {
-    const opener = openerRef.current;
-    onClose();
-    queueMicrotask(() => opener?.focus());
-  };
 
   const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Tab') return;
@@ -157,7 +147,7 @@ export function GuideDigestDialog({
 
   return <div className="modal-backdrop" role="presentation">
     <section ref={dialogRef} className="reference-modal guide-digest-dialog" role="dialog" aria-modal="true" aria-labelledby="guide-digest-title" onKeyDown={trapFocus}>
-      <button className="modal-close" type="button" onClick={close} disabled={disabled} aria-label="关闭指南总览">×</button>
+      <button className="modal-close" type="button" onClick={onClose} disabled={disabled} aria-label="关闭指南总览">×</button>
       <span className="eyebrow">GUIDE DIGEST REVIEW</span>
       <h2 id="guide-digest-title">生成指南总览</h2>
       <p>仅从当前已保存的流程快照生成；接受 Markdown 只记录提案审计，不会写入画布或检索。</p>

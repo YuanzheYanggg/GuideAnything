@@ -189,9 +189,21 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const stageDragRef = useRef<StageDrag | null>(null);
   const latestEditorStateRef = useRef<{ document: CanvasDocument | null; title: string; summary: string; tags: string[] }>({ document: null, title: '', summary: '', tags: [] });
   const saveRef = useRef<() => Promise<GuideDraftDetail | undefined>>(async () => undefined);
+  const digestTriggerRef = useRef<HTMLButtonElement>(null);
+  const digestWasOpenRef = useRef(false);
   guideRef.current = guide;
   saveStateRef.current = saveState;
   latestEditorStateRef.current = { document, title, summary, tags };
+
+  useEffect(() => {
+    if (digestOpen) {
+      digestWasOpenRef.current = true;
+      return;
+    }
+    if (!digestWasOpenRef.current) return;
+    digestWasOpenRef.current = false;
+    digestTriggerRef.current?.focus();
+  }, [digestOpen]);
 
   useEffect(() => {
     if (!layoutPreview || !flowInstance) return;
@@ -810,6 +822,10 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     }
   }, [api, guide, layoutPreview]);
 
+  const closeDigest = useCallback(() => {
+    setDigestOpen(false);
+  }, []);
+
   const reconcileDigest = useCallback(async () => {
     if (!guide) return;
     setDigestError('');
@@ -839,10 +855,10 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     setDigestError('');
     try {
       await api.rejectGuideDigestProposal(guide.id, proposalId);
-      setDigestOpen(false);
+      closeDigest();
       setDigestProposal(null);
     } catch (reason) { setDigestError(reason instanceof Error ? reason.message : '拒绝提案失败'); }
-  }, [api, guide]);
+  }, [api, closeDigest, guide]);
 
   const applyDigest = useCallback(async (proposalId: string, selection: { applySummary: boolean; acceptedTagLabels: string[]; acceptMarkdown: boolean }) => {
     if (!guide) return;
@@ -869,6 +885,9 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       const latestDuringApply = latestEditorStateRef.current;
       const documentChangedDuringApply = !sameEditorValue(latestDuringApply.document, beforeApply.document);
       const merged = mergeAppliedEditorState(beforeApply, latestDuringApply, authoritative);
+      const summaryConflict = selection.applySummary
+        && !sameEditorValue(latestDuringApply.summary, beforeApply.summary)
+        && !sameEditorValue(latestDuringApply.summary, authoritative.summary);
       const mergedGuide = { ...result.guide, ...merged };
       guideRef.current = mergedGuide;
       setGuide(mergedGuide);
@@ -882,7 +901,8 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       setSaveState(hasUnsavedEditorChanges(merged, authoritative) ? '未保存' : '已保存');
       saveRetryRef.current = false;
       setDigestProposal(result.proposal);
-      setDigestOpen(false);
+      if (summaryConflict) setError('摘要应用期间检测到本地修改；已保留本地摘要，服务端建议摘要未覆盖。请确认后重新保存。');
+      closeDigest();
     } catch (reason) {
       const originalError = reason instanceof Error ? reason.message : '应用提案失败';
       setDigestError(originalError);
@@ -892,7 +912,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
         setDigestStatus(status);
       } catch { /* Preserve the original safe apply error if refresh cannot complete. */ }
     }
-  }, [api, digestProposal, document, flushPendingSave, guide]);
+  }, [api, closeDigest, digestProposal, document, flushPendingSave, guide]);
 
   useEffect(() => {
     if (layoutPreview || !guide || !document || saveState !== '未保存') return;
@@ -1270,7 +1290,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
         </div>
       </section>
       <aside className="inspector" aria-label="属性与教学步骤">
-        <div><span className="eyebrow">GUIDE DETAILS</span><label>摘要<textarea value={summary} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setSummary(event.target.value); setSaveState('未保存'); }} /></label><label>标签<input value={tags.join('，')} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTags(event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean)); setSaveState('未保存'); }} /></label><button className="secondary-button guide-digest-open" type="button" onClick={() => void openDigest()} disabled={Boolean(layoutPreview)} aria-label="生成指南总览">生成指南总览</button></div>
+        <div><span className="eyebrow">GUIDE DETAILS</span><label>摘要<textarea value={summary} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setSummary(event.target.value); setSaveState('未保存'); }} /></label><label>标签<input value={tags.join('，')} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTags(event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean)); setSaveState('未保存'); }} /></label><button ref={digestTriggerRef} className="secondary-button guide-digest-open" type="button" onClick={() => void openDigest()} disabled={Boolean(layoutPreview)} aria-label="生成指南总览">生成指南总览</button></div>
         <hr />
         {selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} lanes={lanes} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} {...(selectedReferenceUpdate ? { referenceUpdate: selectedReferenceUpdate } : {})} onUpgradeReference={() => void upgradeReference()} onAddStep={addStep} onEditAnnotations={() => setAnnotationEditorNodeId(selectedNode.type === 'image' ? selectedNode.id : null)} api={api} locked={Boolean(layoutPreview)} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
         <hr />
@@ -1289,7 +1309,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     {hierarchyDeletion && hierarchyDeletionItem ? <HierarchyDeletionDialog kind={hierarchyDeletion.kind} title={hierarchyDeletionItem.title} affectedNodeCount={hierarchyDeletionCount} onConfirm={confirmHierarchyDeletion} onCancel={() => setHierarchyDeletion(null)} /> : null}
     {annotatedImageDeletion ? <AnnotatedImageDeletionDialog imageCount={annotatedImageDeletion.imageCount} annotationCount={annotatedImageDeletion.annotationCount} onConfirm={confirmAnnotatedImageDeletion} onCancel={() => setAnnotatedImageDeletion(null)} /> : null}
     {draftHistoryOpen ? <DraftHistoryDialog items={draftHistory} currentRevision={guide.revision} loading={draftHistoryLoading} error={draftHistoryError} onRestore={restoreDraftHistory} onClose={() => setDraftHistoryOpen(false)} /> : null}
-    {digestOpen ? <GuideDigestDialog guide={guide} status={digestStatus} proposal={digestProposal} generating={digestGenerating} error={digestError} onReconcile={reconcileDigest} onGenerate={generateDigest} onReject={rejectDigest} onApply={applyDigest} onClose={() => setDigestOpen(false)} /> : null}
+    {digestOpen ? <GuideDigestDialog guide={guide} status={digestStatus} proposal={digestProposal} generating={digestGenerating} error={digestError} onReconcile={reconcileDigest} onGenerate={generateDigest} onReject={rejectDigest} onApply={applyDigest} onClose={closeDigest} /> : null}
     {detailEditor ? <NodeDetailDialog nodeId={detailEditor.nodeId} title={detailEditor.title} value={detailEditor.value} openerRef={{ current: detailEditor.opener }} onSave={saveNodeDetail} onClose={() => setDetailEditor(null)} /> : null}
   </main>;
 }
@@ -1310,8 +1330,23 @@ function mergeAppliedEditorState(
     document: sameEditorValue(latest.document, beforeApply.document) ? authoritative.document : latest.document ?? authoritative.document,
     title: sameEditorValue(latest.title, beforeApply.title) ? authoritative.title : latest.title,
     summary: sameEditorValue(latest.summary, beforeApply.summary) ? authoritative.summary : latest.summary,
-    tags: sameEditorValue(latest.tags, beforeApply.tags) ? authoritative.tags : latest.tags,
+    tags: mergeAppliedTags(beforeApply.tags, latest.tags, authoritative.tags),
   };
+}
+
+function mergeAppliedTags(beforeApply: readonly string[], latest: readonly string[], authoritative: readonly string[]): string[] {
+  const baseline = new Set(beforeApply);
+  const latestSet = new Set(latest);
+  const locallyRemoved = new Set(beforeApply.filter((tag) => !latestSet.has(tag)));
+  const merged = authoritative.filter((tag) => !locallyRemoved.has(tag));
+  const mergedSet = new Set(merged);
+  for (const tag of latest) {
+    if (!baseline.has(tag) && !mergedSet.has(tag)) {
+      merged.push(tag);
+      mergedSet.add(tag);
+    }
+  }
+  return merged;
 }
 
 function sameEditorValue(left: unknown, right: unknown): boolean {

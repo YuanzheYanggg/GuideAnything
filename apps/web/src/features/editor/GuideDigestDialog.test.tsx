@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -101,12 +101,9 @@ describe('GuideDigestDialog', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('moves focus into the modal, keeps Tab navigation inside it, and restores its opener on Escape', async () => {
+  it('moves focus into the modal, keeps Tab navigation inside it, and requests close on Escape', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const opener = document.createElement('button');
-    document.body.append(opener);
-    opener.focus();
     render(<GuideDigestDialog
       guide={{ id: 'guide-1', revision: 4, summary: '当前摘要', tags: ['ERP'] }}
       status={{ guideRevision: 4, sourceStatus: 'READY', snapshotId: 'snapshot-1', snapshotRevision: 4, snapshotSchemaVersion: 2, failureCode: null }}
@@ -127,16 +124,11 @@ describe('GuideDigestDialog', () => {
     await user.keyboard('{Escape}');
 
     expect(onClose).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(opener).toHaveFocus());
-    opener.remove();
   });
 
   it('closes on Escape even when focus has temporarily left the dialog', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const opener = document.createElement('button');
-    document.body.append(opener);
-    opener.focus();
     render(<GuideDigestDialog
       guide={{ id: 'guide-1', revision: 4, summary: '当前摘要', tags: ['ERP'] }}
       status={{ guideRevision: 4, sourceStatus: 'READY', snapshotId: 'snapshot-1', snapshotRevision: 4, snapshotSchemaVersion: 2, failureCode: null }}
@@ -154,8 +146,6 @@ describe('GuideDigestDialog', () => {
     await user.keyboard('{Escape}');
 
     expect(onClose).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(opener).toHaveFocus());
     document.body.removeAttribute('tabindex');
-    opener.remove();
   });
 });
