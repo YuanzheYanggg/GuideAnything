@@ -1,7 +1,7 @@
 # Guide Digest Generation Verification
 
-Date: 2026-07-19  
-Branch: `codex/guide-digest-generation`  
+Date: 2026-07-19
+Branch: `codex/guide-digest-generation`
 Base: `fba5c43`
 
 ## Scope
@@ -24,7 +24,7 @@ pnpm build
 git diff --check fba5c43..HEAD
 ```
 
-The final run passed 975 tests: contracts 104, canvas-core 93, Runtime Bridge 93, API 403, and Web 282. Type checking and production builds passed for every configured package. Migration tests include fresh databases and upgrades through the renderer-aware v10 digest identity schema.
+The final run passed 976 tests: contracts 104, canvas-core 94, Runtime Bridge 93, API 403, and Web 282. Type checking and production builds passed for every configured package. Migration tests include fresh databases and upgrades through the renderer-aware v10 digest identity schema.
 
 ## Live acceptance
 
