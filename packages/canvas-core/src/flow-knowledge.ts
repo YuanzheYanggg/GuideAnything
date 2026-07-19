@@ -3,6 +3,7 @@ import {
   FlowKnowledgeSnapshotV1Schema,
   FlowKnowledgeSnapshotV2Schema,
   FlowSnapshotOriginV1Schema,
+  LessonStepSchema,
   type CanvasDocument,
   type CanvasEdge,
   type CanvasNode,
@@ -19,6 +20,7 @@ import {
   type FlowKnowledgeSnapshotV2,
   type FlowKnowledgeStageV1,
   type FlowSnapshotOriginV1,
+  type LessonStep,
 } from '@guideanything/contracts';
 
 const PRIMARY_TYPES = new Set<CanvasNode['type']>(['start', 'end', 'process', 'decision', 'data', 'subguide']);
@@ -41,7 +43,11 @@ export interface CompileFlowKnowledgeSnapshotInputV2 extends CompileFlowKnowledg
 export function compileFlowKnowledgeSnapshotV2(
   input: CompileFlowKnowledgeSnapshotInputV2,
 ): FlowKnowledgeSnapshotV2 {
-  const document = CanvasDocumentSchema.parse(input.document);
+  const steps = input.document.steps.map((step) => LessonStepSchema.parse(step));
+  const document = CanvasDocumentSchema.parse({
+    ...input.document,
+    steps: steps.filter((step) => input.document.nodes.some((node) => node.id === step.nodeId)),
+  });
   const stages = [...(document.stages ?? [])].map(projectStage).sort(compareOrderThenId);
   const lanes = [...(document.lanes ?? [])].map(projectLane).sort(compareOrderThenId);
   const stageById = new Map(stages.map((stage) => [stage.id, stage]));
@@ -62,10 +68,10 @@ export function compileFlowKnowledgeSnapshotV2(
     .map((node) => projectNode(node, input.guideId, input.snapshotId, stageById, laneById, document))
     .sort((left, right) => compareId(left.id, right.id));
   const resources = resourcesWithOrder
-    .map(({ node, order }) => projectResource(node, order, addressableIds, input.guideId, input.snapshotId, diagnostics))
+    .map(({ node, order }) => projectResource(node, order, addressableIds, input.guideId, input.snapshotId))
     .sort((left, right) => left.order - right.order || compareId(left.id, right.id));
   const relations = compileV2Relations(document, primary, resourcesWithOrder, primaryIds, resourceIds, diagnostics);
-  const learningPath = compileLearningPath(document, primaryIds, resourceIds, diagnostics);
+  const learningPath = compileLearningPath(steps, primaryIds, resourceIds, diagnostics);
   const usedResourceIds = new Set(relations.flatMap((relation) => relation.kind === 'USES_RESOURCE' ? [relation.resourceId] : []));
 
   return FlowKnowledgeSnapshotV2Schema.parse({
@@ -171,7 +177,6 @@ function projectResource(
   addressableIds: Set<string>,
   guideId: string,
   snapshotId: string,
-  diagnostics: V2DiagnosticsSets,
 ): FlowKnowledgeResourceV2 {
   const base = {
     id: node.id,
@@ -195,13 +200,12 @@ function projectResource(
           ...(annotation.body ? { body: annotation.body } : {}),
           shape: annotation.shape,
           region: { ...annotation.region },
-          ...(annotation.camera ? { camera: { ...annotation.camera } } : {}),
           ...(annotation.supplementalImages?.length ? {
             supplementalImages: [...annotation.supplementalImages]
               .sort((left, right) => left.order - right.order || compareId(left.id, right.id))
               .map(({ assetId, alt, caption }) => ({ assetId, alt, ...(caption ? { caption } : {}) })),
           } : {}),
-          ...projectTargetReference(annotation.targetNodeId, addressableIds, guideId, snapshotId, diagnostics),
+          ...projectTargetReference(annotation.targetNodeId, addressableIds, guideId, snapshotId),
         })),
     };
   }
@@ -217,7 +221,7 @@ function projectResource(
         title: keypoint.title,
         timeSeconds: keypoint.timeSeconds,
         ...(keypoint.stepId ? { stepId: keypoint.stepId } : {}),
-        ...projectTargetReference(keypoint.targetNodeId, addressableIds, guideId, snapshotId, diagnostics),
+        ...projectTargetReference(keypoint.targetNodeId, addressableIds, guideId, snapshotId),
       })),
   };
 }
@@ -227,13 +231,9 @@ function projectTargetReference(
   addressableIds: Set<string>,
   guideId: string,
   snapshotId: string,
-  diagnostics: V2DiagnosticsSets,
 ): { targetNodeId?: string; targetLocator?: { guideId: string; snapshotId: string; nodeId: string } } {
   if (!targetNodeId) return {};
-  if (!addressableIds.has(targetNodeId)) {
-    diagnostics.invalidResourceRelationIds.add(targetNodeId);
-    return { targetNodeId };
-  }
+  if (!addressableIds.has(targetNodeId)) return {};
   return {
     targetNodeId,
     targetLocator: { guideId, snapshotId, nodeId: targetNodeId },
@@ -344,12 +344,12 @@ function resourceReferencesForNode(
 }
 
 function compileLearningPath(
-  document: CanvasDocument,
+  steps: LessonStep[],
   primaryIds: Set<string>,
   resourceIds: Set<string>,
   diagnostics: V2DiagnosticsSets,
 ): FlowKnowledgeLearningStepV2[] {
-  return document.steps
+  return steps
     .map((step, sourceOrder) => ({ step, sourceOrder }))
     .sort((left, right) => left.step.order - right.step.order || left.sourceOrder - right.sourceOrder || compareId(left.step.id, right.step.id))
     .flatMap<FlowKnowledgeLearningStepV2>(({ step }) => {

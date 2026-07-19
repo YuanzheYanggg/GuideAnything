@@ -217,6 +217,7 @@ describe('compileFlowKnowledgeSnapshotV2', () => {
     const image = snapshot.resources.find((resource) => resource.id === 'image-proof');
     const video = snapshot.resources.find((resource) => resource.id === 'video-review');
     expect(image?.kind === 'IMAGE' ? image.annotations[0]?.targetLocator : undefined).toEqual(locator('review'));
+    expect(image?.kind === 'IMAGE' ? image.annotations[0] : undefined).not.toHaveProperty('camera');
     expect(video?.kind === 'VIDEO' ? video.keypoints[0]?.targetLocator : undefined).toEqual(locator('image-proof'));
 
     expect(snapshot.learningPath).toEqual([
@@ -243,6 +244,47 @@ describe('compileFlowKnowledgeSnapshotV2', () => {
       { id: 'step-review', order: 0, targetNodeId: 'review' },
       { id: 'step-image', order: 1, targetResourceId: 'image-proof' },
     ]);
+  });
+
+  it('diagnoses a structurally valid stale lesson target without rejecting the document', () => {
+    const document = currentCanvasDocument();
+    const snapshot = compileFlowKnowledgeSnapshotV2(input({
+      ...document,
+      steps: [...document.steps, { id: 'step-stale', order: 4, title: '过期步骤', nodeId: 'missing-step-target' }],
+    }));
+
+    expect(snapshot.learningPath.map((step) => step.id)).not.toContain('step-stale');
+    expect(snapshot.diagnostics.invalidLearningTargetIds).toEqual(['derived-helper', 'missing-step-target']);
+  });
+
+  it('omits an invalid resource target and records only its annotation anchor', () => {
+    const document = currentCanvasDocument();
+    const snapshot = compileFlowKnowledgeSnapshotV2(input({
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'image-proof' && node.type === 'image'
+        ? {
+          ...node,
+          data: {
+            ...node.data,
+            annotations: [...(node.data.annotations ?? []), {
+              id: 'annotation-missing-target',
+              order: 1,
+              title: '过期标注',
+              shape: 'POINT' as const,
+              region: { x: 0.2, y: 0.3 },
+              targetNodeId: 'missing-annotation-target',
+            }],
+          },
+        }
+        : node),
+    }));
+    const image = snapshot.resources.find((resource) => resource.id === 'image-proof');
+    const invalidAnnotation = image?.kind === 'IMAGE'
+      ? image.annotations.find((annotation) => annotation.id === 'annotation-missing-target')
+      : undefined;
+
+    expect(invalidAnnotation).not.toHaveProperty('targetNodeId');
+    expect(snapshot.diagnostics.invalidResourceRelationIds).toEqual(['annotation-missing-target']);
   });
 });
 
@@ -416,6 +458,7 @@ function currentCanvasDocument(): CanvasDocument {
             title: '审核字段',
             shape: 'POINT',
             region: { x: 0.4, y: 0.6 },
+            camera: { centerX: 0.4, centerY: 0.6, zoom: 2.5 },
             targetNodeId: 'review',
           }],
         },
