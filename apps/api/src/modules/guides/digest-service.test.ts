@@ -11,7 +11,7 @@ import { migrateDatabase } from '../../db/migrate';
 import type { AgentRuntimeClient } from '../agents/runtime-client';
 import { syncGuideFlowSnapshot } from '../knowledge/flow-indexer';
 import { addTestWorkspaceMember, sampleDocument, seedTestWorkspace } from '../../test/test-app';
-import { addCollaborator, createGuide, updateGuide } from './repository';
+import { addCollaborator, createGuide, getGuide, updateGuide } from './repository';
 import {
   createGuideDigestProposal,
   getGuideDigestProposal,
@@ -312,7 +312,7 @@ describe('GuideDigestService access and snapshot gates', () => {
     expect(listGuideDigestProposals(database, guideId)).toEqual([]);
   });
 
-  it('keeps a prior valid DRAFT when explicit regeneration fails validation', async () => {
+  it('atomically stales and links a prior DRAFT when explicit regeneration fails validation', async () => {
     runtime.enqueueDigest(digest({ shortSummary: '仍然有效的旧摘要' }));
     const prior = (await service.createProposal(owner, guideId, {})).proposal;
     runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
@@ -320,8 +320,12 @@ describe('GuideDigestService access and snapshot gates', () => {
 
     const failed = await service.createProposal(owner, guideId, { regenerate: true });
 
-    expect(failed.proposal).toMatchObject({ status: 'FAILED', supersedesProposalId: null });
-    expect(getGuideDigestProposal(database, guideId, prior.id)?.status).toBe('DRAFT');
+    expect(failed.proposal).toMatchObject({ status: 'FAILED', supersedesProposalId: prior.id });
+    expect(getGuideDigestProposal(database, guideId, prior.id)?.status).toBe('STALE');
+    expect(listGuideDigestAuditEvents(database, guideId, prior.id)).toEqual([
+      expect.objectContaining({ event: 'GENERATED' }),
+      expect.objectContaining({ event: 'MARKED_STALE', metadata: { reasonCode: 'REGENERATED' } }),
+    ]);
   });
 
   it('returns a concurrently-created DRAFT instead of persisting a later failed duplicate generation', async () => {
@@ -462,6 +466,61 @@ describe('GuideDigestService access and snapshot gates', () => {
       .toEqual(['GENERATED', 'MARKED_STALE']);
   });
 
+  it('atomically marks a proposal STALE when the current READY snapshot identity changed', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '依赖原快照身份的摘要' }));
+    const proposal = (await service.createProposal(owner, guideId, {})).proposal;
+    replaceCurrentSnapshotIdentity(database, guideId, proposal.baseSnapshotId);
+
+    expect(() => service.applyProposal(owner, guideId, proposal.id, {
+      applySummary: true, acceptedTagLabels: [], acceptMarkdown: false,
+    })).toThrow(expect.objectContaining({
+      statusCode: 409, code: 'GUIDE_DIGEST_PROPOSAL_STALE',
+    }));
+    expect(getGuideDigestProposal(database, guideId, proposal.id)?.status).toBe('STALE');
+    expect(listGuideDigestAuditEvents(database, guideId, proposal.id).at(-1)).toMatchObject({
+      event: 'MARKED_STALE', metadata: { reasonCode: 'BASE_SNAPSHOT_CHANGED' },
+    });
+    expect(getGuide(database, guideId)).toMatchObject({ revision: 1, summary: '现有摘要' });
+  });
+
+  it('atomically marks a proposal STALE when its current flow source is FAILED', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '依赖 READY 来源的摘要' }));
+    const proposal = (await service.createProposal(owner, guideId, {})).proposal;
+    database.prepare(
+      `UPDATE knowledge_sources SET status = 'FAILED'
+       WHERE kind = 'WORKSPACE_FLOW' AND json_extract(config_json, '$.guideId') = ?`,
+    ).run(guideId);
+
+    expect(() => service.applyProposal(owner, guideId, proposal.id, {
+      applySummary: true, acceptedTagLabels: [], acceptMarkdown: false,
+    })).toThrow(expect.objectContaining({
+      statusCode: 409, code: 'GUIDE_DIGEST_PROPOSAL_STALE',
+    }));
+    expect(getGuideDigestProposal(database, guideId, proposal.id)?.status).toBe('STALE');
+    expect(listGuideDigestAuditEvents(database, guideId, proposal.id).at(-1)).toMatchObject({
+      event: 'MARKED_STALE', metadata: { reasonCode: 'BASE_SNAPSHOT_NOT_READY' },
+    });
+    expect(getGuide(database, guideId)).toMatchObject({ revision: 1, summary: '现有摘要' });
+  });
+
+  it('atomically marks a proposal STALE when its snapshot materialization is missing', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '依赖已物化快照的摘要' }));
+    const proposal = (await service.createProposal(owner, guideId, {})).proposal;
+    database.prepare('DELETE FROM knowledge_documents WHERE flow_snapshot_id = ?')
+      .run(proposal.baseSnapshotId);
+
+    expect(() => service.applyProposal(owner, guideId, proposal.id, {
+      applySummary: true, acceptedTagLabels: [], acceptMarkdown: false,
+    })).toThrow(expect.objectContaining({
+      statusCode: 409, code: 'GUIDE_DIGEST_PROPOSAL_STALE',
+    }));
+    expect(getGuideDigestProposal(database, guideId, proposal.id)?.status).toBe('STALE');
+    expect(listGuideDigestAuditEvents(database, guideId, proposal.id).at(-1)).toMatchObject({
+      event: 'MARKED_STALE', metadata: { reasonCode: 'BASE_SNAPSHOT_NOT_READY' },
+    });
+    expect(getGuide(database, guideId)).toMatchObject({ revision: 1, summary: '现有摘要' });
+  });
+
   it('rejects unproposed labels and selections with no effective change without applying', async () => {
     runtime.enqueueDigest(digest({ shortSummary: '现有摘要' }));
     const proposal = (await service.createProposal(owner, guideId, {})).proposal;
@@ -596,6 +655,29 @@ function snapshotSourceId(database: DatabaseSync, guideId: string): string {
   ).get(guideId) as { snapshot_json: string };
   const snapshot = JSON.parse(row.snapshot_json) as { nodes: Array<{ id: string }> };
   return snapshot.nodes[0]!.id;
+}
+
+function replaceCurrentSnapshotIdentity(
+  database: DatabaseSync,
+  guideId: string,
+  priorSnapshotId: string,
+): void {
+  // The schema normally makes same-revision snapshots immutable and unique. Temporarily
+  // disabling FK enforcement models a restored/corrupt datastore at this trust boundary.
+  database.exec('PRAGMA foreign_keys = OFF');
+  try {
+    database.prepare('DELETE FROM knowledge_documents WHERE flow_snapshot_id = ?')
+      .run(priorSnapshotId);
+    database.prepare('DELETE FROM flow_knowledge_snapshots WHERE id = ?').run(priorSnapshotId);
+    const guide = getGuide(database, guideId)!;
+    syncGuideFlowSnapshot(database, flowContext(guide));
+  } finally {
+    database.exec('PRAGMA foreign_keys = ON');
+  }
+  expect(database.prepare(
+    `SELECT id FROM flow_knowledge_snapshots
+     WHERE guide_id = ? AND origin_type = 'DRAFT' AND revision = 1`,
+  ).get(guideId)).toEqual({ id: expect.not.stringMatching(priorSnapshotId) });
 }
 
 function count(database: DatabaseSync, table: string, field: string, value: string): number {

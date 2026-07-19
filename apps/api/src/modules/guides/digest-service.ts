@@ -205,10 +205,15 @@ export class GuideDigestService {
       if (proposal.status !== 'DRAFT' || !proposal.draft) {
         throw httpError(409, 'GUIDE_DIGEST_INVALID_STATE', '指南摘要提案状态已发生变化');
       }
-      if (guide.revision !== proposal.baseRevision) {
+      const staleReason = guide.revision !== proposal.baseRevision
+        ? 'BASE_REVISION_CHANGED'
+        : this.proposalSnapshotStaleReason(user, guideId, proposal.baseSnapshotId);
+      if (staleReason) {
         markGuideDigestProposalStale(this.database, guideId, proposalId, user.id, {
-          reasonCode: 'BASE_REVISION_CHANGED',
-          baseRevision: proposal.baseRevision,
+          reasonCode: staleReason,
+          ...(staleReason === 'BASE_REVISION_CHANGED'
+            ? { baseRevision: proposal.baseRevision }
+            : {}),
         });
         this.database.exec('COMMIT');
         stale = true;
@@ -287,19 +292,29 @@ export class GuideDigestService {
         this.database.exec('COMMIT');
         return { created: false, proposal: currentDraft };
       }
+      if (existing && !currentDraft) {
+        throw httpError(409, 'GUIDE_DIGEST_PROPOSAL_CHANGED', '指南摘要提案状态已发生变化');
+      }
       if (!generation.ok) {
+        if (currentDraft) {
+          markGuideDigestProposalStale(
+            this.database,
+            guideId,
+            currentDraft.id,
+            user.id,
+            { reasonCode: 'REGENERATED' },
+          );
+        }
         const proposal = createFailedGuideDigestProposal(this.database, {
           ...identity,
           rendererVersion: rendererVersion(),
           generationMetadata: generation.metadata,
           failureCode: generation.failureCode,
           createdBy: user.id,
+          supersedesProposalId: currentDraft?.id ?? null,
         });
         this.database.exec('COMMIT');
         return { created: true, proposal };
-      }
-      if (existing && !currentDraft) {
-        throw httpError(409, 'GUIDE_DIGEST_PROPOSAL_CHANGED', '指南摘要提案状态已发生变化');
       }
       const proposalInput = {
         ...identity,
@@ -368,6 +383,22 @@ export class GuideDigestService {
       throw flowSnapshotNotReady();
     }
     return { guide, snapshot };
+  }
+
+  private proposalSnapshotStaleReason(
+    user: GuideUser,
+    guideId: string,
+    baseSnapshotId: string,
+  ): 'BASE_SNAPSHOT_CHANGED' | 'BASE_SNAPSHOT_NOT_READY' | null {
+    try {
+      const current = this.requireReadySnapshot(user, guideId);
+      return current.snapshot.snapshotId === baseSnapshotId
+        ? null
+        : 'BASE_SNAPSHOT_CHANGED';
+    } catch (error) {
+      if (errorCode(error) === 'FLOW_SNAPSHOT_NOT_READY') return 'BASE_SNAPSHOT_NOT_READY';
+      throw error;
+    }
   }
 
   private getFlowSource(guide: GuideDraft): SourceStatusRow | undefined {
