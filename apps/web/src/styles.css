@@ -209,9 +209,9 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .guide-digest-tags { display: flex; flex-wrap: wrap; gap: 8px; }
 .guide-digest-current-tag, .guide-digest-suggested-tag { display: inline-flex; gap: 6px; align-items: center; border-radius: 999px; padding: 6px 9px; font-size: .72rem; }
 .guide-digest-current-tag { border: 1px solid var(--ga-border); color: var(--ga-text-secondary); background: var(--ga-surface-solid); }
-.guide-digest-suggested-tag { border: 1px solid color-mix(in srgb, var(--ga-accent) 42%, transparent); color: var(--ga-text); background: var(--ga-accent-soft); }
+.guide-digest-suggested-tag { flex: 1 1 220px; min-width: 0; flex-wrap: wrap; border: 1px solid color-mix(in srgb, var(--ga-accent) 42%, transparent); border-radius: 14px; color: var(--ga-text); background: var(--ga-accent-soft); white-space: nowrap; }
 .guide-digest-suggested-tag small, .guide-digest-gaps small { color: var(--ga-text-secondary); font-size: .66rem; }
-.guide-digest-provenance { display: grid; width: 100%; gap: 2px; color: var(--ga-text-secondary); font-size: .66rem; }
+.guide-digest-provenance { display: flex; flex: 0 0 100%; flex-wrap: wrap; gap: 2px 8px; padding-left: 22px; color: var(--ga-text-secondary); font-size: .66rem; white-space: normal; }
 .guide-digest-gaps { display: grid; gap: 7px; padding-left: 26px; }
 .guide-digest-gaps small { display: block; }
 .guide-digest-markdown { max-height: 280px; overflow: auto; border: 1px solid var(--ga-border); border-radius: 10px; padding: 12px; background: var(--ga-surface-solid); }
