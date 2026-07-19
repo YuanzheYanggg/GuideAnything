@@ -269,9 +269,13 @@ export function findGuideDigestContinuityBaseline(
   input: {
     guideId: string;
     workspaceId: string;
+    maxRevision: number;
     excludeProposalId?: string | null;
   },
 ): GuideDigestContinuityBaselineRecord | null {
+  if (!Number.isSafeInteger(input.maxRevision) || input.maxRevision < 0) {
+    throw new Error('maximum baseline revision must be a non-negative safe integer');
+  }
   const rows = database.prepare(
     `SELECT
       proposal.id, proposal.guide_id, proposal.workspace_id, proposal.base_snapshot_id,
@@ -289,6 +293,7 @@ export function findGuideDigestContinuityBaseline(
       AND snapshot.revision = proposal.base_revision
      WHERE proposal.guide_id = ?
        AND proposal.workspace_id = ?
+       AND proposal.base_revision <= ?
        AND proposal.status IN ('DRAFT', 'APPLIED', 'STALE')
        AND (? IS NULL OR proposal.id != ?)
      ORDER BY proposal.created_at DESC, proposal.id DESC
@@ -296,14 +301,28 @@ export function findGuideDigestContinuityBaseline(
   ).all(
     input.guideId,
     input.workspaceId,
+    input.maxRevision,
     input.excludeProposalId ?? null,
     input.excludeProposalId ?? null,
   ) as unknown as ContinuityBaselineRow[];
 
   for (const row of rows) {
     try {
-      FlowKnowledgeSnapshotV2Schema.parse(JSON.parse(row.snapshot_json));
-      return { proposal: mapProposal(row), snapshotJson: row.snapshot_json };
+      const snapshot = FlowKnowledgeSnapshotV2Schema.parse(JSON.parse(row.snapshot_json));
+      if (
+        row.guide_id !== input.guideId
+        || row.workspace_id !== input.workspaceId
+        || snapshot.snapshotId !== row.base_snapshot_id
+        || snapshot.guideId !== row.guide_id
+        || snapshot.workspaceId !== row.workspace_id
+        || snapshot.origin.kind !== 'DRAFT'
+        || snapshot.origin.revision !== row.base_revision
+        || snapshot.origin.revision > input.maxRevision
+      ) {
+        continue;
+      }
+      const proposal = mapProposal(row);
+      return { proposal, snapshotJson: row.snapshot_json };
     } catch {
       // Historical generated output or snapshots may predate the current contract.
     }

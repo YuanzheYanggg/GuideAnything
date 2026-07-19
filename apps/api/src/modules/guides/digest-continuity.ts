@@ -82,6 +82,8 @@ export class GuideDigestContinuityValidationError extends Error {
 type Resource = FlowKnowledgeSnapshotV2['resources'][number];
 type Relation = FlowKnowledgeSnapshotV2['relations'][number];
 type LearningStep = FlowKnowledgeSnapshotV2['learningPath'][number];
+type ImageResource = Extract<Resource, { kind: 'IMAGE' }>;
+type ImageAnnotation = ImageResource['annotations'][number];
 
 export function buildGuideDigestSnapshotDiff(
   previousInput: unknown,
@@ -252,7 +254,7 @@ function collectResourceChildren(resource: Resource, affected: Set<string>): voi
   if (resource.kind === 'IMAGE') {
     resource.annotations.forEach((annotation) => {
       affected.add(annotation.id);
-      if (annotation.targetNodeId) affected.add(annotation.targetNodeId);
+      collectImageAnnotationReferences(annotation, affected);
     });
   } else if (resource.kind === 'VIDEO') {
     resource.keypoints.forEach((keypoint) => {
@@ -269,15 +271,47 @@ function collectChangedResourceChildren(before: Resource, after: Resource, affec
     return;
   }
   if (before.kind === 'IMAGE' && after.kind === 'IMAGE') {
-    collectChangedValues(diffCollection(before.annotations, after.annotations), affected)
-      .forEach((annotation) => {
-        if (annotation.targetNodeId) affected.add(annotation.targetNodeId);
-      });
+    const annotations = diffCollection(before.annotations, after.annotations);
+    for (const annotation of [...annotations.added, ...annotations.removed]) {
+      affected.add(annotation.id);
+      collectImageAnnotationReferences(annotation, affected);
+    }
+    for (const { before: beforeAnnotation, after: afterAnnotation } of annotations.updated) {
+      affected.add(afterAnnotation.id);
+      if (beforeAnnotation.targetNodeId) affected.add(beforeAnnotation.targetNodeId);
+      if (afterAnnotation.targetNodeId) affected.add(afterAnnotation.targetNodeId);
+      collectChangedSupplementalImages(beforeAnnotation, afterAnnotation, affected);
+    }
   } else if (before.kind === 'VIDEO' && after.kind === 'VIDEO') {
     collectChangedValues(diffCollection(before.keypoints, after.keypoints), affected)
       .forEach((keypoint) => {
         if (keypoint.targetNodeId) affected.add(keypoint.targetNodeId);
       });
+  }
+}
+
+function collectImageAnnotationReferences(annotation: ImageAnnotation, affected: Set<string>): void {
+  if (annotation.targetNodeId) affected.add(annotation.targetNodeId);
+  annotation.supplementalImages?.forEach(({ assetId }) => affected.add(assetId));
+}
+
+function collectChangedSupplementalImages(
+  before: ImageAnnotation,
+  after: ImageAnnotation,
+  affected: Set<string>,
+): void {
+  const previousById = new Map(
+    (before.supplementalImages ?? []).map((image) => [image.assetId, image]),
+  );
+  const currentById = new Map(
+    (after.supplementalImages ?? []).map((image) => [image.assetId, image]),
+  );
+  for (const image of before.supplementalImages ?? []) {
+    if (!currentById.has(image.assetId)) affected.add(image.assetId);
+  }
+  for (const image of after.supplementalImages ?? []) {
+    const previous = previousById.get(image.assetId);
+    if (!previous || valuesDiffer(previous, image)) affected.add(image.assetId);
   }
 }
 
@@ -318,7 +352,14 @@ function isFlowLocator(value: object): value is { guideId: string; snapshotId: s
 }
 
 function compareCodePoints(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  const leftPoints = Array.from(left, (value) => value.codePointAt(0)!);
+  const rightPoints = Array.from(right, (value) => value.codePointAt(0)!);
+  const sharedLength = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    const difference = leftPoints[index]! - rightPoints[index]!;
+    if (difference !== 0) return difference;
+  }
+  return leftPoints.length - rightPoints.length;
 }
 
 function normalizeTagLabel(label: string): string {

@@ -329,6 +329,9 @@ export class GuideDigestService {
       if (existing && !currentDraft) {
         throw httpError(409, 'GUIDE_DIGEST_PROPOSAL_CHANGED', '指南摘要提案状态已发生变化');
       }
+      if (generation.metadata.continuityMode === 'RESIDUAL_CONTEXT' && continuity) {
+        assertGuideDigestContinuityBaselineUnchanged(this.database, ready, continuity);
+      }
       if (!generation.ok) {
         if (currentDraft) {
           markGuideDigestProposalStale(
@@ -599,6 +602,7 @@ function resolveGuideDigestContinuity(
   const baseline = findGuideDigestContinuityBaseline(database, {
     guideId: ready.guide.id,
     workspaceId: ready.guide.workspaceId,
+    maxRevision: ready.guide.revision,
   });
   if (!baseline?.proposal.draft) return null;
 
@@ -634,12 +638,44 @@ function resolveGuideDigestContinuity(
   }
 }
 
+function assertGuideDigestContinuityBaselineUnchanged(
+  database: DatabaseSync,
+  ready: ReadyGuideSnapshot,
+  selected: GuideDigestSelectedContinuity,
+): void {
+  let proposal: GuideDigestProposal | null;
+  try {
+    proposal = getGuideDigestProposal(
+      database,
+      ready.guide.id,
+      selected.context.baselineProposalId,
+    );
+  } catch {
+    proposal = null;
+  }
+  if (
+    !proposal
+    || proposal.id !== selected.context.baselineProposalId
+    || proposal.guideId !== ready.guide.id
+    || proposal.workspaceId !== ready.guide.workspaceId
+    || proposal.baseSnapshotId !== selected.context.snapshotDiff.fromSnapshotId
+    || proposal.baseRevision !== selected.context.baselineRevision
+    || (
+      proposal.status !== 'DRAFT'
+      && proposal.status !== 'APPLIED'
+      && proposal.status !== 'STALE'
+    )
+  ) {
+    throw httpError(409, 'GUIDE_DIGEST_PROPOSAL_CHANGED', '指南摘要提案状态已发生变化');
+  }
+}
+
 async function generateDigest(
   runtime: AgentRuntimeClient,
   ready: ReadyGuideSnapshot,
   selectedContinuity: GuideDigestSelectedContinuity | null,
 ): Promise<GenerationResult> {
-  let prepared: GuideDigestPreparedRequest;
+  let activeContinuity = selectedContinuity;
   let modeMetadata: Pick<
     GuideDigestPreparedRequest,
     'continuityMode' | 'continuityFallbackReason'
@@ -647,65 +683,52 @@ async function generateDigest(
     ? { continuityMode: 'RESIDUAL_CONTEXT' }
     : { continuityMode: 'FULL', continuityFallbackReason: 'BASELINE_UNAVAILABLE' };
   let truncatedResourceCount = 0;
-  try {
-    if (selectedContinuity) {
+  const prepareAttempt = (repairNote?: string): GuideDigestPreparedRequest => {
+    if (activeContinuity) {
       try {
-        prepared = guideDigestRequest(ready.snapshot, { continuity: selectedContinuity.context });
+        const prepared = guideDigestRequest(ready.snapshot, {
+          ...(repairNote === undefined ? {} : { repairNote }),
+          continuity: activeContinuity.context,
+        });
+        modeMetadata = prepared;
+        return prepared;
       } catch (error) {
         if (!(error instanceof GuideDigestInputTooLargeError)) throw error;
+        activeContinuity = null;
         modeMetadata = {
           continuityMode: 'FULL',
           continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
         };
-        prepared = guideDigestRequest(ready.snapshot, {
-          continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
-        });
       }
-    } else {
-      prepared = guideDigestRequest(ready.snapshot, {
-        continuityFallbackReason: 'BASELINE_UNAVAILABLE',
-      });
     }
-    modeMetadata = prepared;
-    const envelope = buildGuideDigestInputEnvelope(ready.snapshot, {
-      ...(prepared.continuityMode === 'RESIDUAL_CONTEXT' && selectedContinuity
-        ? { continuity: selectedContinuity.context }
-        : {}),
+    const prepared = guideDigestRequest(ready.snapshot, {
+      ...(repairNote === undefined ? {} : { repairNote }),
+      ...(modeMetadata.continuityFallbackReason === undefined
+        ? {}
+        : { continuityFallbackReason: modeMetadata.continuityFallbackReason }),
     });
-    truncatedResourceCount = envelope.truncation.truncatedResourceIds.length;
-  } catch (error) {
-    if (error instanceof GuideDigestInputTooLargeError) {
-      return {
-        ok: false,
-        failureCode: error.code,
-        metadata: generationMetadata(0, 0, modeMetadata, selectedContinuity),
-      };
-    }
-    throw error;
-  }
+    modeMetadata = prepared;
+    return prepared;
+  };
   let repairNote: string | undefined;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      if (attempt > 1) {
-        prepared = guideDigestRequest(ready.snapshot, {
-          ...(repairNote === undefined ? {} : { repairNote }),
-          ...(modeMetadata.continuityMode === 'RESIDUAL_CONTEXT' && selectedContinuity
-            ? { continuity: selectedContinuity.context }
-            : {}),
-          ...(modeMetadata.continuityFallbackReason === undefined
-            ? {}
-            : { continuityFallbackReason: modeMetadata.continuityFallbackReason }),
+      const prepared = prepareAttempt(repairNote);
+      if (attempt === 1) {
+        const envelope = buildGuideDigestInputEnvelope(ready.snapshot, {
+          ...(activeContinuity ? { continuity: activeContinuity.context } : {}),
         });
+        truncatedResourceCount = envelope.truncation.truncatedResourceIds.length;
       }
       const draft = validateGuideDigestSources(
         ready.snapshot,
         await invokeGuideDigestRuntime(runtime, prepared.request),
       );
-      if (modeMetadata.continuityMode === 'RESIDUAL_CONTEXT' && selectedContinuity) {
+      if (activeContinuity) {
         validateGuideDigestTagContinuity(
           ready.snapshot,
-          selectedContinuity.context.previousDigest,
-          selectedContinuity.context.snapshotDiff,
+          activeContinuity.context.previousDigest,
+          activeContinuity.context.snapshotDiff,
           draft,
         );
       }

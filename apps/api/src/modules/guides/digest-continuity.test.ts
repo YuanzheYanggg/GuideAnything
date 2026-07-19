@@ -123,6 +123,111 @@ describe('guide digest snapshot continuity', () => {
   });
 
   it.each([
+    ['relation', (current: FlowKnowledgeSnapshotV2) => {
+      current.relations = current.relations.filter(({ id }) => id !== 'relation-flow');
+    }, ['relation-flow', 'node-1', 'node-2']],
+    ['resource', (current: FlowKnowledgeSnapshotV2) => {
+      current.resources = current.resources.filter(({ id }) => id !== 'resource-image');
+    }, ['resource-image', 'annotation-1']],
+    ['stage', (current: FlowKnowledgeSnapshotV2) => {
+      const replacement = { id: 'stage-2', title: '替代阶段', order: 0 };
+      current.stages = [replacement];
+      current.nodes = current.nodes.map((node) => ({ ...node, stage: replacement }));
+    }, ['stage-1', 'node-1', 'node-2']],
+    ['lane', (current: FlowKnowledgeSnapshotV2) => {
+      const replacement = { id: 'lane-2', title: '替代责任', kind: 'ROLE' as const, order: 0 };
+      current.lanes = [replacement];
+      current.nodes = current.nodes.map((node) => ({ ...node, responsibility: replacement }));
+    }, ['lane-1', 'node-1', 'node-2']],
+    ['learning step', (current: FlowKnowledgeSnapshotV2) => {
+      current.learningPath = current.learningPath.filter(({ id }) => id !== 'learning-1');
+    }, ['learning-1', 'node-1']],
+  ] as const)('keeps removed %s closure members affected', (_label, remove, affectedIds) => {
+    const previous = snapshot();
+    const current = snapshot();
+    remove(current);
+
+    const diff = buildGuideDigestSnapshotDiff(previous, current);
+
+    expect(diff.affectedSourceIds).toEqual(expect.arrayContaining([...affectedIds]));
+  });
+
+  it('keeps a removed resource-targeted learning step and its resource affected', () => {
+    const previous = snapshot();
+    previous.learningPath.push({
+      id: 'learning-resource', order: 1, targetResourceId: 'resource-note',
+    });
+    const current = snapshot();
+
+    const diff = buildGuideDigestSnapshotDiff(previous, current);
+
+    expect(diff.learningPath.removed).toEqual([
+      expect.objectContaining({ id: 'learning-resource', targetResourceId: 'resource-note' }),
+    ]);
+    expect(diff.affectedSourceIds).toEqual(expect.arrayContaining([
+      'learning-resource', 'resource-note',
+    ]));
+  });
+
+  it.each([
+    ['added', undefined, { assetId: 'supplement-new', alt: '新增补充图' }],
+    [
+      'updated',
+      { assetId: 'supplement-existing', alt: '原补充图' },
+      { assetId: 'supplement-existing', alt: '更新补充图' },
+    ],
+    ['removed', { assetId: 'supplement-existing', alt: '原补充图' }, undefined],
+  ] as const)('keeps %s supplemental-image parent and child IDs affected', (
+    _label,
+    beforeSupplement,
+    afterSupplement,
+  ) => {
+    const previous = snapshot();
+    const current = snapshot();
+    const previousImage = previous.resources.find((resource) => resource.kind === 'IMAGE')!;
+    const currentImage = current.resources.find((resource) => resource.kind === 'IMAGE')!;
+    previousImage.annotations[0] = {
+      ...previousImage.annotations[0]!,
+      ...(beforeSupplement === undefined ? {} : { supplementalImages: [beforeSupplement] }),
+    };
+    currentImage.annotations[0] = {
+      ...currentImage.annotations[0]!,
+      ...(afterSupplement === undefined ? {} : { supplementalImages: [afterSupplement] }),
+    };
+
+    const diff = buildGuideDigestSnapshotDiff(previous, current);
+
+    expect(diff.affectedSourceIds).toEqual(expect.arrayContaining([
+      'resource-image',
+      'annotation-1',
+      (afterSupplement ?? beforeSupplement)!.assetId,
+    ]));
+  });
+
+  it('sorts affected source IDs by Unicode code point rather than UTF-16 code unit', () => {
+    const previous = snapshot();
+    const current = snapshot();
+    const bmpPrivateUseId = '\uE000';
+    const astralId = '\u{10000}';
+    current.resources.push(
+      {
+        kind: 'MARKDOWN', id: bmpPrivateUseId,
+        locator: { guideId: current.guideId, snapshotId: current.snapshotId, nodeId: bmpPrivateUseId },
+        order: 3, markdown: 'BMP private-use resource',
+      },
+      {
+        kind: 'MARKDOWN', id: astralId,
+        locator: { guideId: current.guideId, snapshotId: current.snapshotId, nodeId: astralId },
+        order: 4, markdown: 'Astral resource',
+      },
+    );
+
+    const affected = buildGuideDigestSnapshotDiff(previous, current).affectedSourceIds;
+
+    expect(affected.indexOf(bmpPrivateUseId)).toBeLessThan(affected.indexOf(astralId));
+  });
+
+  it.each([
     [{ kind: 'FLOW', id: 'relation-flow-new', sourceNodeId: 'node-1', targetNodeId: 'node-2' }, ['node-1', 'node-2']],
     [{ kind: 'USES_RESOURCE', id: 'relation-resource-new', sourceNodeId: 'node-1', resourceId: 'resource-note' }, ['node-1', 'resource-note']],
     [{ kind: 'RESOURCE_REFERENCE', id: 'relation-reference-new', sourceResourceId: 'resource-note', targetNodeId: 'node-2' }, ['resource-note', 'node-2']],

@@ -349,19 +349,21 @@ describe('guide digest repository', () => {
     });
 
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-one', workspaceId: 'workspace-one', excludeProposalId: rejected.id,
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 5,
+      excludeProposalId: rejected.id,
     })).toMatchObject({
       proposal: { id: latestTrusted.id, status: _status },
       snapshotJson: expect.stringContaining('"schemaVersion":2'),
     });
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-one', workspaceId: 'workspace-one', excludeProposalId: latestTrusted.id,
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 5,
+      excludeProposalId: latestTrusted.id,
     })?.proposal.id).toBe(older.id);
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-three', workspaceId: 'workspace-one',
+      guideId: 'guide-three', workspaceId: 'workspace-one', maxRevision: 8,
     })).toBeNull();
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-one', workspaceId: 'workspace-two',
+      guideId: 'guide-one', workspaceId: 'workspace-two', maxRevision: 5,
     })).toBeNull();
     expect(otherScope.status).toBe('DRAFT');
   });
@@ -374,7 +376,7 @@ describe('guide digest repository', () => {
     });
 
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-one', workspaceId: 'workspace-one',
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 5,
     })).toBeNull();
   });
 
@@ -391,7 +393,7 @@ describe('guide digest repository', () => {
       .run('{"schemaVersion":1}', malformed.id);
 
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-one', workspaceId: 'workspace-one',
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 5,
     })).toMatchObject({ proposal: { id: safe.id } });
   });
 
@@ -408,8 +410,62 @@ describe('guide digest repository', () => {
       .run('{"schemaVersion":2}', 'snapshot-two');
 
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-one', workspaceId: 'workspace-one',
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 5,
     })).toMatchObject({ proposal: { id: safe.id } });
+  });
+
+  it.each([
+    ['snapshot ID', (snapshot: FlowKnowledgeSnapshotV2) => {
+      snapshot.snapshotId = 'embedded-other-snapshot';
+    }],
+    ['guide ID', (snapshot: FlowKnowledgeSnapshotV2) => {
+      snapshot.guideId = 'guide-two';
+    }],
+    ['workspace ID', (snapshot: FlowKnowledgeSnapshotV2) => {
+      snapshot.workspaceId = 'workspace-two';
+    }],
+    ['DRAFT origin', (snapshot: FlowKnowledgeSnapshotV2) => {
+      snapshot.origin = {
+        kind: 'PUBLISHED', versionId: 'embedded-version', version: 5,
+      };
+    }],
+    ['DRAFT revision', (snapshot: FlowKnowledgeSnapshotV2) => {
+      snapshot.origin = { kind: 'DRAFT', revision: 6 };
+    }],
+  ] as const)('skips a newer snapshot with mismatched embedded %s identity', (_label, mutate) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-19T00:00:01.000Z'));
+    const older = createGuideDigestProposal(database, generatedInput());
+    vi.setSystemTime(new Date('2026-07-19T00:00:02.000Z'));
+    createGuideDigestProposal(database, {
+      ...generatedInput(), baseSnapshotId: 'snapshot-two', baseRevision: 5,
+    });
+    const row = database.prepare('SELECT snapshot_json FROM flow_knowledge_snapshots WHERE id = ?')
+      .get('snapshot-two') as { snapshot_json: string };
+    const embedded = JSON.parse(row.snapshot_json) as FlowKnowledgeSnapshotV2;
+    mutate(embedded);
+    database.exec('DROP TRIGGER flow_knowledge_snapshots_immutable');
+    database.prepare('UPDATE flow_knowledge_snapshots SET snapshot_json = ? WHERE id = ?')
+      .run(JSON.stringify(embedded), 'snapshot-two');
+
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 5,
+    })).toMatchObject({ proposal: { id: older.id } });
+  });
+
+  it('skips a newer future-revision candidate and returns the older valid baseline', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-19T00:00:01.000Z'));
+    const older = createGuideDigestProposal(database, generatedInput());
+    vi.setSystemTime(new Date('2026-07-19T00:00:02.000Z'));
+    const future = createGuideDigestProposal(database, {
+      ...generatedInput(), baseSnapshotId: 'snapshot-two', baseRevision: 5,
+    });
+
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 4,
+    })).toMatchObject({ proposal: { id: older.id } });
+    expect(future.baseRevision).toBe(5);
   });
 
   it('returns null when every eligible candidate has a malformed snapshot', () => {
@@ -419,7 +475,7 @@ describe('guide digest repository', () => {
       .run('{"schemaVersion":2}', 'snapshot-one');
 
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-one', workspaceId: 'workspace-one',
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 5,
     })).toBeNull();
   });
 
@@ -434,7 +490,7 @@ describe('guide digest repository', () => {
     });
 
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-one', workspaceId: 'workspace-one',
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 5,
     })?.proposal.id).toBe('candidate-z');
   });
 
@@ -477,7 +533,7 @@ describe('guide digest repository', () => {
     );
 
     expect(findGuideDigestContinuityBaseline(database, {
-      guideId: 'guide-one', workspaceId: 'workspace-one',
+      guideId: 'guide-one', workspaceId: 'workspace-one', maxRevision: 6,
     })).toMatchObject({ proposal: { id: safe.id } });
     expect(mismatchedRevision.status).toBe('DRAFT');
     expect(publishedOrigin.status).toBe('DRAFT');

@@ -9,7 +9,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createDatabase } from '../../db/client';
 import { migrateDatabase } from '../../db/migrate';
-import { GUIDE_DIGEST_BUNDLE } from '../agents/bundles/guide-digest';
+import {
+  GUIDE_DIGEST_BUNDLE,
+  GuideDigestInputTooLargeError,
+  assertGuideDigestRuntimeRequestBudget,
+  buildGuideDigestPrompt,
+  buildGuideDigestValidationRepairNote,
+} from '../agents/bundles/guide-digest';
 import type { AgentRuntimeClient } from '../agents/runtime-client';
 import { syncGuideFlowSnapshot } from '../knowledge/flow-indexer';
 import { addTestWorkspaceMember, sampleDocument, seedTestWorkspace } from '../../test/test-app';
@@ -21,6 +27,7 @@ import {
   listGuideDigestProposals,
   regenerateGuideDigestProposal,
 } from './digest-repository';
+import { buildGuideDigestSnapshotDiff } from './digest-continuity';
 import { DIGEST_RENDERER_VERSION } from './digest-renderer';
 import { GuideDigestService } from './digest-service';
 
@@ -290,6 +297,46 @@ describe('GuideDigestService access and snapshot gates', () => {
     });
   });
 
+  it('rejects a valid late residual result when its historical DRAFT baseline is rejected during runtime', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '旧 revision 连续性基线' }));
+    const baseline = (await service.createProposal(owner, guideId, {})).proposal;
+    advanceGuide(database, guideId, owner.id, { summary: '新 revision 当前摘要' });
+    runtime.enqueueDigest(digest({ shortSummary: '不得迟到落库的有效输出' }), () => {
+      service.rejectProposal(owner, guideId, baseline.id);
+    });
+
+    await expect(service.createProposal(owner, guideId, {})).rejects.toMatchObject({
+      statusCode: 409, code: 'GUIDE_DIGEST_PROPOSAL_CHANGED',
+    });
+
+    expect(getGuideDigestProposal(database, guideId, baseline.id)?.status).toBe('REJECTED');
+    expect(listGuideDigestProposals(database, guideId)).toEqual([
+      expect.objectContaining({ id: baseline.id, status: 'REJECTED' }),
+    ]);
+  });
+
+  it('rejects a late residual validation failure when its historical DRAFT baseline is rejected during repair', async () => {
+    runtime.enqueueDigest(digest({ shortSummary: '失败路径旧 revision 基线' }));
+    const baseline = (await service.createProposal(owner, guideId, {})).proposal;
+    advanceGuide(database, guideId, owner.id, { summary: '失败路径新 revision 摘要' });
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT', () => {
+      service.rejectProposal(owner, guideId, baseline.id);
+    });
+    runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
+
+    await expect(service.createProposal(owner, guideId, {})).rejects.toMatchObject({
+      statusCode: 409, code: 'GUIDE_DIGEST_PROPOSAL_CHANGED',
+    });
+
+    expect(runtime.requests).toHaveLength(3);
+    expect(promptEnvelope(runtime.requests[1]!.prompt)).toHaveProperty('continuity');
+    expect(promptEnvelope(runtime.requests[2]!.prompt)).toHaveProperty('continuity');
+    expect(getGuideDigestProposal(database, guideId, baseline.id)?.status).toBe('REJECTED');
+    expect(listGuideDigestProposals(database, guideId)).toEqual([
+      expect.objectContaining({ id: baseline.id, status: 'REJECTED' }),
+    ]);
+  });
+
   it('uses a full prompt and safe baseline-unavailable metadata when no trusted baseline exists', async () => {
     runtime.enqueueDigest(digest());
 
@@ -402,6 +449,70 @@ describe('GuideDigestService access and snapshot gates', () => {
     expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineProposalId');
     expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineRevision');
     expect(generated.proposal.generationMetadata).not.toHaveProperty('changedSourceCount');
+  });
+
+  it('falls back only a residual repair request that overflows and persists the repaired FULL output', async () => {
+    const previousRow = currentSnapshotRow(database, guideId);
+    const previousSnapshot = JSON.parse(previousRow.snapshot_json) as FlowKnowledgeSnapshotV2;
+    advanceGuide(database, guideId, owner.id, { summary: '修复请求预算边界' });
+    const currentSnapshot = JSON.parse(
+      currentSnapshotRow(database, guideId).snapshot_json,
+    ) as FlowKnowledgeSnapshotV2;
+    const sourceId = currentSnapshot.nodes[0]!.id;
+    const previousDigest = residualRepairOverflowDigest({
+      sourceId,
+      previousSnapshot,
+      currentSnapshot,
+    });
+    const baseline = createGuideDigestProposal(database, {
+      guideId,
+      workspaceId: previousRow.workspace_id,
+      baseSnapshotId: previousRow.id,
+      baseRevision: previousRow.revision,
+      bundleRevision: GUIDE_DIGEST_BUNDLE.revision,
+      rendererVersion: `guide-digest-markdown-v${DIGEST_RENDERER_VERSION}`,
+      generationMetadata: { attemptCount: 1 },
+      draft: previousDigest,
+      markdown: '# 修复请求预算边界基线',
+      createdBy: owner.id,
+    });
+    runtime.enqueueDigest(digest({
+      shortSummary: '应被修复的重复标签输出',
+      tagSuggestions: [{ label: '订单', category: 'PROCESS', sourceIds: [sourceId] }],
+    }), () => {
+      service.rejectProposal(owner, guideId, baseline.id);
+    });
+    runtime.enqueueDigest(digest({ shortSummary: '修复后的完整输出' }));
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(runtime.requests).toHaveLength(2);
+    expect(promptEnvelope(runtime.requests[0]!.prompt).continuity).toMatchObject({
+      baselineProposalId: baseline.id,
+    });
+    expect(promptEnvelope(runtime.requests[0]!.prompt)).not.toHaveProperty('schemaRepairNote');
+    expect(promptEnvelope(runtime.requests[1]!.prompt)).not.toHaveProperty('continuity');
+    expect(promptEnvelope(runtime.requests[1]!.prompt)).toMatchObject({
+      schemaRepairNote: buildGuideDigestValidationRepairNote('DUPLICATE_TAG'),
+    });
+    expect(generated.proposal).toMatchObject({
+      status: 'DRAFT',
+      draft: { shortSummary: '修复后的完整输出' },
+      generationMetadata: {
+        continuityMode: 'FULL',
+        continuityFallbackReason: 'CONTINUITY_INPUT_TOO_LARGE',
+        attemptCount: 2,
+        repairAttempted: true,
+      },
+    });
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineProposalId');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineRevision');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('changedSourceCount');
+    expect(getGuideDigestProposal(database, guideId, baseline.id)?.status).toBe('REJECTED');
+    expect(listGuideDigestProposals(database, guideId)
+      .filter(({ draft }) => draft?.shortSummary === '应被修复的重复标签输出')).toEqual([]);
+    expect(listGuideDigestProposals(database, guideId)
+      .filter(({ draft }) => draft?.shortSummary === '修复后的完整输出')).toHaveLength(1);
   });
 
   it('keeps fallback repair in FULL mode and persists only the repaired output', async () => {
@@ -1043,6 +1154,85 @@ function oversizedDigest(sourceId: string): GuideDigestDraftV1 {
   });
 }
 
+function residualRepairOverflowDigest(input: {
+  sourceId: string;
+  previousSnapshot: FlowKnowledgeSnapshotV2;
+  currentSnapshot: FlowKnowledgeSnapshotV2;
+}): GuideDigestDraftV1 {
+  if (input.previousSnapshot.origin.kind !== 'DRAFT') {
+    throw new Error('test baseline must be a DRAFT snapshot');
+  }
+  const baselineRevision = input.previousSnapshot.origin.revision;
+  const snapshotDiff = buildGuideDigestSnapshotDiff(input.previousSnapshot, input.currentSnapshot);
+  const repairNote = buildGuideDigestValidationRepairNote('DUPLICATE_TAG');
+  if (!repairNote) throw new Error('DUPLICATE_TAG repair note must exist');
+  const buildPrompt = (paddingCharacters: number, includeRepair: boolean): string => (
+    buildGuideDigestPrompt(input.currentSnapshot, {
+      continuity: {
+        baselineProposalId: '00000000-0000-0000-0000-000000000000',
+        baselineRevision,
+        previousDigest: paddedDigest(input.sourceId, paddingCharacters),
+        snapshotDiff,
+      },
+      ...(includeRepair ? { schemaRepairNote: repairNote } : {}),
+    })
+  );
+  const fits = (paddingCharacters: number, includeRepair: boolean): boolean => {
+    try {
+      assertGuideDigestRuntimeRequestBudget(
+        guideDigestBudgetRequest(buildPrompt(paddingCharacters, includeRepair)),
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof GuideDigestInputTooLargeError) return false;
+      throw error;
+    }
+  };
+
+  let lower = 0;
+  let upper = 400_000;
+  if (!fits(lower, false) || fits(upper, false)) {
+    throw new Error('test prompt-size search does not straddle the request budget');
+  }
+  while (lower + 1 < upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    if (fits(middle, false)) lower = middle;
+    else upper = middle;
+  }
+  if (fits(lower, true)) {
+    throw new Error('repair note did not cross the residual request budget');
+  }
+  assertGuideDigestRuntimeRequestBudget(guideDigestBudgetRequest(
+    buildGuideDigestPrompt(input.currentSnapshot, { schemaRepairNote: repairNote }),
+  ));
+  return paddedDigest(input.sourceId, lower);
+}
+
+function paddedDigest(sourceId: string, paddingCharacters: number): GuideDigestDraftV1 {
+  let remaining = paddingCharacters;
+  const keyRules: GuideDigestDraftV1['keyRules'] = [];
+  while (remaining > 0) {
+    const length = Math.min(2_000, remaining);
+    keyRules.push({ statement: '规'.repeat(length), sourceIds: [sourceId] });
+    remaining -= length;
+  }
+  return digest({ shortSummary: '修复请求预算边界历史摘要', keyRules });
+}
+
+function guideDigestBudgetRequest(prompt: string): BridgeRunRequestV1 {
+  return {
+    type: 'RUN',
+    requestId: '00000000-0000-0000-0000-000000000000',
+    runId: '11111111-1111-1111-1111-111111111111',
+    planVersion: GUIDE_DIGEST_BUNDLE.revision,
+    role: GUIDE_DIGEST_BUNDLE.role,
+    reasoningEffort: GUIDE_DIGEST_BUNDLE.reasoningEffort,
+    outputKind: GUIDE_DIGEST_BUNDLE.outputKind,
+    prompt,
+    allowedRoots: [],
+  };
+}
+
 function promptEnvelope(prompt: string): Record<string, unknown> {
   const marker = '<UNTRUSTED_SNAPSHOT_JSON>\n';
   const markerIndex = prompt.indexOf(marker);
@@ -1148,10 +1338,7 @@ function testVideoResource(
 }
 
 function currentProposalIdentity(database: DatabaseSync, guideId: string) {
-  const snapshot = database.prepare(
-    `SELECT id, revision, workspace_id FROM flow_knowledge_snapshots
-     WHERE guide_id = ? AND origin_type = 'DRAFT'`,
-  ).get(guideId) as { id: string; revision: number; workspace_id: string };
+  const snapshot = currentSnapshotRow(database, guideId);
   return {
     guideId,
     workspaceId: snapshot.workspace_id,
@@ -1160,6 +1347,24 @@ function currentProposalIdentity(database: DatabaseSync, guideId: string) {
     bundleRevision: GUIDE_DIGEST_BUNDLE.revision,
     rendererVersion: `guide-digest-markdown-v${DIGEST_RENDERER_VERSION}`,
     generationMetadata: { attemptCount: 1 },
+  };
+}
+
+function currentSnapshotRow(database: DatabaseSync, guideId: string): {
+  id: string;
+  revision: number;
+  workspace_id: string;
+  snapshot_json: string;
+} {
+  return database.prepare(
+    `SELECT id, revision, workspace_id, snapshot_json FROM flow_knowledge_snapshots
+     WHERE guide_id = ? AND origin_type = 'DRAFT'
+     ORDER BY revision DESC, created_at DESC, id DESC LIMIT 1`,
+  ).get(guideId) as {
+    id: string;
+    revision: number;
+    workspace_id: string;
+    snapshot_json: string;
   };
 }
 
