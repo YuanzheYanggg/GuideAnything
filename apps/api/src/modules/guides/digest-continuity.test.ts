@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildGuideDigestSnapshotDiff,
-  GuideDigestContinuityValidationError,
   hasGuideDigestBusinessChanges,
   validateGuideDigestTagContinuity,
 } from './digest-continuity';
@@ -203,9 +202,9 @@ describe('guide digest snapshot continuity', () => {
     const diff = buildGuideDigestSnapshotDiff(previous, current);
 
     expect(() => validateGuideDigestTagContinuity(current, previousDigest, diff, changedCategory))
-      .toThrow(GuideDigestContinuityValidationError);
+      .toThrow(expect.objectContaining({ code: 'MISSING_UNCHANGED_TAG' }));
     expect(() => validateGuideDigestTagContinuity(current, previousDigest, diff, changedSources))
-      .toThrow(GuideDigestContinuityValidationError);
+      .toThrow(expect.objectContaining({ code: 'MISSING_UNCHANGED_TAG' }));
   });
 
   it('allows a new suggestion when it cites affected evidence', () => {
@@ -241,6 +240,40 @@ describe('guide digest snapshot continuity', () => {
         draft(),
       )).not.toThrow();
     }
+  });
+
+  it('allows a prior multi-source suggestion to disappear when any cited source is affected', () => {
+    const previous = snapshot();
+    const current = snapshot();
+    current.nodes[0] = { ...current.nodes[0]!, title: '更新后的原料确认' };
+    const previousDigest = draft({
+      tagSuggestions: [{ label: '原料', category: 'OBJECT', sourceIds: ['node-1', 'annotation-1'] }],
+    });
+
+    expect(() => validateGuideDigestTagContinuity(
+      current,
+      previousDigest,
+      buildGuideDigestSnapshotDiff(previous, current),
+      draft(),
+    )).not.toThrow();
+  });
+
+  it('reports a missing unchanged tag before an unsupported new label', () => {
+    const previous = snapshot();
+    const current = snapshot();
+    const previousDigest = draft({
+      tagSuggestions: [{ label: '原料', category: 'OBJECT', sourceIds: ['node-1'] }],
+    });
+    const candidate = draft({
+      tagSuggestions: [{ label: '供应商', category: 'ROLE', sourceIds: ['annotation-1'] }],
+    });
+
+    expect(() => validateGuideDigestTagContinuity(
+      current,
+      previousDigest,
+      buildGuideDigestSnapshotDiff(previous, current),
+      candidate,
+    )).toThrow(expect.objectContaining({ code: 'MISSING_UNCHANGED_TAG' }));
   });
 
   it('matches stable candidates with NFKC, trimmed, case-insensitive labels and source-ID sets', () => {
