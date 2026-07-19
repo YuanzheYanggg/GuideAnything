@@ -184,6 +184,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const guideRef = useRef<GuideDraftDetail | null>(null);
   const saveStateRef = useRef(saveState);
   const savedEditorStateRef = useRef<{ document: CanvasDocument | null; title: string; summary: string; tags: string[] }>({ document: null, title: '', summary: '', tags: [] });
+  const programmaticViewportRef = useRef<CanvasDocument['viewport'] | null>(null);
   const appliedFocusRef = useRef<string | null>(null);
   const stageDragRef = useRef<StageDrag | null>(null);
   const latestEditorStateRef = useRef<{ document: CanvasDocument | null; title: string; summary: string; tags: string[] }>({ document: null, title: '', summary: '', tags: [] });
@@ -599,8 +600,11 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     setDocument((current) => {
       if (!current || (current.viewport.x === viewport.x && current.viewport.y === viewport.y && current.viewport.zoom === viewport.zoom)) return current;
       const next = { ...current, viewport };
-      if (_event === null && !hasUnsavedEditorChanges(latestEditorStateRef.current, savedEditorStateRef.current)) {
-        savedEditorStateRef.current = { ...savedEditorStateRef.current, document: next };
+      if (_event === null) {
+        programmaticViewportRef.current = viewport;
+        if (!hasUnsavedEditorChanges(latestEditorStateRef.current, savedEditorStateRef.current)) {
+          savedEditorStateRef.current = { ...savedEditorStateRef.current, document: next };
+        }
       }
       return next;
     });
@@ -749,9 +753,13 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
         const updated = await api.saveGuide(snapshot.guideId, snapshot.revision, { title: snapshot.title, summary: snapshot.summary, tags: snapshot.tags, document: clean });
         guideRef.current = updated;
         setGuide(updated);
-        savedEditorStateRef.current = { document: snapshot.document, title: snapshot.title, summary: snapshot.summary, tags: snapshot.tags };
         const latest = latestEditorStateRef.current;
-        const unchanged = !hasUnsavedEditorChanges(latest, { document: snapshot.document, title: snapshot.title, summary: snapshot.summary, tags: snapshot.tags });
+        const savedDocument = mergeProgrammaticViewport(snapshot.document, latest.document, programmaticViewportRef.current);
+        if (programmaticViewportRef.current && latest.document && sameViewport(latest.document.viewport, programmaticViewportRef.current)) {
+          programmaticViewportRef.current = null;
+        }
+        savedEditorStateRef.current = { document: savedDocument, title: snapshot.title, summary: snapshot.summary, tags: snapshot.tags };
+        const unchanged = !hasUnsavedEditorChanges(latest, { document: savedDocument, title: snapshot.title, summary: snapshot.summary, tags: snapshot.tags });
         setSaveState(unchanged ? '已保存' : '未保存');
         if (!unchanged) saveRetryRef.current = true;
         return updated;
@@ -1294,6 +1302,17 @@ function hasUnsavedEditorChanges(
 
 function editorStateFingerprint(state: { document: CanvasDocument | null; title: string; summary: string; tags: string[] }): string {
   return JSON.stringify({ document: state.document, title: state.title, summary: state.summary, tags: state.tags });
+}
+
+function mergeProgrammaticViewport(
+  savedDocument: CanvasDocument,
+  latestDocument: CanvasDocument | null,
+  programmaticViewport: CanvasDocument['viewport'] | null,
+): CanvasDocument {
+  if (!latestDocument || !programmaticViewport || !sameViewport(latestDocument.viewport, programmaticViewport)) return savedDocument;
+  return sameViewport(savedDocument.viewport, programmaticViewport)
+    ? savedDocument
+    : { ...savedDocument, viewport: programmaticViewport };
 }
 
 export function removeHierarchyItem(document: CanvasDocument, kind: 'stage' | 'lane', itemId: string): CanvasDocument {

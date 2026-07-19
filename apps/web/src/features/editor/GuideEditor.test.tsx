@@ -93,6 +93,43 @@ function openHierarchyPanel() {
 }
 
 describe('GuideEditor', () => {
+  it('does not retry an in-flight real save after a programmatic move and generates from its revision', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } }],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: ['start'],
+    };
+    const api = createApi({ document });
+    let resolveSave: ((guide: GuideDraftDetail) => void) | undefined;
+    (api.saveGuide as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<GuideDraftDetail>((resolve) => { resolveSave = resolve; }));
+    (api.getFlowSnapshotStatus as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotStatus(1));
+    (api.createGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue(digestProposal());
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    const summary = await screen.findByLabelText('摘要');
+
+    fireEvent.change(summary, { target: { value: '已保存的真实编辑' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledWith('guide-host', 0, expect.objectContaining({ summary: '已保存的真实编辑' })));
+    act(() => reactFlowCallbacks.onMoveEnd?.(null, { x: -184, y: 36, zoom: 0.72 }));
+    resolveSave?.({ ...emptyGuide, revision: 1, summary: '已保存的真实编辑', document });
+
+    await waitFor(() => expect(screen.getByText(/已保存/)).toBeVisible());
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(api.saveGuide).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('button', { name: '生成结构化摘要' });
+    fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
+    await waitFor(() => expect(api.createGuideDigestProposal).toHaveBeenCalledWith('guide-host', { regenerate: false }));
+    expect(api.saveGuide).toHaveBeenCalledTimes(1);
+
+    act(() => reactFlowCallbacks.onMoveEnd?.({} as MouseEvent, { x: -220, y: 48, zoom: 0.68 }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledWith('guide-host', 1, expect.objectContaining({
+      document: expect.objectContaining({ viewport: { x: -220, y: 48, zoom: 0.68 } }),
+    })));
+  });
+
   it('does not save after a programmatic React Flow move before generating from the loaded revision', async () => {
     const document: CanvasDocument = {
       schemaVersion: 1,
