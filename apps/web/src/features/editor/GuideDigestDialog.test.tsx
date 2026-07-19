@@ -1,0 +1,59 @@
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+
+import { GuideDigestDialog, type GuideDigestProposal } from './GuideDigestDialog';
+
+const proposal: GuideDigestProposal = {
+  id: 'proposal-1', guideId: 'guide-1', workspaceId: 'workspace-1', baseSnapshotId: 'snapshot-1', baseRevision: 4,
+  bundleRevision: 1, rendererVersion: 'guide-digest-markdown-v1', generationMetadata: {}, status: 'DRAFT',
+  draft: {
+    schemaVersion: 1, shortSummary: '建议的流程摘要', scope: { audiences: [], businessObjects: [], systems: [] },
+    stageSections: [], keyRules: [],
+    tagSuggestions: [{ label: '订单复核', category: 'PROCESS', sourceIds: ['node-1'] }],
+    gaps: [{ code: 'MISSING_EXIT', message: '缺少明确出口', sourceIds: ['node-1'] }],
+  },
+  markdown: '# 指南总览\n\n安全内容\n\n<script>alert(1)</script>', failureCode: null, supersedesProposalId: null,
+  appliedRevision: null, selectedSummary: null, acceptedTags: null, acceptedMarkdown: null,
+  createdBy: 'author', createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z',
+};
+
+describe('GuideDigestDialog', () => {
+  it('keeps suggested tags unselected and sanitizes the read-only Markdown proposal', () => {
+    render(<GuideDigestDialog
+      guide={{ id: 'guide-1', revision: 4, summary: '当前摘要', tags: ['ERP'] }}
+      status={{ guideRevision: 4, sourceStatus: 'READY', snapshotId: 'snapshot-1', snapshotRevision: 4, snapshotSchemaVersion: 2, failureCode: null }}
+      proposal={proposal}
+      onReconcile={vi.fn()}
+      onGenerate={vi.fn()}
+      onReject={vi.fn()}
+      onApply={vi.fn()}
+      onClose={vi.fn()}
+    />);
+
+    expect(screen.getByRole('checkbox', { name: '采用标签 订单复核' })).not.toBeChecked();
+    expect(screen.getByText('ERP')).toHaveClass('guide-digest-current-tag');
+    expect(screen.getByText('订单复核')).toHaveClass('guide-digest-suggested-tag');
+    expect(screen.queryByText('alert(1)')).not.toBeInTheDocument();
+    expect(screen.getByText('安全内容')).toBeInTheDocument();
+    expect(screen.getByText('缺少明确出口')).toBeInTheDocument();
+  });
+
+  it('refuses an empty effective apply selection', () => {
+    const onApply = vi.fn();
+    render(<GuideDigestDialog
+      guide={{ id: 'guide-1', revision: 4, summary: '当前摘要', tags: ['ERP'] }}
+      status={{ guideRevision: 4, sourceStatus: 'READY', snapshotId: 'snapshot-1', snapshotRevision: 4, snapshotSchemaVersion: 2, failureCode: null }}
+      proposal={proposal}
+      onReconcile={vi.fn()}
+      onGenerate={vi.fn()}
+      onReject={vi.fn()}
+      onApply={onApply}
+      onClose={vi.fn()}
+    />);
+
+    fireEvent.click(screen.getByRole('button', { name: '接受并应用到草稿' }));
+
+    expect(onApply).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('至少选择一项摘要、标签或 Markdown');
+  });
+});

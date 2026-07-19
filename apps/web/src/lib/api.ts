@@ -4,6 +4,7 @@ import { decodeAgentEventStream } from '../features/agents/useAgentRunStream';
 import type { ArtifactsApi } from '../features/artifacts/types';
 import type { DraftItem, LibraryApi, SearchItem } from '../features/library/LibraryPage';
 import type { EditorApi, GuideDraftDetail, SearchPage } from '../features/editor/GuideEditor';
+import type { GuideDigestProposal, GuideFlowSnapshotStatus } from '../features/editor/GuideDigestDialog';
 import type { EditorialApi } from '../features/editorial/types';
 import type { KnowledgeApi, KnowledgeDocument, KnowledgeHealth, KnowledgeOverview, KnowledgeSearchHit } from '../features/knowledge/types';
 import type { SourcesApi, WorkspaceSource, WorkspaceSourcesResult, FlowSnapshotSummary } from '../features/sources/types';
@@ -71,6 +72,20 @@ export class ApiClient {
         method: 'PATCH',
         body: JSON.stringify({ revision, ...changes }),
       })).guide,
+      getFlowSnapshotStatus: async (guideId) => (await this.request<{ status: GuideFlowSnapshotStatus }>(`/guides/${encodeURIComponent(guideId)}/flow-snapshot-status`)).status,
+      reconcileFlowSnapshot: async (guideId) => (await this.request<{ status: GuideFlowSnapshotStatus }>(`/guides/${encodeURIComponent(guideId)}/flow-snapshot/reconcile`, { method: 'POST' })).status,
+      createGuideDigestProposal: async (guideId, input = {}) => (await this.request<{ proposal: GuideDigestProposal }>(`/guides/${encodeURIComponent(guideId)}/digest-proposals`, {
+        method: 'POST', body: JSON.stringify(input),
+      })).proposal,
+      listGuideDigestProposals: async (guideId) => (await this.request<{ items: GuideDigestProposal[] }>(`/guides/${encodeURIComponent(guideId)}/digest-proposals`)).items,
+      getGuideDigestProposal: async (guideId, proposalId) => (await this.request<{ proposal: GuideDigestProposal }>(`/guides/${encodeURIComponent(guideId)}/digest-proposals/${encodeURIComponent(proposalId)}`)).proposal,
+      rejectGuideDigestProposal: async (guideId, proposalId) => (await this.request<{ proposal: GuideDigestProposal }>(`/guides/${encodeURIComponent(guideId)}/digest-proposals/${encodeURIComponent(proposalId)}/status`, {
+        method: 'PATCH', body: JSON.stringify({ status: 'REJECTED' }),
+      })).proposal,
+      applyGuideDigestProposal: (guideId, proposalId, selection) => this.request<{ guide: GuideDraftDetail; proposal: GuideDigestProposal }>(
+        `/guides/${encodeURIComponent(guideId)}/digest-proposals/${encodeURIComponent(proposalId)}/apply`,
+        { method: 'POST', body: JSON.stringify(selection) },
+      ),
       listDraftHistory: async (guideId) => (await this.request<{ items: GuideDraftHistorySnapshot[] }>(`/guides/${guideId}/draft-history`)).items,
       restoreDraft: async (guideId, sourceRevision, revision) => (await this.request<{ guide: GuideDraftDetail }>(
         `/guides/${guideId}/draft-history/${sourceRevision}/restore`,

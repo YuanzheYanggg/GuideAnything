@@ -92,6 +92,26 @@ function openHierarchyPanel() {
 }
 
 describe('GuideEditor', () => {
+  it('saves pending guide fields before explicitly generating a digest and uses the saved revision', async () => {
+    const api = createApi();
+    (api.saveGuide as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ...emptyGuide, revision: 7, summary: '待保存摘要', document: emptyGuide.document });
+    (api.getFlowSnapshotStatus as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ guideRevision: 0, sourceStatus: 'READY', snapshotId: 'snapshot-0', snapshotRevision: 0, snapshotSchemaVersion: 2, failureCode: null })
+      .mockResolvedValueOnce({ guideRevision: 7, sourceStatus: 'READY', snapshotId: 'snapshot-7', snapshotRevision: 7, snapshotSchemaVersion: 2, failureCode: null });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    const summary = await screen.findByLabelText('摘要');
+    fireEvent.change(summary, { target: { value: '待保存摘要' } });
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('button', { name: '生成结构化摘要' });
+    expect(api.createGuideDigestProposal).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledWith('guide-host', 0, expect.objectContaining({ summary: '待保存摘要' })));
+    await waitFor(() => expect(api.createGuideDigestProposal).toHaveBeenCalledWith('guide-host', { regenerate: false }));
+    expect(api.getFlowSnapshotStatus).toHaveBeenCalledTimes(2);
+  });
+
   it('records the guide as recent only after a successful load', async () => {
     const personalApi = createPersonalApiMock();
     render(<GuideEditor guideId="guide-host" api={createApi()} personalApi={personalApi} onBack={vi.fn()} />);
@@ -1259,6 +1279,13 @@ function createApi(overrides: { document?: CanvasDocument } = {}): EditorApi & R
     listDraftHistory: vi.fn().mockResolvedValue([]),
     restoreDraft: vi.fn().mockResolvedValue({ ...guide, revision: 1 }),
     publishGuide: vi.fn().mockResolvedValue(sourceVersion),
+    getFlowSnapshotStatus: vi.fn().mockResolvedValue({ guideRevision: 0, sourceStatus: 'READY', snapshotId: 'snapshot-0', snapshotRevision: 0, snapshotSchemaVersion: 2, failureCode: null }),
+    reconcileFlowSnapshot: vi.fn(),
+    createGuideDigestProposal: vi.fn().mockResolvedValue({}),
+    listGuideDigestProposals: vi.fn().mockResolvedValue([]),
+    getGuideDigestProposal: vi.fn(),
+    rejectGuideDigestProposal: vi.fn(),
+    applyGuideDigestProposal: vi.fn(),
     search: vi.fn().mockResolvedValue({ items: [{ versionId: 'version-source', guideId: 'guide-source', workspaceId: 'workspace-materials', workspaceItemId: 'item-guide-source', workspaceName: '物料管理', favorite: false, canManageLifecycle: false, title: '物料主数据检查', summary: '', tags: ['物料'], version: 1, authorName: '王作者' }], nextOffset: null }),
     referenceUpdates: vi.fn().mockResolvedValue([]),
     getVersion: vi.fn().mockResolvedValue(sourceVersion),
