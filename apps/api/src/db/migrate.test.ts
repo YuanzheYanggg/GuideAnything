@@ -28,6 +28,25 @@ function seedPrincipals(database: DatabaseSync): void {
   ).run(now, now);
 }
 
+function seedGuideDigestBase(database: DatabaseSync): void {
+  database.prepare(
+    `INSERT INTO guides (
+      id, owner_id, title, summary, tags_json, status, visibility, revision,
+      draft_document, created_at, updated_at
+    ) VALUES ('digest-guide', 'user-one', '摘要指南', '', '[]', 'DRAFT', 'INTERNAL', 7, '{}', ?, ?)`,
+  ).run(now, now);
+  database.prepare(
+    `INSERT INTO workspace_items (
+      id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+    ) VALUES ('digest-guide-item', 'workspace-one', 'GUIDE', 'digest-guide', '摘要指南', '', 'user-one', ?, ?)`,
+  ).run(now, now);
+  database.prepare(
+    `INSERT INTO flow_knowledge_snapshots (
+      id, guide_id, workspace_id, origin_type, revision, document_checksum, snapshot_json, created_at
+    ) VALUES ('digest-snapshot', 'digest-guide', 'workspace-one', 'DRAFT', 7, 'checksum', '{}', ?)`,
+  ).run(now);
+}
+
 function insertConversation(
   database: DatabaseSync,
   input: { id: string; ownerId: string; scope?: 'GLOBAL_SANTEXWELL' | 'WORKSPACE'; workspaceId?: string | null },
@@ -176,10 +195,12 @@ describe('database migrations', () => {
       'workspace_flow_proposal_operations',
       'workspace_flow_proposal_evidence',
       'workspace_editorial_audit_events',
+      'guide_digest_proposals',
+      'guide_digest_audit_events',
     ]));
     expect(database.prepare(
       'SELECT version FROM schema_migrations ORDER BY version',
-    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }]);
+    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }]);
 
     const indexesAndTriggers = database.prepare(
       "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_%'",
@@ -209,6 +230,15 @@ describe('database migrations', () => {
       'workspace_resource_mounts_provider_idx',
       'guide_draft_revisions_latest_idx',
       'guide_draft_revisions_immutable',
+      'guide_digest_proposals_guide_created_idx',
+      'guide_digest_proposals_guide_revision_status_idx',
+      'guide_digest_proposals_one_draft_idx',
+      'guide_digest_proposals_scope_insert',
+      'guide_digest_proposals_immutable_content',
+      'guide_digest_proposals_status_transition',
+      'guide_digest_audit_events_proposal_created_idx',
+      'guide_digest_audit_events_scope_insert',
+      'guide_digest_audit_events_immutable',
     ]));
 
     const strictByTable = new Map(
@@ -228,6 +258,7 @@ describe('database migrations', () => {
       'workspace_editorial_audit_events',
       'workspace_folders', 'workspace_resource_mounts',
       'guide_draft_revisions',
+      'guide_digest_proposals', 'guide_digest_audit_events',
     ]) {
       expect(strictByTable.get(table), `${table} should be STRICT`).toBe(1);
     }
@@ -267,6 +298,52 @@ describe('database migrations', () => {
       saved_by: 'user-one', saved_at: later,
     });
     expect(database.prepare(`SELECT COUNT(*) AS count FROM guide_draft_revisions WHERE guide_id = 'legacy-guide'`).get()).toEqual({ count: 1 });
+  });
+
+  it('enforces immutable, scoped, state-dependent guide digest proposal storage', () => {
+    database = createDatabase(':memory:');
+    migrateDatabase(database);
+    seedPrincipals(database);
+    seedGuideDigestBase(database);
+
+    const insert = database.prepare(
+      `INSERT INTO guide_digest_proposals (
+        id, guide_id, workspace_id, base_snapshot_id, base_revision, bundle_revision,
+        renderer_version, generation_metadata_json, status, draft_json, markdown,
+        failure_code, supersedes_proposal_id, created_by, created_at, updated_at
+      ) VALUES (?, 'digest-guide', 'workspace-one', 'digest-snapshot', 7, 1,
+        'renderer-v1', '{}', ?, ?, ?, ?, NULL, 'user-one', ?, ?)`,
+    );
+
+    expect(() => insert.run('invalid-draft', 'DRAFT', null, null, null, now, now)).toThrow();
+    insert.run('digest-proposal', 'DRAFT', '{"schemaVersion":1}', '# 摘要', null, now, now);
+    expect(() => insert.run('duplicate-draft', 'DRAFT', '{"schemaVersion":1}', '# 重复', null, now, now)).toThrow();
+    expect(() => database!.prepare(
+      `UPDATE guide_digest_proposals SET markdown = '# 已篡改' WHERE id = 'digest-proposal'`,
+    ).run()).toThrow(/immutable/i);
+    expect(() => insert.run('unsafe-failure', 'FAILED', null, null, 'raw model output', now, now)).toThrow();
+    expect(() => insert.run('safe-failure', 'FAILED', null, null, 'SCHEMA_INVALID', now, now)).not.toThrow();
+
+    database.prepare(
+      `INSERT INTO guides (
+        id, owner_id, title, summary, tags_json, status, visibility, revision,
+        draft_document, created_at, updated_at
+      ) VALUES ('other-guide', 'user-one', '其他指南', '', '[]', 'DRAFT', 'INTERNAL', 7, '{}', ?, ?)`,
+    ).run(now, now);
+    database.prepare(
+      `INSERT INTO workspace_items (
+        id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+      ) VALUES ('other-guide-item', 'workspace-one', 'GUIDE', 'other-guide', '其他指南', '', 'user-one', ?, ?)`,
+    ).run(now, now);
+    expect(() => database!.prepare(
+      `INSERT INTO guide_digest_proposals (
+        id, guide_id, workspace_id, base_snapshot_id, base_revision, bundle_revision,
+        renderer_version, generation_metadata_json, status, draft_json, markdown,
+        failure_code, created_by, created_at, updated_at
+      ) VALUES ('cross-guide', 'other-guide', 'workspace-one', 'digest-snapshot', 7, 1,
+        'renderer-v1', '{}', 'DRAFT', '{"schemaVersion":1}', '# 摘要', NULL,
+        'user-one', ?, ?)`,
+    ).run(now, now)).toThrow(/scope/i);
   });
 
   it('enforces conversation scope and mutually exclusive source ownership', () => {
