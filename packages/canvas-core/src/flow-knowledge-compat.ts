@@ -94,7 +94,7 @@ function normalizeRelations(
   embeddedResources.forEach(({ attachment, parentNodeId }) => {
     addSynthesizedRelation(relationsById, {
       kind: 'USES_RESOURCE',
-      id: `uses:${parentNodeId}:${attachment.nodeId}`,
+      id: synthesizedRelationId('USES_RESOURCE', parentNodeId, attachment.nodeId),
       sourceNodeId: parentNodeId,
       resourceId: attachment.nodeId,
     });
@@ -132,14 +132,38 @@ function resourceReferences(
   targets.forEach(({ id, targetId }) => {
     if (!targetId) return [];
     if (nodeIds.has(targetId)) {
-      relations.push({ kind: 'RESOURCE_REFERENCE', id: `reference:${attachment.nodeId}:${id}`, sourceResourceId: attachment.nodeId, targetNodeId: targetId });
+      relations.push({
+        kind: 'RESOURCE_REFERENCE',
+        id: synthesizedRelationId('RESOURCE_REFERENCE', attachment.nodeId, id),
+        sourceResourceId: attachment.nodeId,
+        targetNodeId: targetId,
+      });
       return;
     }
     if (resourceIds.has(targetId)) {
-      relations.push({ kind: 'RESOURCE_REFERENCE', id: `reference:${attachment.nodeId}:${id}`, sourceResourceId: attachment.nodeId, targetResourceId: targetId });
+      relations.push({
+        kind: 'RESOURCE_REFERENCE',
+        id: synthesizedRelationId('RESOURCE_REFERENCE', attachment.nodeId, id),
+        sourceResourceId: attachment.nodeId,
+        targetResourceId: targetId,
+      });
     }
   });
   return relations;
+}
+
+function synthesizedRelationId(kind: 'USES_RESOURCE' | 'RESOURCE_REFERENCE', sourceId: string, targetId: string): string {
+  const prefix = kind === 'USES_RESOURCE' ? 'uses' : 'reference';
+  return `${prefix}:${stableTupleHash([kind, sourceId, targetId])}`;
+}
+
+function stableTupleHash(values: string[]): string {
+  let hash = 2_166_136_261;
+  for (const character of values.join('\u0000')) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 function compareRelation(left: FlowKnowledgeRelationV2, right: FlowKnowledgeRelationV2): number {
