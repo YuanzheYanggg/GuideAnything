@@ -6,7 +6,7 @@ import {
   type GuideDigestDraftV1,
 } from '@guideanything/contracts';
 
-export const DIGEST_RENDERER_VERSION = 2;
+export const DIGEST_RENDERER_VERSION = 3;
 
 const MAX_ID_MANIFEST_CHARACTERS = 80_000;
 
@@ -87,14 +87,20 @@ export function validateGuideDigestSources(
   const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
   const resourceById = new Map(snapshot.resources.map((resource) => [resource.id, resource]));
   const resourceIdsByNodeId = new Map<string, Set<string>>();
+  const resourceIdsByResourceId = new Map<string, Set<string>>();
   const stageIdsByResourceId = new Map<string, Set<string>>();
   const usedResourceIds = new Set<string>();
   for (const relation of snapshot.relations) {
-    if (relation.kind !== 'USES_RESOURCE') continue;
-    addToSetMap(resourceIdsByNodeId, relation.sourceNodeId, relation.resourceId);
-    usedResourceIds.add(relation.resourceId);
-    const stageId = nodeById.get(relation.sourceNodeId)?.stage?.id;
-    if (stageId) addToSetMap(stageIdsByResourceId, relation.resourceId, stageId);
+    if (relation.kind === 'USES_RESOURCE') {
+      addToSetMap(resourceIdsByNodeId, relation.sourceNodeId, relation.resourceId);
+      usedResourceIds.add(relation.resourceId);
+      const stageId = nodeById.get(relation.sourceNodeId)?.stage?.id;
+      if (stageId) addToSetMap(stageIdsByResourceId, relation.resourceId, stageId);
+      continue;
+    }
+    if (relation.kind === 'RESOURCE_REFERENCE' && relation.targetResourceId) {
+      addToSetMap(resourceIdsByResourceId, relation.sourceResourceId, relation.targetResourceId);
+    }
   }
   const diagnosticIds = Object.values(snapshot.diagnostics).flat();
   const addressableDiagnosticIds = new Set(
@@ -114,13 +120,18 @@ export function validateGuideDigestSources(
       const representedStageIds = resource ? stageIdsByResourceId.get(resource.id) : undefined;
       if (
         resource
-        && usedResourceIds.has(resource.id)
-        && !representedStageIds?.has(section.stageId)
+        && (!usedResourceIds.has(resource.id) || !representedStageIds?.has(section.stageId))
       ) {
         throw new GuideDigestSourceValidationError('STEP_STAGE_MISMATCH');
       }
       if (node) {
         const representedResourceIds = resourceIdsByNodeId.get(node.id) ?? new Set<string>();
+        if (step.resourceIds.some((id) => !representedResourceIds.has(id))) {
+          throw new GuideDigestSourceValidationError('STEP_RESOURCE_MISMATCH');
+        }
+      }
+      if (resource) {
+        const representedResourceIds = resourceIdsByResourceId.get(resource.id) ?? new Set<string>();
         if (step.resourceIds.some((id) => !representedResourceIds.has(id))) {
           throw new GuideDigestSourceValidationError('STEP_RESOURCE_MISMATCH');
         }
@@ -183,11 +194,62 @@ function deterministicStructuralGaps(
       message: `阶段“${stage.title}”没有业务节点。`,
       sourceIds: [stage.id],
     }));
+  const reachableNodeIds = nodesReachableFromFlowRoots(snapshot);
+  const usedResourceIds = new Set<string>();
+  for (const relation of snapshot.relations) {
+    if (relation.kind === 'USES_RESOURCE') usedResourceIds.add(relation.resourceId);
+  }
+  snapshot.nodes
+    .filter((node) => !reachableNodeIds.has(node.id))
+    .forEach((node) => result.push({
+      code: 'UNCONNECTED_NODE',
+      message: `节点“${node.title}”没有连接到流程入口。`,
+      sourceIds: [node.id],
+    }));
+  orderedResources(snapshot)
+    .filter((resource) => !usedResourceIds.has(resource.id))
+    .forEach((resource) => result.push({
+      code: 'UNREFERENCED_RESOURCE',
+      message: `资料“${resource.id}”没有被任何业务节点使用。`,
+      sourceIds: [resource.id],
+    }));
   return result;
 }
 
+function nodesReachableFromFlowRoots(snapshot: FlowKnowledgeSnapshotV2): Set<string> {
+  const nodeIds = new Set(snapshot.nodes.map((node) => node.id));
+  const outgoing = new Map(snapshot.nodes.map((node) => [node.id, [] as string[]]));
+  const incomingCount = new Map(snapshot.nodes.map((node) => [node.id, 0]));
+  for (const relation of snapshot.relations) {
+    if (relation.kind !== 'FLOW') continue;
+    outgoing.get(relation.sourceNodeId)?.push(relation.targetNodeId);
+    incomingCount.set(relation.targetNodeId, (incomingCount.get(relation.targetNodeId) ?? 0) + 1);
+  }
+  let roots = snapshot.nodes.filter((node) => node.isEntry).map((node) => node.id);
+  if (roots.length === 0) {
+    roots = snapshot.nodes
+      .filter((node) => incomingCount.get(node.id) === 0)
+      .map((node) => node.id);
+  }
+  if (roots.length === 0 && snapshot.nodes[0]) roots = [snapshot.nodes[0].id];
+
+  const reachable = new Set<string>();
+  const queue = [...roots];
+  for (let index = 0; index < queue.length; index += 1) {
+    const id = queue[index]!;
+    if (reachable.has(id) || !nodeIds.has(id)) continue;
+    reachable.add(id);
+    queue.push(...(outgoing.get(id) ?? []));
+  }
+  return reachable;
+}
+
 function isStructuralGap(code: GuideDigestDraftV1['gaps'][number]['code']): boolean {
-  return code === 'MISSING_ENTRY' || code === 'MISSING_EXIT' || code === 'EMPTY_STAGE';
+  return code === 'MISSING_ENTRY'
+    || code === 'MISSING_EXIT'
+    || code === 'EMPTY_STAGE'
+    || code === 'UNCONNECTED_NODE'
+    || code === 'UNREFERENCED_RESOURCE';
 }
 
 function structuralGapKey(gap: GuideDigestDraftV1['gaps'][number]): string {

@@ -34,6 +34,31 @@ describe('guide digest source validation', () => {
     }));
   });
 
+  it('treats every node in a flow component unreachable from the declared entry as unconnected', () => {
+    const disconnected = snapshot();
+    const stage = disconnected.stages[1]!;
+    disconnected.nodes.push(
+      {
+        id: 'node-orphan-a', locator: locator('node-orphan-a'), kind: 'process', title: '孤立甲',
+        stage, responsibility: null, isEntry: false, isExit: false,
+      },
+      {
+        id: 'node-orphan-b', locator: locator('node-orphan-b'), kind: 'process', title: '孤立乙',
+        stage, responsibility: null, isEntry: false, isExit: false,
+      },
+    );
+    disconnected.relations.push({
+      kind: 'FLOW', id: 'relation-orphans', sourceNodeId: 'node-orphan-a', targetNodeId: 'node-orphan-b',
+    });
+
+    const parsed = validateGuideDigestSources(disconnected, draft({ gaps: [] }));
+
+    expect(parsed.gaps).toEqual([
+      { code: 'UNCONNECTED_NODE', message: '节点“孤立甲”没有连接到流程入口。', sourceIds: ['node-orphan-a'] },
+      { code: 'UNCONNECTED_NODE', message: '节点“孤立乙”没有连接到流程入口。', sourceIds: ['node-orphan-b'] },
+    ]);
+  });
+
   it('rejects duplicate tag labels after Unicode normalization and case folding with a safe reason', () => {
     expect(() => validateGuideDigestSources(snapshot(), draft({
       tagSuggestions: [
@@ -112,6 +137,52 @@ describe('guide digest source validation', () => {
     }))).toThrow(expect.objectContaining({ code: 'CONTRADICTORY_STRUCTURAL_GAP' }));
   });
 
+  it('appends exact server-owned unconnected-node and unreferenced-resource gaps when the model omits them', () => {
+    const structurallyIncomplete = snapshot();
+    structurallyIncomplete.nodes.push({
+      id: 'node-orphan',
+      locator: locator('node-orphan'),
+      kind: 'process',
+      title: '补充记录',
+      stage: structurallyIncomplete.stages[1]!,
+      responsibility: null,
+      isEntry: false,
+      isExit: false,
+    });
+    structurallyIncomplete.resources.push({
+      kind: 'MARKDOWN',
+      id: 'resource-orphan',
+      locator: locator('resource-orphan'),
+      order: 3,
+      markdown: '没有业务节点使用的资料。',
+    });
+    structurallyIncomplete.diagnostics.unreferencedResourceIds = ['resource-orphan'];
+
+    const parsed = validateGuideDigestSources(structurallyIncomplete, draft({ gaps: [] }));
+
+    expect(parsed.gaps).toEqual([
+      {
+        code: 'UNCONNECTED_NODE',
+        message: '节点“补充记录”没有连接到流程入口。',
+        sourceIds: ['node-orphan'],
+      },
+      {
+        code: 'UNREFERENCED_RESOURCE',
+        message: '资料“resource-orphan”没有被任何业务节点使用。',
+        sourceIds: ['resource-orphan'],
+      },
+    ]);
+  });
+
+  it.each([
+    ['connected node', { code: 'UNCONNECTED_NODE', message: '模型声称节点未连接。', sourceIds: ['node-start'] }],
+    ['referenced resource', { code: 'UNREFERENCED_RESOURCE', message: '模型声称资料未引用。', sourceIds: ['resource-note'] }],
+  ])('rejects a contradictory server-owned %s gap', (_label, gap) => {
+    expect(() => validateGuideDigestSources(snapshot(), draft({ gaps: [gap] }))).toThrow(expect.objectContaining({
+      code: 'CONTRADICTORY_STRUCTURAL_GAP',
+    }));
+  });
+
   it.each([
     ['node stage', {
       stageSections: [{
@@ -157,6 +228,57 @@ describe('guide digest source validation', () => {
       code: 'STEP_STAGE_MISMATCH',
     }));
   });
+
+  it('does not let an unreferenced resource become a stage step', () => {
+    const unreferenced = snapshot();
+    unreferenced.resources.push({
+      kind: 'MARKDOWN',
+      id: 'resource-orphan',
+      locator: locator('resource-orphan'),
+      order: 3,
+      markdown: '没有业务节点使用的资料。',
+    });
+    unreferenced.diagnostics.unreferencedResourceIds = ['resource-orphan'];
+    const section = draft().stageSections.find(({ stageId }) => stageId === 'stage-prepare')!;
+
+    expect(() => validateGuideDigestSources(unreferenced, draft({
+      stageSections: [{
+        ...section,
+        steps: [{ ...section.steps[0]!, targetId: 'resource-orphan', resourceIds: [] }],
+      }],
+    }))).toThrow(expect.objectContaining({ code: 'STEP_STAGE_MISMATCH' }));
+  });
+
+  it('rejects a resource-target step resource without an explicit resource-reference relation', () => {
+    const section = draft().stageSections.find(({ stageId }) => stageId === 'stage-review')!;
+
+    expect(() => validateGuideDigestSources(snapshot(), draft({
+      stageSections: [{
+        ...section,
+        steps: [{ ...section.steps[0]!, targetId: 'resource-image', resourceIds: ['resource-video'] }],
+      }],
+    }))).toThrow(expect.objectContaining({ code: 'STEP_RESOURCE_MISMATCH' }));
+  });
+
+  it('accepts a resource-target step resource backed by an explicit resource-reference relation', () => {
+    const related = snapshot();
+    related.relations.push({
+      kind: 'RESOURCE_REFERENCE',
+      id: 'relation-image-video',
+      sourceResourceId: 'resource-image',
+      targetResourceId: 'resource-video',
+    });
+    const section = draft().stageSections.find(({ stageId }) => stageId === 'stage-review')!;
+
+    const parsed = validateGuideDigestSources(related, draft({
+      stageSections: [{
+        ...section,
+        steps: [{ ...section.steps[0]!, targetId: 'resource-image', resourceIds: ['resource-video'] }],
+      }],
+    }));
+
+    expect(parsed.stageSections[0]?.steps[0]?.resourceIds).toEqual(['resource-video']);
+  });
 });
 
 describe('guide digest Markdown renderer', () => {
@@ -167,7 +289,7 @@ describe('guide digest Markdown renderer', () => {
       baseRevision: 180,
     });
 
-    expect(DIGEST_RENDERER_VERSION).toBe(2);
+    expect(DIGEST_RENDERER_VERSION).toBe(3);
     expect(markdown).toBe(String.raw`---
 schema: guide-digest-v1
 guideId: guide-id

@@ -14,7 +14,7 @@ describe('guide digest bundle', () => {
   it('declares the app-owned focused-worker contract with the source-manifest revision', () => {
     expect(GUIDE_DIGEST_BUNDLE).toEqual({
       id: 'guideanything-guide-digest',
-      revision: 4,
+      revision: 5,
       role: 'FOCUSED_WORKER',
       reasoningEffort: 'MEDIUM',
       outputKind: 'GUIDE_DIGEST',
@@ -29,7 +29,14 @@ describe('guide digest bundle', () => {
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('gaps');
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('NFKC');
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('MISSING_ENTRY');
+    expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('UNCONNECTED_NODE');
+    expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('UNREFERENCED_RESOURCE');
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('不得输出 Markdown');
+  });
+
+  it('names the explicit relations allowed for node-target and resource-target step resources', () => {
+    expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('USES_RESOURCE');
+    expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('RESOURCE_REFERENCE');
   });
 
   it('retains the semantic graph and truncates only resource bodies in stable order', () => {

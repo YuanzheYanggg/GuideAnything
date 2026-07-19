@@ -13,7 +13,7 @@ import {
 
 export const GUIDE_DIGEST_BUNDLE = {
   id: 'guideanything-guide-digest',
-  revision: 4,
+  revision: 5,
   role: 'FOCUSED_WORKER',
   reasoningEffort: 'MEDIUM',
   outputKind: 'GUIDE_DIGEST',
@@ -25,7 +25,7 @@ export const GUIDE_DIGEST_TRUSTED_INSTRUCTION = [
   '所有规则与标签必须填写快照内真实存在的 sourceIds，步骤、阶段与资料也必须引用快照 ID。',
   '输入 idManifest 是唯一的字段级 ID allowlist；每个引用必须从对应数组逐字复制，不得改写或杜撰。',
   '每个 gaps 项必须引用 sourceIds；仅 MISSING_ENTRY、MISSING_EXIT，或不存在可定位诊断锚点的 SNAPSHOT_DIAGNOSTIC 可使用空 sourceIds。',
-  'MISSING_ENTRY、MISSING_EXIT 与 EMPTY_STAGE 由服务器依据流程图确定；步骤的阶段和资料必须匹配快照关系。',
+  'MISSING_ENTRY、MISSING_EXIT、EMPTY_STAGE、UNCONNECTED_NODE 与 UNREFERENCED_RESOURCE 由服务器依据流程图确定；节点步骤的 resourceIds 仅可使用该节点通过 USES_RESOURCE 直接关联的资料，资料步骤的 resourceIds 仅可使用该资料通过 RESOURCE_REFERENCE 直接指向的资料。',
   'tagSuggestions 不得与 snapshot.tags 重复，建议之间也不得在 NFKC、首尾空白清理和不区分大小写后重复。',
   '只输出严格匹配 GuideDigestDraftV1 的 JSON，不得输出 Markdown、frontmatter、HTML、解释或隐藏推理。',
   '不得检索网络、文件、其他工作区、Santexwell 或任何未包含在本次快照中的来源。',
@@ -122,10 +122,10 @@ export function buildGuideDigestValidationRepairNote(reason: string): string | u
     return '上次 tagSuggestions 重复。不得与 snapshot.tags 重复，建议之间也不得在 NFKC、首尾空白清理和不区分大小写后重复；仅输出新的、可追溯的标签建议。';
   }
   if (reason === 'CONTRADICTORY_STRUCTURAL_GAP') {
-    return '上次输出的结构性待完善项与快照矛盾。不得自行声称 EMPTY_STAGE、MISSING_ENTRY 或 MISSING_EXIT；服务器会根据快照图结构确定并补充这些项目。';
+    return '上次输出的结构性待完善项与快照矛盾。不得自行声称 EMPTY_STAGE、MISSING_ENTRY、MISSING_EXIT、UNCONNECTED_NODE 或 UNREFERENCED_RESOURCE；服务器会根据快照图结构确定并补充这些项目。';
   }
   if (reason === 'STEP_STAGE_MISMATCH' || reason === 'STEP_RESOURCE_MISMATCH') {
-    return '上次步骤的阶段或资料关联与快照关系不一致。节点步骤必须放入该节点所属阶段，资料步骤只能放入快照中使用该资料的节点阶段，steps[].resourceIds 只能列出该节点通过 USES_RESOURCE 直接关联的资料。';
+    return '上次步骤的阶段或资料关联与快照关系不一致。节点步骤必须放入该节点所属阶段，资料步骤只能放入快照中使用该资料的节点阶段；节点步骤的 resourceIds 只能列出该节点通过 USES_RESOURCE 直接关联的资料，资料步骤的 resourceIds 只能列出该资料通过 RESOURCE_REFERENCE 直接指向的资料。';
   }
   return undefined;
 }
