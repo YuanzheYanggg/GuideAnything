@@ -6,6 +6,7 @@ import {
   FlowKnowledgeResourceV2Schema,
   FlowKnowledgeSnapshotV2Schema,
   FlowKnowledgeStageV1Schema,
+  type GuideDigestDraftV1,
   type FlowKnowledgeSnapshotV2,
 } from '@guideanything/contracts';
 import { z } from 'zod';
@@ -71,6 +72,13 @@ export const GuideDigestSnapshotDiffV1Schema = z.object({
 
 export type GuideDigestSnapshotDiffV1 = z.infer<typeof GuideDigestSnapshotDiffV1Schema>;
 
+export class GuideDigestContinuityValidationError extends Error {
+  constructor(readonly code: 'MISSING_UNCHANGED_TAG' | 'UNJUSTIFIED_TAG_CHURN') {
+    super(code);
+    this.name = 'GuideDigestContinuityValidationError';
+  }
+}
+
 type Resource = FlowKnowledgeSnapshotV2['resources'][number];
 type Relation = FlowKnowledgeSnapshotV2['relations'][number];
 type LearningStep = FlowKnowledgeSnapshotV2['learningPath'][number];
@@ -116,6 +124,33 @@ export function hasGuideDigestBusinessChanges(diff: GuideDigestSnapshotDiffV1): 
     || collectionHasChanges(diff.resources)
     || collectionHasChanges(diff.relations)
     || collectionHasChanges(diff.learningPath);
+}
+
+export function validateGuideDigestTagContinuity(
+  currentSnapshot: FlowKnowledgeSnapshotV2,
+  previousDigest: GuideDigestDraftV1,
+  diff: GuideDigestSnapshotDiffV1,
+  candidateDraft: GuideDigestDraftV1,
+): void {
+  const currentTags = new Map(currentSnapshot.tags.map((tag) => [normalizeTagLabel(tag), tag]));
+  const previousSuggestions = new Map(previousDigest.tagSuggestions.map((tag) => [normalizeTagLabel(tag.label), tag]));
+  const candidateSuggestions = new Map(candidateDraft.tagSuggestions.map((tag) => [normalizeTagLabel(tag.label), tag]));
+  const affectedSourceIds = new Set(diff.affectedSourceIds);
+
+  for (const [label, previousTag] of previousSuggestions) {
+    if (currentTags.has(label) || hasAffectedSourceId(previousTag.sourceIds, affectedSourceIds)) continue;
+    const candidateTag = candidateSuggestions.get(label);
+    if (!candidateTag || !sameTagEvidence(previousTag, candidateTag)) {
+      throw new GuideDigestContinuityValidationError('MISSING_UNCHANGED_TAG');
+    }
+  }
+
+  for (const [label, candidateTag] of candidateSuggestions) {
+    if (currentTags.has(label) || previousSuggestions.has(label)) continue;
+    if (!hasAffectedSourceId(candidateTag.sourceIds, affectedSourceIds)) {
+      throw new GuideDigestContinuityValidationError('UNJUSTIFIED_TAG_CHURN');
+    }
+  }
 }
 
 function assertSameSnapshotIdentity(previous: FlowKnowledgeSnapshotV2, current: FlowKnowledgeSnapshotV2): void {
@@ -284,4 +319,26 @@ function isFlowLocator(value: object): value is { guideId: string; snapshotId: s
 
 function compareCodePoints(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function normalizeTagLabel(label: string): string {
+  return label.normalize('NFKC').trim().toLowerCase();
+}
+
+function hasAffectedSourceId(sourceIds: readonly string[], affectedSourceIds: ReadonlySet<string>): boolean {
+  return sourceIds.some((sourceId) => affectedSourceIds.has(sourceId));
+}
+
+function sameTagEvidence(
+  previousTag: GuideDigestDraftV1['tagSuggestions'][number],
+  candidateTag: GuideDigestDraftV1['tagSuggestions'][number],
+): boolean {
+  return previousTag.category === candidateTag.category
+    && sameSourceIdSet(previousTag.sourceIds, candidateTag.sourceIds);
+}
+
+function sameSourceIdSet(left: readonly string[], right: readonly string[]): boolean {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return leftSet.size === rightSet.size && [...leftSet].every((sourceId) => rightSet.has(sourceId));
 }

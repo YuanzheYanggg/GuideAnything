@@ -142,6 +142,12 @@ export function buildGuideDigestValidationRepairNote(reason: string): string | u
   if (reason === 'DUPLICATE_TAG') {
     return '上次 tagSuggestions 重复。不得与 snapshot.tags 重复，建议之间也不得在 NFKC、首尾空白清理和不区分大小写后重复；仅输出新的、可追溯的标签建议。';
   }
+  if (reason === 'MISSING_UNCHANGED_TAG') {
+    return '上次 tagSuggestions 漏掉了未变化的历史候选。保留历史摘要中未受本次变化影响的标签候选；已出现在 snapshot.tags 的候选无需再次输出；只有来源位于 snapshotDiff.affectedSourceIds 时才可重新评估。';
+  }
+  if (reason === 'UNJUSTIFIED_TAG_CHURN') {
+    return '上次 tagSuggestions 新增了缺乏变化证据的候选。保留历史摘要中未受本次变化影响的标签候选；已出现在 snapshot.tags 的候选无需再次输出；只新增至少一个 sourceIds 位于 snapshotDiff.affectedSourceIds 的标签候选。';
+  }
   if (reason === 'CONTRADICTORY_STRUCTURAL_GAP') {
     return '上次输出的结构性待完善项与快照矛盾。不得自行声称 EMPTY_STAGE、MISSING_ENTRY、MISSING_EXIT、UNCONNECTED_NODE 或 UNREFERENCED_RESOURCE；服务器会根据快照图结构确定并补充这些项目。';
   }

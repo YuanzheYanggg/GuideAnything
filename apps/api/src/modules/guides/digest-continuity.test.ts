@@ -1,12 +1,15 @@
 import {
   FlowKnowledgeSnapshotV2Schema,
+  type GuideDigestDraftV1,
   type FlowKnowledgeSnapshotV2,
 } from '@guideanything/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
   buildGuideDigestSnapshotDiff,
+  GuideDigestContinuityValidationError,
   hasGuideDigestBusinessChanges,
+  validateGuideDigestTagContinuity,
 } from './digest-continuity';
 
 describe('guide digest snapshot continuity', () => {
@@ -142,7 +145,135 @@ describe('guide digest snapshot continuity', () => {
     expect(() => buildGuideDigestSnapshotDiff(previous, differentGuide)).toThrow('guideId');
     expect(() => buildGuideDigestSnapshotDiff(previous, differentWorkspace)).toThrow('workspaceId');
   });
+
+  it('rejects replacement labels that cite unchanged nodes or annotations after accepting previous suggestions', () => {
+    const previousSnapshot = snapshot({ tags: ['ERP'] });
+    const current = snapshot({ tags: ['ERP', '原料', '打样'] });
+    const previousDigest = draft({
+      tagSuggestions: [
+        { label: '原料', category: 'OBJECT', sourceIds: ['node-material'] },
+        { label: '打样', category: 'PROCESS', sourceIds: ['stage-sampling'] },
+      ],
+    });
+    const metadataOnlyDiff = buildGuideDigestSnapshotDiff(previousSnapshot, current);
+    const churned = draft({
+      tagSuggestions: [
+        { label: '供应商', category: 'ROLE', sourceIds: ['node-material'] },
+        { label: '机型', category: 'OBJECT', sourceIds: ['annotation-machine'] },
+      ],
+    });
+
+    expect(() => validateGuideDigestTagContinuity(
+      current, previousDigest, metadataOnlyDiff, churned,
+    )).toThrow(expect.objectContaining({
+      code: 'UNJUSTIFIED_TAG_CHURN',
+    }));
+  });
+
+  it('allows accepted prior suggestions to leave the candidate draft', () => {
+    const previousSnapshot = snapshot({ tags: ['ERP'] });
+    const current = snapshot({ tags: ['ERP', '原料', '打样'] });
+    const previousDigest = draft({
+      tagSuggestions: [
+        { label: '原料', category: 'OBJECT', sourceIds: ['node-1'] },
+        { label: '打样', category: 'PROCESS', sourceIds: ['annotation-1'] },
+      ],
+    });
+
+    expect(() => validateGuideDigestTagContinuity(
+      current,
+      previousDigest,
+      buildGuideDigestSnapshotDiff(previousSnapshot, current),
+      draft(),
+    )).not.toThrow();
+  });
+
+  it('requires an unchanged prior suggestion to retain its category and source-ID set', () => {
+    const previous = snapshot();
+    const current = snapshot();
+    const previousDigest = draft({
+      tagSuggestions: [{ label: '原料', category: 'OBJECT', sourceIds: ['node-1', 'annotation-1'] }],
+    });
+    const changedCategory = draft({
+      tagSuggestions: [{ label: '原料', category: 'PROCESS', sourceIds: ['annotation-1', 'node-1'] }],
+    });
+    const changedSources = draft({
+      tagSuggestions: [{ label: '原料', category: 'OBJECT', sourceIds: ['node-1'] }],
+    });
+    const diff = buildGuideDigestSnapshotDiff(previous, current);
+
+    expect(() => validateGuideDigestTagContinuity(current, previousDigest, diff, changedCategory))
+      .toThrow(GuideDigestContinuityValidationError);
+    expect(() => validateGuideDigestTagContinuity(current, previousDigest, diff, changedSources))
+      .toThrow(GuideDigestContinuityValidationError);
+  });
+
+  it('allows a new suggestion when it cites affected evidence', () => {
+    const previous = snapshot();
+    const current = snapshot();
+    current.nodes[0] = { ...current.nodes[0]!, title: '更新后的原料确认' };
+
+    expect(() => validateGuideDigestTagContinuity(
+      current,
+      draft(),
+      buildGuideDigestSnapshotDiff(previous, current),
+      draft({ tagSuggestions: [{ label: '供应商', category: 'ROLE', sourceIds: ['node-1'] }] }),
+    )).not.toThrow();
+  });
+
+  it('allows affected or deleted prior suggestions to disappear', () => {
+    const previous = snapshot();
+    const affectedCurrent = snapshot();
+    affectedCurrent.nodes[0] = { ...affectedCurrent.nodes[0]!, title: '更新后的原料确认' };
+    const deletedCurrent = snapshot();
+    deletedCurrent.nodes = deletedCurrent.nodes.filter((node) => node.id !== 'node-1');
+    deletedCurrent.relations = [];
+    deletedCurrent.learningPath = [];
+    const previousDigest = draft({
+      tagSuggestions: [{ label: '原料', category: 'OBJECT', sourceIds: ['node-1'] }],
+    });
+
+    for (const current of [affectedCurrent, deletedCurrent]) {
+      expect(() => validateGuideDigestTagContinuity(
+        current,
+        previousDigest,
+        buildGuideDigestSnapshotDiff(previous, current),
+        draft(),
+      )).not.toThrow();
+    }
+  });
+
+  it('matches stable candidates with NFKC, trimmed, case-insensitive labels and source-ID sets', () => {
+    const previous = snapshot();
+    const current = snapshot();
+    const previousDigest = draft({
+      tagSuggestions: [{ label: 'MiXeD Label', category: 'OBJECT', sourceIds: ['node-1', 'annotation-1'] }],
+    });
+    const normalizedCandidate = draft({
+      tagSuggestions: [{ label: '　ｍｉｘｅｄ　ｌａｂｅｌ　', category: 'OBJECT', sourceIds: ['annotation-1', 'node-1'] }],
+    });
+
+    expect(() => validateGuideDigestTagContinuity(
+      current,
+      previousDigest,
+      buildGuideDigestSnapshotDiff(previous, current),
+      normalizedCandidate,
+    )).not.toThrow();
+  });
 });
+
+function draft(overrides: Partial<GuideDigestDraftV1> = {}): GuideDigestDraftV1 {
+  return {
+    schemaVersion: 1,
+    shortSummary: '当前流程摘要',
+    scope: { audiences: [], businessObjects: [], systems: [] },
+    stageSections: [],
+    keyRules: [],
+    tagSuggestions: [],
+    gaps: [],
+    ...overrides,
+  };
+}
 
 function snapshot(overrides: {
   snapshotId?: string;

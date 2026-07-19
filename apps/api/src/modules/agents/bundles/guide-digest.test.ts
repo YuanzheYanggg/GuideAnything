@@ -9,6 +9,7 @@ import {
   assertGuideDigestRuntimeRequestBudget,
   buildGuideDigestInputEnvelope,
   buildGuideDigestPrompt,
+  buildGuideDigestValidationRepairNote,
 } from './guide-digest';
 
 describe('guide digest bundle', () => {
@@ -40,6 +41,16 @@ describe('guide digest bundle', () => {
   it('names the explicit relations allowed for node-target and resource-target step resources', () => {
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('USES_RESOURCE');
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('RESOURCE_REFERENCE');
+  });
+
+  it.each([
+    ['MISSING_UNCHANGED_TAG', '保留历史摘要中未受本次变化影响的标签候选'],
+    ['UNJUSTIFIED_TAG_CHURN', 'snapshotDiff.affectedSourceIds'],
+  ])('builds a targeted repair note for %s', (reason, expected) => {
+    const note = buildGuideDigestValidationRepairNote(reason);
+
+    expect(note).toContain(expected);
+    expect(note).toContain('snapshot.tags');
   });
 
   it('retains the semantic graph and truncates only resource bodies in stable order', () => {
