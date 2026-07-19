@@ -865,23 +865,21 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       }
       const beforeApply = editorStateBeforeVerification;
       const result = await api.applyGuideDigestProposal(guide.id, proposalId, selection);
-      guideRef.current = result.guide;
-      setGuide(result.guide);
-      const unchangedDuringApply = !hasUnsavedEditorChanges(latestEditorStateRef.current, beforeApply);
-      if (unchangedDuringApply) {
-        const currentDocument = document ?? result.guide.document;
-        savedEditorStateRef.current = { document: currentDocument, title: result.guide.title, summary: result.guide.summary, tags: result.guide.tags };
-        setTitle(result.guide.title);
-        setSummary(result.guide.summary);
-        setTags(result.guide.tags);
-        setDocument((current) => current ?? currentDocument);
-        latestEditorStateRef.current = { document: currentDocument, title: result.guide.title, summary: result.guide.summary, tags: result.guide.tags };
-        historyRef.current = new HistoryStack(currentDocument, 80);
-        setSaveState('已保存');
-      } else {
-        savedEditorStateRef.current = { document: result.guide.document, title: result.guide.title, summary: result.guide.summary, tags: result.guide.tags };
-        setSaveState('未保存');
-      }
+      const authoritative = { document: result.guide.document, title: result.guide.title, summary: result.guide.summary, tags: result.guide.tags };
+      const latestDuringApply = latestEditorStateRef.current;
+      const documentChangedDuringApply = !sameEditorValue(latestDuringApply.document, beforeApply.document);
+      const merged = mergeAppliedEditorState(beforeApply, latestDuringApply, authoritative);
+      const mergedGuide = { ...result.guide, ...merged };
+      guideRef.current = mergedGuide;
+      setGuide(mergedGuide);
+      savedEditorStateRef.current = authoritative;
+      setTitle(merged.title);
+      setSummary(merged.summary);
+      setTags(merged.tags);
+      setDocument(merged.document);
+      latestEditorStateRef.current = merged;
+      if (!documentChangedDuringApply) historyRef.current = new HistoryStack(merged.document, 80);
+      setSaveState(hasUnsavedEditorChanges(merged, authoritative) ? '未保存' : '已保存');
       saveRetryRef.current = false;
       setDigestProposal(result.proposal);
       setDigestOpen(false);
@@ -1014,6 +1012,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
+      if (digestOpen) return;
       const modifier = event.metaKey || event.ctrlKey;
       if (modifier && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); }
       else if (modifier && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
@@ -1023,7 +1022,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [copy, paste, redo, removeSelected, save, undo]);
+  }, [copy, digestOpen, paste, redo, removeSelected, save, undo]);
 
   const insertReference = (item: SearchItem) => {
     if (!document || layoutPreview) return;
@@ -1150,6 +1149,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     : 0;
 
   return <main className="editor-page">
+    <div className="editor-page-content" inert={digestOpen || undefined} aria-hidden={digestOpen || undefined}>
     <header className="editor-header">
       <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库">←</button>
       <div className="editor-title"><input aria-label="指南标题" value={title} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTitle(event.target.value); setSaveState('未保存'); }} /><span aria-live="polite">{guide.status === 'PUBLISHED' ? `已发布 v${guide.publishedVersion ?? 1}` : '草稿'} · {saveState}</span></div>
@@ -1278,6 +1278,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       </aside>
     </div>
     {error ? <div className="toast-error" role="alert">{error}</div> : null}
+    </div>
     {referenceOpen ? <div className="modal-backdrop" role="presentation"><section className="reference-modal" role="dialog" aria-modal="true" aria-labelledby="reference-title"><button className="modal-close" onClick={() => { setReferenceOpen(false); setReferenceSearching(false); }} aria-label="关闭子指南搜索">×</button><span className="eyebrow">REUSE PUBLISHED GUIDE</span><h2 id="reference-title">插入固定版本子指南</h2><p>打开后会载入全部已发布指南；输入标题、标签或内容关键词即可即时筛选。</p><label className="sr-only" htmlFor="reference-search">搜索可复用指南</label><input id="reference-search" type="search" autoFocus placeholder="例如：物料、销售订单、VA01" aria-label="搜索可复用指南" value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} /><div className="reference-results" aria-live="polite">{referenceSearching ? <p className="status-line">正在载入可复用指南…</p> : null}{referenceError ? <p className="error-message" role="alert">{referenceError}</p> : null}{!referenceSearching && !referenceError && referenceResults.length === 0 ? <p className="muted">没有找到可引用的已发布指南。</p> : null}{referenceResults.map((item) => <article key={item.versionId}><div><strong>{item.title}</strong><span>v{item.version} · {item.authorName}</span></div><button className="secondary-button" type="button" onClick={() => insertReference(item)} aria-label={`插入 ${item.title}`}>插入</button></article>)}</div></section></div> : null}
     {annotationEditorNode ? <ImageAnnotationEditor node={annotationEditorNode} nodes={document.nodes} onClose={() => setAnnotationEditorNodeId(null)} onChange={(data) => commit({ ...document, nodes: document.nodes.map((node) => node.id === annotationEditorNode.id ? { ...annotationEditorNode, data } : node) })} onUploadSupplement={async (file) => {
       if (!file.type.startsWith('image/')) throw new Error('仅支持图片文件。');
@@ -1298,6 +1299,23 @@ function hasUnsavedEditorChanges(
   saved: { document: CanvasDocument | null; title: string; summary: string; tags: string[] },
 ): boolean {
   return editorStateFingerprint(latest) !== editorStateFingerprint(saved);
+}
+
+function mergeAppliedEditorState(
+  beforeApply: { document: CanvasDocument | null; title: string; summary: string; tags: string[] },
+  latest: { document: CanvasDocument | null; title: string; summary: string; tags: string[] },
+  authoritative: { document: CanvasDocument; title: string; summary: string; tags: string[] },
+): { document: CanvasDocument; title: string; summary: string; tags: string[] } {
+  return {
+    document: sameEditorValue(latest.document, beforeApply.document) ? authoritative.document : latest.document ?? authoritative.document,
+    title: sameEditorValue(latest.title, beforeApply.title) ? authoritative.title : latest.title,
+    summary: sameEditorValue(latest.summary, beforeApply.summary) ? authoritative.summary : latest.summary,
+    tags: sameEditorValue(latest.tags, beforeApply.tags) ? authoritative.tags : latest.tags,
+  };
+}
+
+function sameEditorValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function editorStateFingerprint(state: { document: CanvasDocument | null; title: string; summary: string; tags: string[] }): string {

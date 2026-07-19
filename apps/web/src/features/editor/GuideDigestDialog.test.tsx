@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import { GuideDigestDialog, type GuideDigestProposal } from './GuideDigestDialog';
@@ -60,5 +61,67 @@ describe('GuideDigestDialog', () => {
 
     expect(onApply).not.toHaveBeenCalled();
     expect(screen.getByRole('alert')).toHaveTextContent('至少选择一项摘要、标签或 Markdown');
+  });
+
+  it('resets selection and validation feedback when reviewing another proposal', () => {
+    const { rerender } = render(<GuideDigestDialog
+      guide={{ id: 'guide-1', revision: 4, summary: '当前摘要', tags: ['ERP'] }}
+      status={{ guideRevision: 4, sourceStatus: 'READY', snapshotId: 'snapshot-1', snapshotRevision: 4, snapshotSchemaVersion: 2, failureCode: null }}
+      proposal={proposal}
+      onReconcile={vi.fn()}
+      onGenerate={vi.fn()}
+      onReject={vi.fn()}
+      onApply={vi.fn()}
+      onClose={vi.fn()}
+    />);
+
+    fireEvent.click(screen.getByRole('button', { name: '接受并应用到草稿' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('至少选择一项摘要、标签或 Markdown');
+    fireEvent.click(screen.getByRole('checkbox', { name: '采用标签 订单复核' }));
+    expect(screen.getByRole('checkbox', { name: '采用标签 订单复核' })).toBeChecked();
+
+    rerender(<GuideDigestDialog
+      guide={{ id: 'guide-1', revision: 4, summary: '当前摘要', tags: ['ERP'] }}
+      status={{ guideRevision: 4, sourceStatus: 'READY', snapshotId: 'snapshot-1', snapshotRevision: 4, snapshotSchemaVersion: 2, failureCode: null }}
+      proposal={{ ...proposal, id: 'proposal-2' }}
+      onReconcile={vi.fn()}
+      onGenerate={vi.fn()}
+      onReject={vi.fn()}
+      onApply={vi.fn()}
+      onClose={vi.fn()}
+    />);
+
+    expect(screen.getByRole('checkbox', { name: '采用标签 订单复核' })).not.toBeChecked();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('moves focus into the modal, keeps Tab navigation inside it, and restores its opener on Escape', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const opener = document.createElement('button');
+    document.body.append(opener);
+    opener.focus();
+    render(<GuideDigestDialog
+      guide={{ id: 'guide-1', revision: 4, summary: '当前摘要', tags: ['ERP'] }}
+      status={{ guideRevision: 4, sourceStatus: 'READY', snapshotId: 'snapshot-1', snapshotRevision: 4, snapshotSchemaVersion: 2, failureCode: null }}
+      proposal={proposal}
+      onReconcile={vi.fn()}
+      onGenerate={vi.fn()}
+      onReject={vi.fn()}
+      onApply={vi.fn()}
+      onClose={onClose}
+    />);
+
+    const closeButton = screen.getByRole('button', { name: '关闭指南总览' });
+    expect(closeButton).toHaveFocus();
+    await user.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(screen.getByRole('button', { name: '接受并应用到草稿' })).toHaveFocus();
+    await user.keyboard('{Tab}');
+    expect(closeButton).toHaveFocus();
+    await user.keyboard('{Escape}');
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(opener).toHaveFocus();
+    opener.remove();
   });
 });

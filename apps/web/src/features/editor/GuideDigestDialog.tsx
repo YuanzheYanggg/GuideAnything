@@ -1,5 +1,5 @@
 import type { GuideDigestDraftV1 } from '@guideanything/contracts';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import { SanitizedMarkdown } from '../markdown/SanitizedMarkdown';
 
@@ -65,6 +65,8 @@ export function GuideDigestDialog({
   const [selectedTags, setSelectedTags] = useState<ReadonlySet<string>>(() => new Set());
   const [selectionError, setSelectionError] = useState('');
   const [busy, setBusy] = useState(false);
+  const dialogRef = useRef<HTMLElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
   const ready = status?.sourceStatus === 'READY'
     && status.snapshotId !== null
     && status.snapshotRevision === guide.revision
@@ -76,14 +78,44 @@ export function GuideDigestDialog({
   const sourceIds = useMemo(() => collectSourceIds(proposal?.draft), [proposal?.draft]);
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || busy || generating) return;
+    setApplySummary(false);
+    setAcceptMarkdown(false);
+    setSelectedTags(new Set());
+    setSelectionError('');
+  }, [proposal?.id]);
+
+  useEffect(() => {
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    focusableElements(dialogRef.current)?.[0]?.focus();
+  }, []);
+
+  const close = () => {
+    onClose();
+    openerRef.current?.focus();
+  };
+
+  const trapFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
       event.preventDefault();
-      onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [busy, generating, onClose]);
+      event.stopPropagation();
+      if (!busy && !generating) close();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = focusableElements(dialogRef.current);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+    const nextIndex = event.shiftKey
+      ? (currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1)
+      : (currentIndex === focusable.length - 1 ? 0 : currentIndex + 1);
+    event.preventDefault();
+    event.stopPropagation();
+    focusable[nextIndex]?.focus();
+  };
 
   const run = async (work: () => Promise<void> | void) => {
     if (busy || generating) return;
@@ -108,8 +140,8 @@ export function GuideDigestDialog({
   const disabled = busy || generating;
 
   return <div className="modal-backdrop" role="presentation">
-    <section className="reference-modal guide-digest-dialog" role="dialog" aria-modal="true" aria-labelledby="guide-digest-title">
-      <button className="modal-close" type="button" onClick={onClose} disabled={disabled} aria-label="关闭指南总览">×</button>
+    <section ref={dialogRef} className="reference-modal guide-digest-dialog" role="dialog" aria-modal="true" aria-labelledby="guide-digest-title" onKeyDown={trapFocus}>
+      <button className="modal-close" type="button" onClick={close} disabled={disabled} aria-label="关闭指南总览">×</button>
       <span className="eyebrow">GUIDE DIGEST REVIEW</span>
       <h2 id="guide-digest-title">生成指南总览</h2>
       <p>仅从当前已保存的流程快照生成；接受 Markdown 只记录提案审计，不会写入画布或检索。</p>
@@ -166,4 +198,9 @@ function collectSourceIds(draft: GuideDigestDraftV1 | null | undefined): string[
 
 function categoryLabel(category: GuideDigestDraftV1['tagSuggestions'][number]['category']): string {
   return { DOMAIN: '领域', PROCESS: '流程', SYSTEM: '系统', OBJECT: '业务对象', ROLE: '角色', RISK: '风险' }[category];
+}
+
+function focusableElements(root: HTMLElement | null): HTMLElement[] {
+  return [...(root?.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, summary, [tabindex]') ?? [])]
+    .filter((element) => !element.hasAttribute('disabled') && element.tabIndex >= 0 && element.getAttribute('aria-hidden') !== 'true');
 }

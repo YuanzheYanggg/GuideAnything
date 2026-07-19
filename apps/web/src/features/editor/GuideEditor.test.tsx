@@ -124,7 +124,7 @@ describe('GuideEditor', () => {
     expect(api.saveGuide).toHaveBeenCalledTimes(1);
 
     act(() => reactFlowCallbacks.onMoveEnd?.({} as MouseEvent, { x: -220, y: 48, zoom: 0.68 }));
-    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿', hidden: true }));
     await waitFor(() => expect(api.saveGuide).toHaveBeenCalledWith('guide-host', 1, expect.objectContaining({
       document: expect.objectContaining({ viewport: { x: -220, y: 48, zoom: 0.68 } }),
     })));
@@ -241,7 +241,7 @@ describe('GuideEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
     await screen.findByText('建议的流程摘要');
     fireEvent.change(screen.getByLabelText('摘要'), { target: { value: '本地改动' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿', hidden: true }));
     await waitFor(() => expect(api.saveGuide).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByLabelText('采用建议摘要'));
     fireEvent.click(screen.getByRole('button', { name: '接受并应用到草稿' }));
@@ -250,6 +250,50 @@ describe('GuideEditor', () => {
     await screen.findByText('提案基于旧 revision，无法应用。请重新生成。');
     expect(api.applyGuideDigestProposal).not.toHaveBeenCalled();
     expect(screen.getByLabelText('摘要')).toHaveValue('本地改动');
+  });
+
+  it('merges applied digest fields with edits made while the apply request is in flight', async () => {
+    const api = createApi();
+    let resolveApply: ((result: { guide: GuideDraftDetail; proposal: GuideDigestProposal }) => void) | undefined;
+    (api.createGuideDigestProposal as ReturnType<typeof vi.fn>).mockResolvedValue(digestProposal());
+    (api.applyGuideDigestProposal as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise((resolve) => { resolveApply = resolve; }));
+    (api.getFlowSnapshotStatus as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotStatus(0));
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByLabelText('摘要');
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('button', { name: '生成结构化摘要' });
+    fireEvent.click(screen.getByRole('button', { name: '生成结构化摘要' }));
+    await screen.findByText('建议的流程摘要');
+    fireEvent.click(screen.getByLabelText('采用建议摘要'));
+    fireEvent.click(screen.getByRole('button', { name: '接受并应用到草稿' }));
+    await waitFor(() => expect(api.applyGuideDigestProposal).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText('指南标题'), { target: { value: '本地编辑的标题' } });
+    resolveApply?.({
+      guide: { ...emptyGuide, revision: 1, summary: '服务端已应用的摘要', tags: ['ERP', '服务端标签'] },
+      proposal: { ...digestProposal(), status: 'APPLIED', appliedRevision: 1 },
+    });
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '生成指南总览' })).not.toBeInTheDocument());
+    expect(screen.getByLabelText('指南标题')).toHaveValue('本地编辑的标题');
+    expect(screen.getByLabelText('摘要')).toHaveValue('服务端已应用的摘要');
+    expect(screen.getByLabelText('标签')).toHaveValue('ERP，服务端标签');
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 1, expect.objectContaining({
+      title: '本地编辑的标题', summary: '服务端已应用的摘要', tags: ['ERP', '服务端标签'],
+    })));
+  });
+
+  it('suspends editor shortcuts while the digest review modal is open', async () => {
+    const api = createApi();
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByLabelText('摘要');
+    fireEvent.click(screen.getByRole('button', { name: '生成指南总览' }));
+    await screen.findByRole('dialog', { name: '生成指南总览' });
+
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+
+    expect(api.saveGuide).not.toHaveBeenCalled();
   });
 
   it('refreshes a 409 apply conflict into stale review without hiding the original error', async () => {
@@ -297,7 +341,7 @@ describe('GuideEditor', () => {
     await waitFor(() => expect(api.getFlowSnapshotStatus).toHaveBeenCalledTimes(3));
     fireEvent.change(screen.getByLabelText('摘要'), { target: { value: '等待期间的新摘要' } });
     fireEvent.change(screen.getByLabelText('指南标题'), { target: { value: '等待期间的新标题' } });
-    fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加流程节点', hidden: true }));
     resolveStatus?.(snapshotStatus(0));
 
     await screen.findByText('提案基于旧 revision，无法应用。请重新生成。');
