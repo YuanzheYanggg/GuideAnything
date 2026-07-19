@@ -200,7 +200,7 @@ describe('database migrations', () => {
     ]));
     expect(database.prepare(
       'SELECT version FROM schema_migrations ORDER BY version',
-    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }]);
+    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }]);
 
     const indexesAndTriggers = database.prepare(
       "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_%'",
@@ -386,6 +386,44 @@ describe('database migrations', () => {
         'renderer-v1', '{}', 'DRAFT', '{"schemaVersion":1}', '# 摘要', NULL,
         'user-one', ?, ?)`,
     ).run(now, now)).toThrow(/scope/i);
+  });
+
+  it('upgrades the DRAFT identity index to include renderer version without losing v9 rows', () => {
+    database = createDatabase(':memory:');
+    migrateDatabase(database);
+    seedPrincipals(database);
+    seedGuideDigestBase(database);
+    database.prepare('DELETE FROM schema_migrations WHERE version = 10').run();
+    database.exec(`
+      DROP INDEX guide_digest_proposals_one_draft_idx;
+      CREATE UNIQUE INDEX guide_digest_proposals_one_draft_idx
+        ON guide_digest_proposals(guide_id, base_snapshot_id, bundle_revision)
+        WHERE status = 'DRAFT';
+    `);
+    database.prepare(
+      `INSERT INTO guide_digest_proposals (
+        id, guide_id, workspace_id, base_snapshot_id, base_revision, bundle_revision,
+        renderer_version, generation_metadata_json, status, draft_json, markdown,
+        created_by, created_at, updated_at
+      ) VALUES ('v9-proposal', 'digest-guide', 'workspace-one', 'digest-snapshot', 7, 1,
+        'renderer-v1', '{}', 'DRAFT', '{"schemaVersion":1}', '# v1',
+        'user-one', ?, ?)`,
+    ).run(now, now);
+
+    migrateDatabase(database);
+
+    expect(database.prepare(
+      `SELECT id, renderer_version FROM guide_digest_proposals WHERE id = 'v9-proposal'`,
+    ).get()).toEqual({ id: 'v9-proposal', renderer_version: 'renderer-v1' });
+    expect(() => database!.prepare(
+      `INSERT INTO guide_digest_proposals (
+        id, guide_id, workspace_id, base_snapshot_id, base_revision, bundle_revision,
+        renderer_version, generation_metadata_json, status, draft_json, markdown,
+        created_by, created_at, updated_at
+      ) VALUES ('renderer-v2', 'digest-guide', 'workspace-one', 'digest-snapshot', 7, 1,
+        'renderer-v2', '{}', 'DRAFT', '{"schemaVersion":1}', '# v2',
+        'user-one', ?, ?)`,
+    ).run(now, now)).not.toThrow();
   });
 
   it('enforces conversation scope and mutually exclusive source ownership', () => {

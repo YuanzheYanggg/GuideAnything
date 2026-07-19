@@ -226,12 +226,23 @@ export function listGuideDigestProposals(database: DatabaseSync, guideId: string
 
 export function findDraftGuideDigestProposal(
   database: DatabaseSync,
-  input: { guideId: string; baseSnapshotId: string; bundleRevision: number },
+  input: {
+    guideId: string;
+    baseSnapshotId: string;
+    bundleRevision: number;
+    rendererVersion: string;
+  },
 ): GuideDigestProposal | null {
   const row = database.prepare(
     `${PROPOSAL_SELECT}
-     WHERE guide_id = ? AND base_snapshot_id = ? AND bundle_revision = ? AND status = 'DRAFT'`,
-  ).get(input.guideId, input.baseSnapshotId, input.bundleRevision) as unknown as ProposalRow | undefined;
+     WHERE guide_id = ? AND base_snapshot_id = ? AND bundle_revision = ?
+       AND renderer_version = ? AND status = 'DRAFT'`,
+  ).get(
+    input.guideId,
+    input.baseSnapshotId,
+    input.bundleRevision,
+    input.rendererVersion,
+  ) as unknown as ProposalRow | undefined;
   return row ? mapProposal(row) : null;
 }
 

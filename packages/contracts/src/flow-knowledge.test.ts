@@ -7,6 +7,7 @@ import {
   FlowKnowledgeSnapshotV2Schema,
   FlowLocatorV1Schema,
   FlowSnapshotOriginV1Schema,
+  type FlowKnowledgeSnapshotV2,
 } from './flow-knowledge';
 
 describe('flow knowledge contracts', () => {
@@ -193,6 +194,33 @@ describe('flow knowledge contracts', () => {
     expect(FlowKnowledgeSnapshotSchema.parse(snapshot()).schemaVersion).toBe(1);
     expect(FlowKnowledgeSnapshotSchema.parse(snapshotV2()).schemaVersion).toBe(2);
   });
+
+  it('rejects duplicate annotation IDs across image resources', () => {
+    const value = snapshotV2();
+    value.resources = [...value.resources,
+      imageResource('image-1', 'annotation-shared'),
+      imageResource('image-2', 'annotation-shared'),
+    ];
+
+    expect(FlowKnowledgeSnapshotV2Schema.safeParse(value).success).toBe(false);
+  });
+
+  it('rejects duplicate keypoint IDs across video resources', () => {
+    const value = snapshotV2();
+    value.resources = [...value.resources,
+      videoResource('video-1', 'keypoint-shared'),
+      videoResource('video-2', 'keypoint-shared'),
+    ];
+
+    expect(FlowKnowledgeSnapshotV2Schema.safeParse(value).success).toBe(false);
+  });
+
+  it('rejects IDs reused across different model-addressable source kinds', () => {
+    const value = snapshotV2();
+    value.learningPath[0]!.id = value.stages[0]!.id;
+
+    expect(FlowKnowledgeSnapshotV2Schema.safeParse(value).success).toBe(false);
+  });
 });
 
 function locator(nodeId: string) {
@@ -242,7 +270,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function snapshotV2() {
+function snapshotV2(): FlowKnowledgeSnapshotV2 {
   return {
     schemaVersion: 2,
     snapshotId: 'snapshot-1',
@@ -300,5 +328,33 @@ function snapshotV2() {
       invalidLearningTargetIds: [],
       excludedDerivedNodeIds: [],
     },
+  };
+}
+
+function imageResource(id: string, annotationId: string) {
+  return {
+    id,
+    locator: locator(id),
+    kind: 'IMAGE' as const,
+    order: Number(id.at(-1)) - 1,
+    alt: `截图 ${id}`,
+    annotations: [{
+      id: annotationId,
+      order: 0,
+      title: '字段',
+      shape: 'POINT' as const,
+      region: { x: 0.1, y: 0.2 },
+    }],
+  };
+}
+
+function videoResource(id: string, keypointId: string) {
+  return {
+    id,
+    locator: locator(id),
+    kind: 'VIDEO' as const,
+    order: Number(id.at(-1)) - 1,
+    caption: `演示 ${id}`,
+    keypoints: [{ id: keypointId, title: '关键点', timeSeconds: 1 }],
   };
 }

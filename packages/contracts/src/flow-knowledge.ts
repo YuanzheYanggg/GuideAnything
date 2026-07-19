@@ -410,6 +410,7 @@ function validateSnapshotGraph(
   snapshot: FlowKnowledgeSnapshotV2,
   context: z.core.$RefinementCtx<unknown>,
 ): void {
+  validateModelAddressableIdNamespace(snapshot, context);
   const stageById = uniqueById(snapshot.stages, context, ['stages']);
   const laneById = uniqueById(snapshot.lanes, context, ['lanes']);
   const nodeById = uniqueById(snapshot.nodes, context, ['nodes']);
@@ -468,6 +469,41 @@ function validateSnapshotGraph(
       context.addIssue({ code: 'custom', path: ['diagnostics', 'unreferencedResourceIds', index], message: '未引用资料必须存在于快照中' });
     }
   });
+}
+
+function validateModelAddressableIdNamespace(
+  snapshot: FlowKnowledgeSnapshotV2,
+  context: z.core.$RefinementCtx<unknown>,
+): void {
+  const seen = new Set<string>();
+  const add = (id: string, path: (string | number)[]) => {
+    if (seen.has(id)) {
+      context.addIssue({
+        code: 'custom',
+        path,
+        message: '模型可寻址 ID 必须在完整流程快照命名空间内唯一',
+      });
+    } else {
+      seen.add(id);
+    }
+  };
+  snapshot.stages.forEach(({ id }, index) => add(id, ['stages', index, 'id']));
+  snapshot.lanes.forEach(({ id }, index) => add(id, ['lanes', index, 'id']));
+  snapshot.nodes.forEach(({ id }, index) => add(id, ['nodes', index, 'id']));
+  snapshot.resources.forEach((resource, resourceIndex) => {
+    add(resource.id, ['resources', resourceIndex, 'id']);
+    if (resource.kind === 'IMAGE') {
+      resource.annotations.forEach(({ id }, annotationIndex) => {
+        add(id, ['resources', resourceIndex, 'annotations', annotationIndex, 'id']);
+      });
+    } else if (resource.kind === 'VIDEO') {
+      resource.keypoints.forEach(({ id }, keypointIndex) => {
+        add(id, ['resources', resourceIndex, 'keypoints', keypointIndex, 'id']);
+      });
+    }
+  });
+  snapshot.relations.forEach(({ id }, index) => add(id, ['relations', index, 'id']));
+  snapshot.learningPath.forEach(({ id }, index) => add(id, ['learningPath', index, 'id']));
 }
 
 function validateNodeStageAndLane(

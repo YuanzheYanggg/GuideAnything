@@ -22,6 +22,15 @@ describe('describeGuideDigestSources', () => {
     expect(descriptors.map(({ label }) => label)).not.toContain('阶段：模型伪造阶段');
     expect(descriptors.map(({ label }) => label)).not.toContain('步骤：模型伪造步骤');
   });
+
+  it('rejects an ambiguous cross-kind ID before constructing descriptors', () => {
+    const ambiguous = snapshot();
+    const image = ambiguous.resources.find((resource) => resource.kind === 'IMAGE')!;
+    const video = ambiguous.resources.find((resource) => resource.kind === 'VIDEO')!;
+    video.keypoints[0]!.id = image.annotations[0]!.id;
+
+    expect(() => describeGuideDigestSources(ambiguous, draft())).toThrow();
+  });
 });
 
 function snapshot(): FlowKnowledgeSnapshotV2 {

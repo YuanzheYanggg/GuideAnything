@@ -38,6 +38,10 @@ const migrations = [
     version: 9,
     sql: readFileSync(new URL('./migrations/0009_guide_digest_proposals.sql', import.meta.url), 'utf8'),
   },
+  {
+    version: 10,
+    sql: readFileSync(new URL('./migrations/0010_guide_digest_renderer_identity.sql', import.meta.url), 'utf8'),
+  },
 ] as const;
 
 export function migrateDatabase(database: DatabaseSync): void {

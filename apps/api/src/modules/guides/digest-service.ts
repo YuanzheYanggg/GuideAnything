@@ -209,7 +209,8 @@ export class GuideDigestService {
       }
       const staleReason = guide.revision !== proposal.baseRevision
         ? 'BASE_REVISION_CHANGED'
-        : this.proposalSnapshotStaleReason(user, guideId, proposal.baseSnapshotId);
+        : this.proposalSnapshotStaleReason(user, guideId, proposal.baseSnapshotId)
+          ?? proposalGenerationStaleReason(proposal);
       if (staleReason) {
         markGuideDigestProposalStale(this.database, guideId, proposalId, user.id, {
           reasonCode: staleReason,
@@ -309,7 +310,6 @@ export class GuideDigestService {
         }
         const proposal = createFailedGuideDigestProposal(this.database, {
           ...identity,
-          rendererVersion: rendererVersion(),
           generationMetadata: generation.metadata,
           failureCode: generation.failureCode,
           createdBy: user.id,
@@ -320,7 +320,6 @@ export class GuideDigestService {
       }
       const proposalInput = {
         ...identity,
-        rendererVersion: rendererVersion(),
         generationMetadata: generation.metadata,
         draft: generation.draft,
         markdown: generation.markdown,
@@ -505,7 +504,16 @@ function generationIdentity(ready: ReadyGuideSnapshot) {
     baseSnapshotId: ready.snapshot.snapshotId,
     baseRevision: ready.guide.revision,
     bundleRevision: GUIDE_DIGEST_BUNDLE.revision,
+    rendererVersion: rendererVersion(),
   };
+}
+
+function proposalGenerationStaleReason(
+  proposal: GuideDigestProposal,
+): 'BUNDLE_REVISION_CHANGED' | 'RENDERER_VERSION_CHANGED' | null {
+  if (proposal.bundleRevision !== GUIDE_DIGEST_BUNDLE.revision) return 'BUNDLE_REVISION_CHANGED';
+  if (proposal.rendererVersion !== rendererVersion()) return 'RENDERER_VERSION_CHANGED';
+  return null;
 }
 
 function guideDigestRequest(snapshot: FlowKnowledgeSnapshotV2, repairNote?: string) {

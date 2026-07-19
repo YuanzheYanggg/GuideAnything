@@ -56,6 +56,7 @@ describe('guide digest repository', () => {
     expect(listGuideDigestProposals(database, 'guide-one')).toEqual([created]);
     expect(findDraftGuideDigestProposal(database, {
       guideId: 'guide-one', baseSnapshotId: 'snapshot-one', bundleRevision: 1,
+      rendererVersion: 'guide-digest-markdown-v1',
     })).toEqual(created);
     expect(() => createGuideDigestProposal(database, generatedInput())).toThrow(/UNIQUE/);
     expect(listGuideDigestAuditEvents(database, 'guide-one', created.id)).toEqual([
@@ -70,6 +71,23 @@ describe('guide digest repository', () => {
         },
       }),
     ]);
+  });
+
+  it('treats renderer version as part of the DRAFT generation identity', () => {
+    const rendererOne = createGuideDigestProposal(database, generatedInput());
+    const rendererTwo = createGuideDigestProposal(database, {
+      ...generatedInput(),
+      rendererVersion: 'guide-digest-markdown-v2',
+    });
+
+    expect(findDraftGuideDigestProposal(database, {
+      guideId: 'guide-one', baseSnapshotId: 'snapshot-one', bundleRevision: 1,
+      rendererVersion: 'guide-digest-markdown-v1',
+    })).toEqual(rendererOne);
+    expect(findDraftGuideDigestProposal(database, {
+      guideId: 'guide-one', baseSnapshotId: 'snapshot-one', bundleRevision: 1,
+      rendererVersion: 'guide-digest-markdown-v2',
+    })).toEqual(rendererTwo);
   });
 
   it('persists a safe FAILED proposal without invalid generated output', () => {
