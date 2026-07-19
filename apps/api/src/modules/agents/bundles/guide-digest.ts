@@ -8,7 +8,7 @@ import { buildGuideDigestIdManifest, type GuideDigestIdManifest } from '../../gu
 
 export const GUIDE_DIGEST_BUNDLE = {
   id: 'guideanything-guide-digest',
-  revision: 2,
+  revision: 3,
   role: 'FOCUSED_WORKER',
   reasoningEffort: 'MEDIUM',
   outputKind: 'GUIDE_DIGEST',
@@ -19,7 +19,8 @@ export const GUIDE_DIGEST_TRUSTED_INSTRUCTION = [
   '仅使用输入快照中的显式事实并使用中文输出；不得虚构步骤、责任、输入、输出、系统或异常处理。',
   '所有规则与标签必须填写快照内真实存在的 sourceIds，步骤、阶段与资料也必须引用快照 ID。',
   '输入 idManifest 是唯一的字段级 ID allowlist；每个引用必须从对应数组逐字复制，不得改写或杜撰。',
-  '证据不足时写入 gaps，不得猜测或用常识补齐。',
+  '每个 gaps 项必须引用 sourceIds；仅 MISSING_ENTRY、MISSING_EXIT，或不存在可定位诊断锚点的 SNAPSHOT_DIAGNOSTIC 可使用空 sourceIds。',
+  'tagSuggestions 不得与 snapshot.tags 重复，建议之间也不得在 NFKC、首尾空白清理和不区分大小写后重复。',
   '只输出严格匹配 GuideDigestDraftV1 的 JSON，不得输出 Markdown、frontmatter、HTML、解释或隐藏推理。',
   '不得检索网络、文件、其他工作区、Santexwell 或任何未包含在本次快照中的来源。',
 ].join('\n');
@@ -78,12 +79,25 @@ export function buildGuideDigestInputEnvelope(
   };
 }
 
-export function buildGuideDigestSourceRepairNote(): string {
+function buildGuideDigestIdRepairNote(): string {
   return [
     '上次输出的来源 ID 未通过验证。只修正引用字段，不得改变其他已知事实。',
     'stageSections[].stageId 只能逐字复制 idManifest.stageId；steps[].targetId 只能逐字复制 idManifest.targetId；steps[].resourceIds 只能逐字复制 idManifest.resourceIds；所有 sourceIds 只能逐字复制 idManifest.sourceIds。',
     '不得改写或杜撰任何 ID；不要使用快照正文、标题或常识推断 ID。',
   ].join('');
+}
+
+export function buildGuideDigestValidationRepairNote(reason: string): string | undefined {
+  if (reason === 'UNKNOWN_STAGE_ID' || reason === 'UNKNOWN_TARGET_ID' || reason === 'UNKNOWN_RESOURCE_ID' || reason === 'UNKNOWN_SOURCE_ID') {
+    return buildGuideDigestIdRepairNote();
+  }
+  if (reason === 'UNANCHORED_GAP') {
+    return '上次 gaps 未通过锚定验证。每个 gaps 项都必须填写来自 idManifest.sourceIds 的 sourceIds；仅 MISSING_ENTRY、MISSING_EXIT，或不存在可定位诊断锚点的 SNAPSHOT_DIAGNOSTIC 可保留空 sourceIds。不得杜撰诊断或来源。';
+  }
+  if (reason === 'DUPLICATE_TAG') {
+    return '上次 tagSuggestions 重复。不得与 snapshot.tags 重复，建议之间也不得在 NFKC、首尾空白清理和不区分大小写后重复；仅输出新的、可追溯的标签建议。';
+  }
+  return undefined;
 }
 
 export function buildGuideDigestPrompt(

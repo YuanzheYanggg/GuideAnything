@@ -159,14 +159,14 @@ describe('GuideDigestService access and snapshot gates', () => {
     const reused = await service.createProposal(owner, guideId, {});
 
     expect(generated).toMatchObject({ created: true, proposal: {
-      status: 'DRAFT', baseRevision: 1, bundleRevision: 2,
+      status: 'DRAFT', baseRevision: 1, bundleRevision: 3,
       draft: { shortSummary: '基于当前快照的结构化摘要' },
       markdown: expect.stringContaining('## 流程摘要'),
     } });
     expect(reused).toEqual({ created: false, proposal: generated.proposal });
     expect(runtime.requests).toHaveLength(1);
     expect(runtime.requests[0]).toMatchObject({
-      type: 'RUN', planVersion: 2, role: 'FOCUSED_WORKER',
+      type: 'RUN', planVersion: 3, role: 'FOCUSED_WORKER',
       reasoningEffort: 'MEDIUM', outputKind: 'GUIDE_DIGEST', allowedRoots: [],
     });
     expect(runtime.requests[0]!.prompt).toContain('"schemaVersion":2');
@@ -227,13 +227,49 @@ describe('GuideDigestService access and snapshot gates', () => {
     const failed = await service.createProposal(owner, guideId, {});
 
     expect(failed.proposal).toMatchObject({
-      status: 'FAILED', failureCode: 'DIGEST_SOURCE_INVALID', draft: null, markdown: null,
+      status: 'FAILED', failureCode: 'UNKNOWN_SOURCE_ID', draft: null, markdown: null,
     });
     expect(runtime.requests).toHaveLength(2);
     expect(runtime.requests[1]!.prompt).toContain('逐字复制');
     expect(runtime.requests[1]!.prompt).toContain('不得改写或杜撰');
     expect(runtime.requests[1]!.prompt).toContain('"idManifest"');
     expect(listGuideDigestProposals(database, guideId).filter(({ status }) => status === 'DRAFT')).toEqual([]);
+  });
+
+  it('repairs a duplicate existing tag with its targeted rule and persists only the valid retry', async () => {
+    const sourceId = snapshotSourceId(database, guideId);
+    runtime.enqueueDigest(digest({ tagSuggestions: [{ label: '订单', category: 'PROCESS', sourceIds: [sourceId] }] }));
+    runtime.enqueueDigest(digest({ tagSuggestions: [{ label: '审批', category: 'PROCESS', sourceIds: [sourceId] }] }));
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(generated.proposal).toMatchObject({ status: 'DRAFT', draft: { tagSuggestions: [{ label: '审批' }] } });
+    expect(runtime.requests).toHaveLength(2);
+    expect(runtime.requests[1]!.prompt).toContain('tagSuggestions');
+    expect(runtime.requests[1]!.prompt).toContain('snapshot.tags');
+  });
+
+  it('repairs an unanchored gap with its targeted rule', async () => {
+    runtime.enqueueDigest(digest({ gaps: [{ code: 'INCOMPLETE_DESCRIPTION', message: '缺少依据。', sourceIds: [] }] }));
+    runtime.enqueueDigest(digest({ gaps: [{ code: 'MISSING_EXIT', message: '缺少出口。', sourceIds: [] }] }));
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(generated.proposal).toMatchObject({ status: 'DRAFT', draft: { gaps: [{ code: 'MISSING_EXIT', sourceIds: [] }] } });
+    expect(runtime.requests[1]!.prompt).toContain('gaps');
+    expect(runtime.requests[1]!.prompt).toContain('sourceIds');
+  });
+
+  it('persists only a safe duplicate-tag failure code after the repair also fails', async () => {
+    const sourceId = snapshotSourceId(database, guideId);
+    const invalid = digest({ tagSuggestions: [{ label: '订单', category: 'PROCESS', sourceIds: [sourceId] }] });
+    runtime.enqueueDigest(invalid);
+    runtime.enqueueDigest(invalid);
+
+    const failed = await service.createProposal(owner, guideId, {});
+
+    expect(failed.proposal).toMatchObject({ status: 'FAILED', failureCode: 'DUPLICATE_TAG', draft: null, markdown: null });
+    expect(JSON.stringify(failed.proposal)).not.toContain('订单');
   });
 
   it('repairs a missing digest output once and persists the valid repaired result', async () => {
@@ -299,7 +335,7 @@ describe('GuideDigestService access and snapshot gates', () => {
         workspaceId: 'digest-workspace',
         baseSnapshotId: snapshot.id,
         baseRevision: snapshot.revision,
-        bundleRevision: 2,
+        bundleRevision: 3,
         rendererVersion: 'guide-digest-markdown-v1',
         generationMetadata: { attemptCount: 1 },
         draft: digest({ shortSummary: '并发成功摘要' }),

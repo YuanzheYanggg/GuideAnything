@@ -23,36 +23,36 @@ describe('guide digest source validation', () => {
   });
 
   it.each([
-    ['invented stage', { stageSections: [{ ...draft().stageSections[0]!, stageId: 'invented-stage' }] }],
-    ['invented step target', { stageSections: [{ ...draft().stageSections[0]!, steps: [{ ...draft().stageSections[0]!.steps[0]!, targetId: 'invented-target' }] }] }],
-    ['invented resource', { stageSections: [{ ...draft().stageSections[0]!, steps: [{ ...draft().stageSections[0]!.steps[0]!, resourceIds: ['invented-resource'] }] }] }],
-    ['invented tag evidence', { tagSuggestions: [{ label: '打样', category: 'PROCESS', sourceIds: ['invented-source'] }] }],
-    ['supplied invalid gap evidence', { gaps: [{ code: 'MISSING_EXIT', message: '缺少出口。', sourceIds: ['invented-source'] }] }],
-  ])('rejects %s with DIGEST_SOURCE_INVALID', (_label, overrides) => {
+    ['invented stage', { stageSections: [{ ...draft().stageSections[0]!, stageId: 'invented-stage' }] }, 'UNKNOWN_STAGE_ID'],
+    ['invented step target', { stageSections: [{ ...draft().stageSections[0]!, steps: [{ ...draft().stageSections[0]!.steps[0]!, targetId: 'invented-target' }] }] }, 'UNKNOWN_TARGET_ID'],
+    ['invented resource', { stageSections: [{ ...draft().stageSections[0]!, steps: [{ ...draft().stageSections[0]!.steps[0]!, resourceIds: ['invented-resource'] }] }] }, 'UNKNOWN_RESOURCE_ID'],
+    ['invented tag evidence', { tagSuggestions: [{ label: '打样', category: 'PROCESS', sourceIds: ['invented-source'] }] }, 'UNKNOWN_SOURCE_ID'],
+    ['supplied invalid gap evidence', { gaps: [{ code: 'MISSING_EXIT', message: '缺少出口。', sourceIds: ['invented-source'] }] }, 'UNKNOWN_SOURCE_ID'],
+  ])('rejects %s with a safe reason', (_label, overrides, code) => {
     expect(() => validateGuideDigestSources(snapshot(), draft(overrides))).toThrow(expect.objectContaining({
-      code: 'DIGEST_SOURCE_INVALID',
+      code,
     }));
   });
 
-  it('rejects duplicate tag labels after Unicode normalization and case folding', () => {
+  it('rejects duplicate tag labels after Unicode normalization and case folding with a safe reason', () => {
     expect(() => validateGuideDigestSources(snapshot(), draft({
       tagSuggestions: [
         { label: 'ＰＬＭ', category: 'SYSTEM', sourceIds: ['node-start'] },
         { label: 'plm', category: 'SYSTEM', sourceIds: ['node-start'] },
       ],
-    }))).toThrow(expect.objectContaining({ code: 'DIGEST_SOURCE_INVALID' }));
+    }))).toThrow(expect.objectContaining({ code: 'DUPLICATE_TAG' }));
   });
 
-  it('rejects a suggested tag that duplicates an existing snapshot tag', () => {
+  it('rejects a suggested tag that duplicates an existing snapshot tag with a safe reason', () => {
     expect(() => validateGuideDigestSources(snapshot(), draft({
       tagSuggestions: [{ label: '既有:标签', category: 'DOMAIN', sourceIds: ['node-start'] }],
-    }))).toThrow(expect.objectContaining({ code: 'DIGEST_SOURCE_INVALID' }));
+    }))).toThrow(expect.objectContaining({ code: 'DUPLICATE_TAG' }));
   });
 
   it('allows empty gap evidence only for a condition without an addressable anchor', () => {
     expect(() => validateGuideDigestSources(snapshot(), draft({
       gaps: [{ code: 'INCOMPLETE_DESCRIPTION', message: '说明不完整。', sourceIds: [] }],
-    }))).toThrow(expect.objectContaining({ code: 'DIGEST_SOURCE_INVALID' }));
+    }))).toThrow(expect.objectContaining({ code: 'UNANCHORED_GAP' }));
     expect(validateGuideDigestSources(snapshot(), draft({
       gaps: [{ code: 'MISSING_EXIT', message: '缺少出口。', sourceIds: [] }],
     })).gaps[0]?.sourceIds).toEqual([]);
@@ -64,7 +64,7 @@ describe('guide digest source validation', () => {
 
     expect(() => validateGuideDigestSources(addressable, draft({
       gaps: [{ code: 'SNAPSHOT_DIAGNOSTIC', message: '存在未引用资料。', sourceIds: [] }],
-    }))).toThrow(expect.objectContaining({ code: 'DIGEST_SOURCE_INVALID' }));
+    }))).toThrow(expect.objectContaining({ code: 'UNANCHORED_GAP' }));
     expect(validateGuideDigestSources(addressable, draft({
       gaps: [{ code: 'SNAPSHOT_DIAGNOSTIC', message: '存在未引用资料。', sourceIds: ['resource-note'] }],
     })).gaps[0]?.sourceIds).toEqual(['resource-note']);
@@ -82,7 +82,7 @@ describe('guide digest source validation', () => {
   it('rejects an unanchored snapshot diagnostic when the snapshot has no diagnostics', () => {
     expect(() => validateGuideDigestSources(snapshot(), draft({
       gaps: [{ code: 'SNAPSHOT_DIAGNOSTIC', message: '模型虚构的诊断。', sourceIds: [] }],
-    }))).toThrow(expect.objectContaining({ code: 'DIGEST_SOURCE_INVALID' }));
+    }))).toThrow(expect.objectContaining({ code: 'UNANCHORED_GAP' }));
   });
 });
 

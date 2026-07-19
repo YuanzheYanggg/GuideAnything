@@ -13,7 +13,7 @@ import {
   GUIDE_DIGEST_BUNDLE,
   buildGuideDigestInputEnvelope,
   buildGuideDigestPrompt,
-  buildGuideDigestSourceRepairNote,
+  buildGuideDigestValidationRepairNote,
 } from '../agents/bundles/guide-digest';
 import type { AgentRuntimeClient } from '../agents/runtime-client';
 import { invokeGuideDigestRuntime } from '../agents/typed-runtime';
@@ -536,9 +536,8 @@ async function generateDigest(
           metadata: generationMetadata(attempt, envelope.truncation.truncatedResourceIds.length),
         };
       }
-      repairNote = failureCode === 'DIGEST_SOURCE_INVALID'
-        ? buildGuideDigestSourceRepairNote()
-        : `上次输出未通过 ${failureCode} 验证。请仅依据同一快照重新输出严格匹配 GuideDigestDraftV1 的 JSON。`;
+      repairNote = buildGuideDigestValidationRepairNote(failureCode)
+        ?? `上次输出未通过 ${failureCode} 验证。请仅依据同一快照重新输出严格匹配 GuideDigestDraftV1 的 JSON。`;
     }
   }
   throw new Error('unreachable guide digest generation state');

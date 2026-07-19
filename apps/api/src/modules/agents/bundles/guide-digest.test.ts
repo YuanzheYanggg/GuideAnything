@@ -12,7 +12,7 @@ describe('guide digest bundle', () => {
   it('declares the app-owned focused-worker contract with the source-manifest revision', () => {
     expect(GUIDE_DIGEST_BUNDLE).toEqual({
       id: 'guideanything-guide-digest',
-      revision: 2,
+      revision: 3,
       role: 'FOCUSED_WORKER',
       reasoningEffort: 'MEDIUM',
       outputKind: 'GUIDE_DIGEST',
@@ -25,6 +25,8 @@ describe('guide digest bundle', () => {
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('不得虚构');
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('sourceIds');
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('gaps');
+    expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('NFKC');
+    expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('MISSING_ENTRY');
     expect(GUIDE_DIGEST_TRUSTED_INSTRUCTION).toContain('不得输出 Markdown');
   });
 

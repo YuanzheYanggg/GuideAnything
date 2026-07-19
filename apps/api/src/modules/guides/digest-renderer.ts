@@ -45,11 +45,20 @@ export function buildGuideDigestIdManifest(snapshot: FlowKnowledgeSnapshotV2): G
   return manifest;
 }
 
-export class GuideDigestSourceValidationError extends Error {
-  readonly code = 'DIGEST_SOURCE_INVALID';
+export type GuideDigestSourceValidationReason =
+  | 'UNKNOWN_STAGE_ID'
+  | 'UNKNOWN_TARGET_ID'
+  | 'UNKNOWN_RESOURCE_ID'
+  | 'UNKNOWN_SOURCE_ID'
+  | 'UNANCHORED_GAP'
+  | 'DUPLICATE_TAG';
 
-  constructor(message: string) {
-    super(message);
+export class GuideDigestSourceValidationError extends Error {
+  readonly code: GuideDigestSourceValidationReason;
+
+  constructor(code: GuideDigestSourceValidationReason) {
+    super(`Guide digest source validation failed: ${code}`);
+    this.code = code;
     this.name = 'GuideDigestSourceValidationError';
   }
 }
@@ -71,10 +80,10 @@ export function validateGuideDigestSources(
   );
 
   for (const section of draft.stageSections) {
-    assertKnownId(stageIds, section.stageId, 'stageId');
+    assertKnownId(stageIds, section.stageId, 'UNKNOWN_STAGE_ID');
     for (const step of section.steps) {
-      assertKnownId(targetIds, step.targetId, 'targetId');
-      step.resourceIds.forEach((id) => assertKnownId(resourceIds, id, 'resourceId'));
+      assertKnownId(targetIds, step.targetId, 'UNKNOWN_TARGET_ID');
+      step.resourceIds.forEach((id) => assertKnownId(resourceIds, id, 'UNKNOWN_RESOURCE_ID'));
     }
   }
 
@@ -86,7 +95,7 @@ export function validateGuideDigestSources(
       diagnosticIds.length,
       addressableDiagnosticIds.size,
     )) {
-      throw new GuideDigestSourceValidationError(`待完善项必须引用快照证据：${gap.code}`);
+      throw new GuideDigestSourceValidationError('UNANCHORED_GAP');
     }
     assertSourceIds(allowedSourceIds, gap.sourceIds);
   });
@@ -95,7 +104,7 @@ export function validateGuideDigestSources(
   for (const tag of draft.tagSuggestions) {
     const key = normalizeLabel(tag.label);
     if (normalizedTagLabels.has(key)) {
-      throw new GuideDigestSourceValidationError(`标签建议重复：${tag.label}`);
+      throw new GuideDigestSourceValidationError('DUPLICATE_TAG');
     }
     normalizedTagLabels.add(key);
   }
@@ -177,12 +186,12 @@ export function renderGuideDigestMarkdown(input: RenderGuideDigestInput): string
   return lines.join('\n');
 }
 
-function assertKnownId(allowed: Set<string>, id: string, field: string): void {
-  if (!allowed.has(id)) throw new GuideDigestSourceValidationError(`${field} 不属于当前快照：${id}`);
+function assertKnownId(allowed: Set<string>, id: string, reason: GuideDigestSourceValidationReason): void {
+  if (!allowed.has(id)) throw new GuideDigestSourceValidationError(reason);
 }
 
 function assertSourceIds(allowed: Set<string>, ids: readonly string[]): void {
-  ids.forEach((id) => assertKnownId(allowed, id, 'sourceId'));
+  ids.forEach((id) => assertKnownId(allowed, id, 'UNKNOWN_SOURCE_ID'));
 }
 
 function renderTags(snapshot: FlowKnowledgeSnapshotV2, draft: GuideDigestDraftV1): string[] {
