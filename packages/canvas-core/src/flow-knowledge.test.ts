@@ -220,8 +220,8 @@ describe('compileFlowKnowledgeSnapshotV2', () => {
     expect(video?.kind === 'VIDEO' ? video.keypoints[0]?.targetLocator : undefined).toEqual(locator('image-proof'));
 
     expect(snapshot.learningPath).toEqual([
-      { id: 'step-image', order: 1, targetResourceId: 'image-proof' },
-      { id: 'step-review', order: 2, targetNodeId: 'review' },
+      { id: 'step-image', order: 0, targetResourceId: 'image-proof' },
+      { id: 'step-review', order: 1, targetNodeId: 'review' },
     ]);
     expect(snapshot.diagnostics).toEqual({
       danglingFlowEdgeIds: ['edge-derived'],
@@ -230,6 +230,19 @@ describe('compileFlowKnowledgeSnapshotV2', () => {
       invalidLearningTargetIds: ['derived-helper'],
       excludedDerivedNodeIds: ['derived-helper'],
     });
+  });
+
+  it('normalizes duplicate Canvas lesson orders after preserving their stable sequence', () => {
+    const document = currentCanvasDocument();
+    const snapshot = compileFlowKnowledgeSnapshotV2(input({
+      ...document,
+      steps: document.steps.map((step) => step.id === 'step-review' ? { ...step, order: 1 } : step),
+    }));
+
+    expect(snapshot.learningPath).toEqual([
+      { id: 'step-review', order: 0, targetNodeId: 'review' },
+      { id: 'step-image', order: 1, targetResourceId: 'image-proof' },
+    ]);
   });
 });
 

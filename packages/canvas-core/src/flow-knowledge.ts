@@ -357,7 +357,8 @@ function compileLearningPath(
       if (resourceIds.has(step.nodeId)) return [{ id: step.id, order: step.order, targetResourceId: step.nodeId }];
       diagnostics.invalidLearningTargetIds.add(step.nodeId);
       return [];
-    });
+    })
+    .map((step, order) => ({ ...step, order }));
 }
 
 function resourceUseKey(sourceNodeId: string, resourceId: string): string {
