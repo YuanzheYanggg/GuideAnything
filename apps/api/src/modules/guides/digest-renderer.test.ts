@@ -57,6 +57,27 @@ describe('guide digest source validation', () => {
       gaps: [{ code: 'MISSING_EXIT', message: '缺少出口。', sourceIds: [] }],
     })).gaps[0]?.sourceIds).toEqual([]);
   });
+
+  it('requires evidence for a snapshot diagnostic when its diagnostic ID is addressable', () => {
+    const addressable = snapshot();
+    addressable.diagnostics.unreferencedResourceIds = ['resource-note'];
+
+    expect(() => validateGuideDigestSources(addressable, draft({
+      gaps: [{ code: 'SNAPSHOT_DIAGNOSTIC', message: '存在未引用资料。', sourceIds: [] }],
+    }))).toThrow(expect.objectContaining({ code: 'DIGEST_SOURCE_INVALID' }));
+    expect(validateGuideDigestSources(addressable, draft({
+      gaps: [{ code: 'SNAPSHOT_DIAGNOSTIC', message: '存在未引用资料。', sourceIds: ['resource-note'] }],
+    })).gaps[0]?.sourceIds).toEqual(['resource-note']);
+  });
+
+  it('allows an unanchored snapshot diagnostic only when no diagnostic ID is addressable', () => {
+    const unaddressable = snapshot();
+    unaddressable.diagnostics.danglingFlowEdgeIds = ['excluded-edge'];
+
+    expect(validateGuideDigestSources(unaddressable, draft({
+      gaps: [{ code: 'SNAPSHOT_DIAGNOSTIC', message: '存在悬空边。', sourceIds: [] }],
+    })).gaps[0]?.sourceIds).toEqual([]);
+  });
 });
 
 describe('guide digest Markdown renderer', () => {
@@ -68,7 +89,7 @@ describe('guide digest Markdown renderer', () => {
     });
 
     expect(DIGEST_RENDERER_VERSION).toBe(1);
-    expect(markdown).toBe(`---
+    expect(markdown).toBe(String.raw`---
 schema: guide-digest-v1
 guideId: guide-id
 snapshotId: snapshot-id
@@ -93,53 +114,124 @@ tags:
 
 ## 流程阶段
 
-### 1. 准备 〔stage-prepare〕
+### 1. 准备 〔stage\-prepare〕
 
 确认输入。
 
-1. **确认需求** 〔node-start〕
+1. **确认需求** 〔node\-start〕
    - 说明：核对订单和设计要求。
    - 输入：设计稿
    - 操作：核对字段
    - 输出：打样任务
-   - 关联资料：resource-note
+   - 关联资料：resource\-note
 
-### 2. 评审 〔stage-review〕
+### 2. 评审 〔stage\-review〕
 
 完成评审。
 
-1. **评审样衣** 〔node-review〕
-   - 说明：确认评审结论，并转义 \&lt;script\&gt;。
+1. **评审样衣** 〔node\-review〕
+   - 说明：确认评审结论，并转义 &lt;script&gt;。
    - 输入：样衣
    - 操作：记录结论
    - 输出：评审结果
-   - 关联资料：resource-image、resource-video
+   - 关联资料：resource\-image、resource\-video
 
 ## 关键规则
 
-- 提交前核对订单。 〔node-start, resource-note〕
+- 提交前核对订单。 〔node\-start, resource\-note〕
 
 ## 关联资料索引
 
-- resource-note（Markdown） 〔resource-note〕
-- 成衣类型页面（图片） 〔resource-image〕
-- 评审演示（视频） 〔resource-video〕
+- resource\-note（Markdown） 〔resource\-note〕
+- 成衣类型页面（图片） 〔resource\-image〕
+- 评审演示（视频） 〔resource\-video〕
 
 ## 图片标注与视频关键点索引
 
-- 客户字段（图片标注，resource-image） 〔annotation-field〕
-- 提交订单（视频 12 秒，resource-video） 〔keypoint-submit〕
+- 客户字段（图片标注，resource\-image） 〔annotation\-field〕
+- 提交订单（视频 12 秒，resource\-video） 〔keypoint\-submit〕
 
 ## 待完善项
 
-- 缺少完整的异常处理说明。 〔node-review〕
+- 缺少完整的异常处理说明。 〔node\-review〕
 
 ## 可追溯引用
 
-- DOMAIN / 打样 〔node-start〕
-- 规则 1 〔node-start, resource-note〕
-- 待完善项 1 〔node-review〕
+- DOMAIN / 打样 〔node\-start〕
+- 规则 1 〔node\-start, resource\-note〕
+- 待完善项 1 〔node\-review〕
 `);
+  });
+
+  it('renders untrusted Markdown-looking prose as deterministic single-line literal text', () => {
+    const injectedSnapshot = snapshot();
+    const injectedPrepare = { ...injectedSnapshot.stages[0]!, title: '---\n+ stage' };
+    injectedSnapshot.stages[0] = injectedPrepare;
+    injectedSnapshot.nodes = injectedSnapshot.nodes.map((node) => (
+      node.stage?.id === injectedPrepare.id ? { ...node, stage: injectedPrepare } : node
+    ));
+    const baseDraft = draft();
+    const injectedDraft = draft({
+      shortSummary: '---\n- item\t  + item\n1. item\n~~~',
+      stageSections: baseDraft.stageSections.map((section) => section.stageId === 'stage-prepare' ? {
+        ...section,
+        title: '~~~ model stage title',
+        overview: '+ overview\n~~~',
+        steps: section.steps.map((step) => ({ ...step, title: '1. step\n- item' })),
+      } : section),
+      keyRules: [{ statement: '- rule\n+ continuation\n1. item\n~~~', sourceIds: ['node-start'] }],
+    });
+
+    const markdown = renderGuideDigestMarkdown({ snapshot: injectedSnapshot, draft: injectedDraft, baseRevision: 180 });
+
+    expect(markdown).toContain('\\-\\-\\- \\- item \\+ item 1\\. item \\~\\~\\~');
+    expect(markdown).toContain('### 1. \\-\\-\\- \\+ stage 〔stage\\-prepare〕');
+    expect(markdown).toContain('\\+ overview \\~\\~\\~');
+    expect(markdown).toContain('1. **1\\. step \\- item** 〔node\\-start〕');
+    expect(markdown).toContain('- \\- rule \\+ continuation 1\\. item \\~\\~\\~ 〔node\\-start〕');
+    expect(markdown).not.toContain('~~~ model stage title');
+  });
+
+  it('renders an exact empty tags sequence instead of a null YAML key', () => {
+    const emptyTagsSnapshot = snapshot();
+    emptyTagsSnapshot.tags = [];
+    const markdown = renderGuideDigestMarkdown({
+      snapshot: emptyTagsSnapshot,
+      draft: draft({ tagSuggestions: [] }),
+      baseRevision: 180,
+    });
+
+    expect(markdown.slice(0, markdown.indexOf('\n---\n\n#'))).toBe(`---
+schema: guide-digest-v1
+guideId: guide-id
+snapshotId: snapshot-id
+baseRevision: 180
+reviewStatus: DRAFT
+tags: []`);
+  });
+
+  it('uses code-point order for same-order resource IDs', () => {
+    const tiedSnapshot = snapshot();
+    tiedSnapshot.resources = [
+      { kind: 'MARKDOWN', id: 'resource-😀', locator: locator('resource-😀'), order: 4, markdown: 'emoji' },
+      { kind: 'MARKDOWN', id: 'resource-', locator: locator('resource-'), order: 4, markdown: 'private-use' },
+    ];
+    tiedSnapshot.relations = [
+      { kind: 'FLOW', id: 'relation-flow', sourceNodeId: 'node-start', targetNodeId: 'node-review' },
+      { kind: 'USES_RESOURCE', id: 'relation-emoji', sourceNodeId: 'node-start', resourceId: 'resource-😀' },
+      { kind: 'USES_RESOURCE', id: 'relation-private', sourceNodeId: 'node-start', resourceId: 'resource-' },
+    ];
+    const tiedDraft = draft({
+      stageSections: draft().stageSections.map((section) => ({
+        ...section,
+        steps: section.steps.map((step) => ({ ...step, resourceIds: step.targetId === 'node-start' ? ['resource-😀', 'resource-'] : [] })),
+      })),
+      keyRules: [{ statement: '核对资料。', sourceIds: ['node-start'] }],
+    });
+
+    const markdown = renderGuideDigestMarkdown({ snapshot: tiedSnapshot, draft: tiedDraft, baseRevision: 180 });
+
+    expect(markdown.indexOf('resource\\-（Markdown）')).toBeLessThan(markdown.indexOf('resource\\-😀（Markdown）'));
   });
 
   it('is byte-identical for the same snapshot and structured draft', () => {

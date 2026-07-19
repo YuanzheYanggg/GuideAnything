@@ -30,6 +30,9 @@ export function validateGuideDigestSources(
   ]);
   const resourceIds = new Set(snapshot.resources.map((resource) => resource.id));
   const allowedSourceIds = buildAllowedSourceIds(snapshot);
+  const addressableDiagnosticIds = new Set(
+    Object.values(snapshot.diagnostics).flat().filter((id) => allowedSourceIds.has(id)),
+  );
 
   for (const section of draft.stageSections) {
     assertKnownId(stageIds, section.stageId, 'stageId');
@@ -42,7 +45,7 @@ export function validateGuideDigestSources(
   draft.keyRules.forEach((rule) => assertSourceIds(allowedSourceIds, rule.sourceIds));
   draft.tagSuggestions.forEach((tag) => assertSourceIds(allowedSourceIds, tag.sourceIds));
   draft.gaps.forEach((gap) => {
-    if (gap.sourceIds.length === 0 && !canBeUnanchoredGap(gap.code)) {
+    if (gap.sourceIds.length === 0 && !canBeUnanchoredGap(gap.code, addressableDiagnosticIds.size > 0)) {
       throw new GuideDigestSourceValidationError(`待完善项必须引用快照证据：${gap.code}`);
     }
     assertSourceIds(allowedSourceIds, gap.sourceIds);
@@ -60,8 +63,13 @@ export function validateGuideDigestSources(
   return draft;
 }
 
-function canBeUnanchoredGap(code: GuideDigestDraftV1['gaps'][number]['code']): boolean {
-  return code === 'MISSING_ENTRY' || code === 'MISSING_EXIT' || code === 'SNAPSHOT_DIAGNOSTIC';
+function canBeUnanchoredGap(
+  code: GuideDigestDraftV1['gaps'][number]['code'],
+  hasAddressableDiagnostic: boolean,
+): boolean {
+  return code === 'MISSING_ENTRY'
+    || code === 'MISSING_EXIT'
+    || (code === 'SNAPSHOT_DIAGNOSTIC' && !hasAddressableDiagnostic);
 }
 
 export interface RenderGuideDigestInput {
@@ -77,6 +85,7 @@ export function renderGuideDigestMarkdown(input: RenderGuideDigestInput): string
     throw new Error('baseRevision 必须是非负安全整数');
   }
 
+  const tags = renderTags(snapshot, draft);
   const lines: string[] = [
     '---',
     'schema: guide-digest-v1',
@@ -84,8 +93,7 @@ export function renderGuideDigestMarkdown(input: RenderGuideDigestInput): string
     `snapshotId: ${yamlScalar(snapshot.snapshotId)}`,
     `baseRevision: ${input.baseRevision}`,
     'reviewStatus: DRAFT',
-    'tags:',
-    ...renderTags(snapshot, draft).map((tag) => `  - ${JSON.stringify(tag)}`),
+    ...(tags.length === 0 ? ['tags: []'] : ['tags:', ...tags.map((tag) => `  - ${JSON.stringify(tag)}`)]),
     '---',
     '',
     `# ${markdownText(snapshot.title)}`,
@@ -187,12 +195,12 @@ function renderStageSections(snapshot: FlowKnowledgeSnapshotV2, draft: GuideDige
     const steps = [...section.steps].sort((left, right) => (
       (learningOrder.get(left.targetId) ?? Number.MAX_SAFE_INTEGER) - (learningOrder.get(right.targetId) ?? Number.MAX_SAFE_INTEGER)
       || (targetOrder.get(left.targetId) ?? Number.MAX_SAFE_INTEGER) - (targetOrder.get(right.targetId) ?? Number.MAX_SAFE_INTEGER)
-      || left.targetId.localeCompare(right.targetId)
+      || compareCodePoints(left.targetId, right.targetId)
     ));
     steps.forEach((step, stepIndex) => {
       const sortedResources = [...step.resourceIds].sort((left, right) => (
         (resourceOrder.get(left) ?? Number.MAX_SAFE_INTEGER) - (resourceOrder.get(right) ?? Number.MAX_SAFE_INTEGER)
-        || left.localeCompare(right)
+        || compareCodePoints(left, right)
       ));
       rendered.push(
         `${stepIndex + 1}. **${markdownText(step.title)}** ${sourceMarker([step.targetId])}`,
@@ -230,14 +238,14 @@ function renderMediaIndex(snapshot: FlowKnowledgeSnapshotV2): string[] {
   for (const resource of orderedResources(snapshot)) {
     if (resource.kind === 'IMAGE') {
       [...resource.annotations]
-        .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
+        .sort((left, right) => left.order - right.order || compareCodePoints(left.id, right.id))
         .forEach((annotation) => {
           items.push(`- ${markdownText(annotation.title)}（图片标注，${markdownText(resource.id)}） ${sourceMarker([annotation.id])}`);
         });
     }
     if (resource.kind === 'VIDEO') {
       [...resource.keypoints]
-        .sort((left, right) => left.timeSeconds - right.timeSeconds || left.id.localeCompare(right.id))
+        .sort((left, right) => left.timeSeconds - right.timeSeconds || compareCodePoints(left.id, right.id))
         .forEach((keypoint) => {
           items.push(`- ${markdownText(keypoint.title)}（视频 ${formatSeconds(keypoint.timeSeconds)} 秒，${markdownText(resource.id)}） ${sourceMarker([keypoint.id])}`);
         });
@@ -264,7 +272,7 @@ function renderTraceability(draft: GuideDigestDraftV1): string[] {
 }
 
 function orderedResources(snapshot: FlowKnowledgeSnapshotV2): FlowKnowledgeResourceV2[] {
-  return [...snapshot.resources].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+  return [...snapshot.resources].sort((left, right) => left.order - right.order || compareCodePoints(left.id, right.id));
 }
 
 function sourceMarker(sourceIds: readonly string[]): string {
@@ -278,12 +286,12 @@ function listText(values: readonly string[]): string {
 function markdownText(value: string): string {
   return value
     .normalize('NFC')
+    .replace(/\s+/gu, ' ')
     .trim()
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
-    .replace(/[\\`*_{}\[\]()#!|]/gu, '\\$&')
-    .replace(/\s*\r?\n\s*/gu, ' ');
+    .replace(/[\\`*_{}\[\]()#+.!|~\-]/gu, '\\$&');
 }
 
 function yamlScalar(value: string): string {
@@ -292,6 +300,17 @@ function yamlScalar(value: string): string {
 
 function normalizeLabel(value: string): string {
   return value.normalize('NFKC').trim().toLocaleLowerCase('und');
+}
+
+function compareCodePoints(left: string, right: string): number {
+  const leftPoints = Array.from(left, (value) => value.codePointAt(0)!);
+  const rightPoints = Array.from(right, (value) => value.codePointAt(0)!);
+  const sharedLength = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    const difference = leftPoints[index]! - rightPoints[index]!;
+    if (difference !== 0) return difference;
+  }
+  return leftPoints.length - rightPoints.length;
 }
 
 function formatSeconds(value: number): string {

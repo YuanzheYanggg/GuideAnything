@@ -52,7 +52,7 @@ export function buildGuideDigestInputEnvelope(
   let remaining = maxResourceBodyCharacters;
   const truncatedResourceIds: string[] = [];
   const resources = [...snapshot.resources]
-    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
+    .sort((left, right) => left.order - right.order || compareCodePoints(left.id, right.id))
     .map((resource) => {
       const result = budgetResourceBodies(resource, remaining);
       remaining = result.remaining;
@@ -145,4 +145,15 @@ function normalizeRepairNote(value: string | undefined): string | undefined {
     throw new Error('schemaRepairNote 必须是 1 至 1000 字符');
   }
   return normalized;
+}
+
+function compareCodePoints(left: string, right: string): number {
+  const leftPoints = Array.from(left, (value) => value.codePointAt(0)!);
+  const rightPoints = Array.from(right, (value) => value.codePointAt(0)!);
+  const sharedLength = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    const difference = leftPoints[index]! - rightPoints[index]!;
+    if (difference !== 0) return difference;
+  }
+  return leftPoints.length - rightPoints.length;
 }

@@ -47,6 +47,23 @@ describe('guide digest bundle', () => {
     });
   });
 
+  it('uses explicit code-point order when resource orders tie', () => {
+    const tied = snapshot();
+    tied.resources = [
+      { kind: 'MARKDOWN', id: 'resource-😀', locator: locator('resource-😀'), order: 1, markdown: 'emoji' },
+      { kind: 'MARKDOWN', id: 'resource-', locator: locator('resource-'), order: 1, markdown: 'private-use' },
+    ];
+    tied.relations = [
+      { kind: 'USES_RESOURCE', id: 'relation-emoji', sourceNodeId: 'node-1', resourceId: 'resource-😀' },
+      { kind: 'USES_RESOURCE', id: 'relation-private', sourceNodeId: 'node-1', resourceId: 'resource-' },
+    ];
+
+    expect(buildGuideDigestInputEnvelope(tied).snapshot.resources.map((resource) => resource.id)).toEqual([
+      'resource-',
+      'resource-😀',
+    ]);
+  });
+
   it('serializes only the budgeted snapshot and one optional schema-repair note', () => {
     const prompt = buildGuideDigestPrompt(snapshot(), {
       maxResourceBodyCharacters: 8,
