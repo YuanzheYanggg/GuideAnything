@@ -12,6 +12,7 @@ import { ZodError } from 'zod';
 import { httpError } from '../../lib/http-error';
 import {
   GUIDE_DIGEST_BUNDLE,
+  GuideDigestContinuityContextSchema,
   GuideDigestInputTooLargeError,
   assertGuideDigestRuntimeRequestBudget,
   buildGuideDigestInputEnvelope,
@@ -624,13 +625,15 @@ function resolveGuideDigestContinuity(
       return null;
     }
     const snapshotDiff = buildGuideDigestSnapshotDiff(snapshot, ready.snapshot);
+    const context = GuideDigestContinuityContextSchema.safeParse({
+      baselineProposalId: baseline.proposal.id,
+      baselineRevision: baseline.proposal.baseRevision,
+      previousDigest: baseline.proposal.draft,
+      snapshotDiff,
+    });
+    if (!context.success) return null;
     return {
-      context: {
-        baselineProposalId: baseline.proposal.id,
-        baselineRevision: baseline.proposal.baseRevision,
-        previousDigest: baseline.proposal.draft,
-        snapshotDiff,
-      },
+      context: context.data,
       changedSourceCount: snapshotDiff.affectedSourceIds.length,
     };
   } catch {

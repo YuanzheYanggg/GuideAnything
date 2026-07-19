@@ -280,7 +280,6 @@ function collectChangedResourceChildren(before: Resource, after: Resource, affec
       affected.add(afterAnnotation.id);
       if (beforeAnnotation.targetNodeId) affected.add(beforeAnnotation.targetNodeId);
       if (afterAnnotation.targetNodeId) affected.add(afterAnnotation.targetNodeId);
-      collectChangedSupplementalImages(beforeAnnotation, afterAnnotation, affected);
     }
   } else if (before.kind === 'VIDEO' && after.kind === 'VIDEO') {
     collectChangedValues(diffCollection(before.keypoints, after.keypoints), affected)
@@ -292,27 +291,6 @@ function collectChangedResourceChildren(before: Resource, after: Resource, affec
 
 function collectImageAnnotationReferences(annotation: ImageAnnotation, affected: Set<string>): void {
   if (annotation.targetNodeId) affected.add(annotation.targetNodeId);
-  annotation.supplementalImages?.forEach(({ assetId }) => affected.add(assetId));
-}
-
-function collectChangedSupplementalImages(
-  before: ImageAnnotation,
-  after: ImageAnnotation,
-  affected: Set<string>,
-): void {
-  const previousById = new Map(
-    (before.supplementalImages ?? []).map((image) => [image.assetId, image]),
-  );
-  const currentById = new Map(
-    (after.supplementalImages ?? []).map((image) => [image.assetId, image]),
-  );
-  for (const image of before.supplementalImages ?? []) {
-    if (!currentById.has(image.assetId)) affected.add(image.assetId);
-  }
-  for (const image of after.supplementalImages ?? []) {
-    const previous = previousById.get(image.assetId);
-    if (!previous || valuesDiffer(previous, image)) affected.add(image.assetId);
-  }
 }
 
 function collectChangedValues<T extends { id: string }>(

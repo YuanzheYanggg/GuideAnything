@@ -6,6 +6,7 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import {
+  GuideDigestContinuityValidationError,
   buildGuideDigestSnapshotDiff,
   hasGuideDigestBusinessChanges,
   validateGuideDigestTagContinuity,
@@ -177,7 +178,7 @@ describe('guide digest snapshot continuity', () => {
       { assetId: 'supplement-existing', alt: '更新补充图' },
     ],
     ['removed', { assetId: 'supplement-existing', alt: '原补充图' }, undefined],
-  ] as const)('keeps %s supplemental-image parent and child IDs affected', (
+  ] as const)('keeps %s supplemental-image source parents affected without adding asset IDs', (
     _label,
     beforeSupplement,
     afterSupplement,
@@ -198,10 +199,42 @@ describe('guide digest snapshot continuity', () => {
     const diff = buildGuideDigestSnapshotDiff(previous, current);
 
     expect(diff.affectedSourceIds).toEqual(expect.arrayContaining([
-      'resource-image',
-      'annotation-1',
-      (afterSupplement ?? beforeSupplement)!.assetId,
+      'resource-image', 'annotation-1',
     ]));
+    expect(diff.affectedSourceIds).not.toContain(
+      (afterSupplement ?? beforeSupplement)!.assetId,
+    );
+  });
+
+  it('does not let a supplemental asset ID collision affect an unchanged node source', () => {
+    const previous = snapshot();
+    const current = snapshot();
+    const currentImage = current.resources.find((resource) => resource.kind === 'IMAGE')!;
+    currentImage.annotations[0] = {
+      ...currentImage.annotations[0]!,
+      supplementalImages: [{ assetId: 'node-1', alt: '与节点 ID 碰撞的补充图' }],
+    };
+    const diff = buildGuideDigestSnapshotDiff(previous, current);
+    let accepted = true;
+    try {
+      validateGuideDigestTagContinuity(
+        current,
+        draft(),
+        diff,
+        draft({
+          tagSuggestions: [{ label: '错误放宽标签', category: 'RISK', sourceIds: ['node-1'] }],
+        }),
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(GuideDigestContinuityValidationError);
+      expect(error).toMatchObject({ code: 'UNJUSTIFIED_TAG_CHURN' });
+      accepted = false;
+    }
+
+    expect({ affected: diff.affectedSourceIds, accepted }).toEqual({
+      affected: ['annotation-1', 'resource-image'],
+      accepted: false,
+    });
   });
 
   it('sorts affected source IDs by Unicode code point rather than UTF-16 code unit', () => {

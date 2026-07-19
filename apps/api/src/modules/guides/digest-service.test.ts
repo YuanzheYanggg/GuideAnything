@@ -610,6 +610,36 @@ describe('GuideDigestService access and snapshot gates', () => {
     });
   });
 
+  it.each([
+    ['overlong', 'p'.repeat(201)],
+    ['empty', ''],
+  ])('falls back to FULL for a schema-valid history row with an %s proposal ID', async (
+    _label,
+    proposalId,
+  ) => {
+    const baselineIdentity = currentProposalIdentity(database, guideId);
+    advanceGuide(database, guideId, owner.id, { summary: '不兼容历史 ID 后的当前摘要' });
+    insertHistoricalProposalWithId(database, proposalId, baselineIdentity);
+    runtime.enqueueDigest(digest({ shortSummary: '不兼容历史 ID 的安全完整生成' }));
+
+    const generated = await service.createProposal(owner, guideId, {});
+
+    expect(runtime.requests).toHaveLength(1);
+    expect(promptEnvelope(runtime.requests[0]!.prompt)).not.toHaveProperty('continuity');
+    expect(generated.proposal).toMatchObject({
+      status: 'DRAFT',
+      draft: { shortSummary: '不兼容历史 ID 的安全完整生成' },
+      generationMetadata: {
+        continuityMode: 'FULL', continuityFallbackReason: 'BASELINE_UNAVAILABLE',
+      },
+    });
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineProposalId');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('baselineRevision');
+    expect(generated.proposal.generationMetadata).not.toHaveProperty('changedSourceCount');
+    expect(listGuideDigestProposals(database, guideId)
+      .filter(({ status }) => status === 'FAILED')).toEqual([]);
+  });
+
   it('repairs invalid structured output exactly once, then persists only a safe FAILED proposal', async () => {
     runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
     runtime.enqueueFailure('INVALID_GUIDE_DIGEST_OUTPUT');
@@ -1366,6 +1396,33 @@ function currentSnapshotRow(database: DatabaseSync, guideId: string): {
     workspace_id: string;
     snapshot_json: string;
   };
+}
+
+function insertHistoricalProposalWithId(
+  database: DatabaseSync,
+  proposalId: string,
+  identity: ReturnType<typeof currentProposalIdentity>,
+): void {
+  const createdAt = new Date().toISOString();
+  database.prepare(
+    `INSERT INTO guide_digest_proposals (
+      id, guide_id, workspace_id, base_snapshot_id, base_revision, bundle_revision,
+      renderer_version, generation_metadata_json, status, draft_json, markdown,
+      created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, '# 历史摘要', 'digest-owner', ?, ?)`,
+  ).run(
+    proposalId,
+    identity.guideId,
+    identity.workspaceId,
+    identity.baseSnapshotId,
+    identity.baseRevision,
+    identity.bundleRevision,
+    identity.rendererVersion,
+    JSON.stringify(identity.generationMetadata),
+    JSON.stringify(digest({ shortSummary: '不兼容 ID 的历史摘要' })),
+    createdAt,
+    createdAt,
+  );
 }
 
 function replaceCurrentSnapshotIdentity(
