@@ -1,5 +1,5 @@
 import type { GuideDigestDraftV1 } from '@guideanything/contracts';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { createDatabase } from '../../db/client';
@@ -8,6 +8,7 @@ import {
   applyGuideDigestProposal,
   createFailedGuideDigestProposal,
   createGuideDigestProposal,
+  findGuideDigestContinuityBaseline,
   findDraftGuideDigestProposal,
   getGuideDigestProposal,
   listGuideDigestAuditEvents,
@@ -28,7 +29,10 @@ describe('guide digest repository', () => {
     seed(database);
   });
 
-  afterEach(() => database.close());
+  afterEach(() => {
+    vi.useRealTimers();
+    database.close();
+  });
 
   it('creates, parses, gets, lists, and finds the one duplicate-generation DRAFT', () => {
     const created = createGuideDigestProposal(database, generatedInput());
@@ -261,6 +265,99 @@ describe('guide digest repository', () => {
     ).run(now, now);
     expect(() => getGuideDigestProposal(database, 'guide-one', 'invalid-contract')).toThrow();
   });
+
+  it.each([
+    ['DRAFT', (proposalId: string) => proposalId],
+    ['APPLIED', (proposalId: string) => {
+      applyGuideDigestProposal(database, 'guide-one', proposalId, 'user-one', {
+        appliedRevision: 6, selectedSummary: true, acceptedTags: [], acceptedMarkdown: true,
+      });
+      return proposalId;
+    }],
+    ['STALE', (proposalId: string) => {
+      markGuideDigestProposalStale(database, 'guide-one', proposalId, 'user-one');
+      return proposalId;
+    }],
+  ])('selects the latest %s baseline in the exact guide and workspace scope', (_status, transition) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-19T00:00:01.000Z'));
+    const older = createGuideDigestProposal(database, generatedInput());
+    vi.setSystemTime(new Date('2026-07-19T00:00:02.000Z'));
+    const latestTrusted = createGuideDigestProposal(database, {
+      ...generatedInput(),
+      baseSnapshotId: 'snapshot-two',
+      baseRevision: 5,
+      draft: draft({ shortSummary: '最新可信摘要' }),
+    });
+    transition(latestTrusted.id);
+
+    vi.setSystemTime(new Date('2026-07-19T00:00:03.000Z'));
+    const rejected = createGuideDigestProposal(database, {
+      ...generatedInput(),
+      baseSnapshotId: 'snapshot-two',
+      baseRevision: 5,
+      bundleRevision: 2,
+      draft: draft({ shortSummary: '不应返回的已拒绝摘要' }),
+    });
+    rejectGuideDigestProposal(database, 'guide-one', rejected.id, 'user-one');
+    vi.setSystemTime(new Date('2026-07-19T00:00:04.000Z'));
+    createFailedGuideDigestProposal(database, {
+      ...generationIdentity(), baseSnapshotId: 'snapshot-two', baseRevision: 5,
+      failureCode: 'SCHEMA_INVALID', createdBy: 'user-one',
+    });
+
+    const otherScope = createGuideDigestProposal(database, {
+      ...generatedInput(),
+      guideId: 'guide-three', workspaceId: 'workspace-two', baseSnapshotId: 'snapshot-three',
+      baseRevision: 8, draft: draft({ shortSummary: '其他工作区摘要' }),
+    });
+
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one', excludeProposalId: rejected.id,
+    })).toMatchObject({
+      proposal: { id: latestTrusted.id, status: _status },
+      snapshotJson: expect.stringContaining('"schemaVersion":2'),
+    });
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one', excludeProposalId: latestTrusted.id,
+    })?.proposal.id).toBe(older.id);
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-three', workspaceId: 'workspace-one',
+    })).toBeNull();
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-two',
+    })).toBeNull();
+    expect(otherScope.status).toBe('DRAFT');
+  });
+
+  it('returns null when only REJECTED and FAILED proposals exist', () => {
+    const rejected = createGuideDigestProposal(database, generatedInput());
+    rejectGuideDigestProposal(database, 'guide-one', rejected.id, 'user-one');
+    createFailedGuideDigestProposal(database, {
+      ...generationIdentity(), failureCode: 'SCHEMA_INVALID', createdBy: 'user-one',
+    });
+
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one',
+    })).toBeNull();
+  });
+
+  it('skips a malformed newer historical draft and returns the next trusted baseline', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-19T00:00:01.000Z'));
+    const safe = createGuideDigestProposal(database, generatedInput());
+    vi.setSystemTime(new Date('2026-07-19T00:00:02.000Z'));
+    const malformed = createGuideDigestProposal(database, {
+      ...generatedInput(), baseSnapshotId: 'snapshot-two', baseRevision: 5,
+    });
+    database.exec('DROP TRIGGER guide_digest_proposals_immutable_content');
+    database.prepare('UPDATE guide_digest_proposals SET draft_json = ? WHERE id = ?')
+      .run('{"schemaVersion":1}', malformed.id);
+
+    expect(findGuideDigestContinuityBaseline(database, {
+      guideId: 'guide-one', workspaceId: 'workspace-one',
+    })).toMatchObject({ proposal: { id: safe.id } });
+  });
 });
 
 function generationIdentity() {
@@ -343,6 +440,32 @@ function seed(database: DatabaseSync): void {
   database.prepare(
     `INSERT INTO flow_knowledge_snapshots (
       id, guide_id, workspace_id, origin_type, revision, document_checksum, snapshot_json, created_at
-    ) VALUES ('snapshot-one', 'guide-one', 'workspace-one', 'DRAFT', 4, 'checksum', '{}', ?)`,
+    ) VALUES ('snapshot-one', 'guide-one', 'workspace-one', 'DRAFT', 4, 'checksum', '{"schemaVersion":2}', ?)`,
+  ).run(now);
+  database.prepare(
+    `INSERT INTO flow_knowledge_snapshots (
+      id, guide_id, workspace_id, origin_type, revision, document_checksum, snapshot_json, created_at
+    ) VALUES ('snapshot-two', 'guide-one', 'workspace-one', 'DRAFT', 5, 'checksum-two', '{"schemaVersion":2}', ?)`,
+  ).run(now);
+  database.prepare(
+    `INSERT INTO workspaces (
+      id, slug, name, description, icon_key, color_key, owner_id, status, created_at, updated_at
+    ) VALUES ('workspace-two', 'two', '工作区二', '', 'SquaresFour', 'general', 'user-one', 'ACTIVE', ?, ?)`,
+  ).run(now, now);
+  database.prepare(
+    `INSERT INTO guides (
+      id, owner_id, title, summary, tags_json, status, visibility, revision,
+      draft_document, created_at, updated_at
+    ) VALUES ('guide-three', 'user-one', 'guide-three', '', '[]', 'DRAFT', 'INTERNAL', 8, '{}', ?, ?)`,
+  ).run(now, now);
+  database.prepare(
+    `INSERT INTO workspace_items (
+      id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+    ) VALUES ('guide-three-item', 'workspace-two', 'GUIDE', 'guide-three', 'guide-three', '', 'user-one', ?, ?)`,
+  ).run(now, now);
+  database.prepare(
+    `INSERT INTO flow_knowledge_snapshots (
+      id, guide_id, workspace_id, origin_type, revision, document_checksum, snapshot_json, created_at
+    ) VALUES ('snapshot-three', 'guide-three', 'workspace-two', 'DRAFT', 8, 'checksum-three', '{"schemaVersion":2}', ?)`,
   ).run(now);
 }

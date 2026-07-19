@@ -71,6 +71,10 @@ interface ProposalRow {
   updated_at: string;
 }
 
+interface ContinuityBaselineRow extends ProposalRow {
+  snapshot_json: string;
+}
+
 interface AuditRow {
   id: string;
   proposal_id: string;
@@ -103,6 +107,11 @@ export interface GuideDigestProposal {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface GuideDigestContinuityBaselineRecord {
+  proposal: GuideDigestProposal;
+  snapshotJson: string;
 }
 
 export interface GuideDigestAuditEvent {
@@ -244,6 +253,52 @@ export function findDraftGuideDigestProposal(
     input.rendererVersion,
   ) as unknown as ProposalRow | undefined;
   return row ? mapProposal(row) : null;
+}
+
+export function findGuideDigestContinuityBaseline(
+  database: DatabaseSync,
+  input: {
+    guideId: string;
+    workspaceId: string;
+    excludeProposalId?: string | null;
+  },
+): GuideDigestContinuityBaselineRecord | null {
+  const rows = database.prepare(
+    `SELECT
+      proposal.id, proposal.guide_id, proposal.workspace_id, proposal.base_snapshot_id,
+      proposal.base_revision, proposal.bundle_revision, proposal.renderer_version,
+      proposal.generation_metadata_json, proposal.status, proposal.draft_json, proposal.markdown,
+      proposal.failure_code, proposal.supersedes_proposal_id, proposal.applied_revision,
+      proposal.selected_summary, proposal.accepted_tags_json, proposal.accepted_markdown,
+      proposal.created_by, proposal.created_at, proposal.updated_at, snapshot.snapshot_json
+     FROM guide_digest_proposals AS proposal
+     JOIN flow_knowledge_snapshots AS snapshot
+       ON snapshot.id = proposal.base_snapshot_id
+      AND snapshot.guide_id = proposal.guide_id
+      AND snapshot.workspace_id = proposal.workspace_id
+      AND snapshot.origin_type = 'DRAFT'
+      AND snapshot.revision = proposal.base_revision
+     WHERE proposal.guide_id = ?
+       AND proposal.workspace_id = ?
+       AND proposal.status IN ('DRAFT', 'APPLIED', 'STALE')
+       AND (? IS NULL OR proposal.id != ?)
+     ORDER BY proposal.created_at DESC, proposal.id DESC
+     LIMIT 50`,
+  ).all(
+    input.guideId,
+    input.workspaceId,
+    input.excludeProposalId ?? null,
+    input.excludeProposalId ?? null,
+  ) as unknown as ContinuityBaselineRow[];
+
+  for (const row of rows) {
+    try {
+      return { proposal: mapProposal(row), snapshotJson: row.snapshot_json };
+    } catch {
+      // Historical generated output is immutable but may predate the current contract.
+    }
+  }
+  return null;
 }
 
 export function rejectGuideDigestProposal(
