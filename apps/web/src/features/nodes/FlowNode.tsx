@@ -7,7 +7,7 @@ import { InlineNodeTextEditor } from './InlineNodeTextEditor';
 import { useNodeDetailPresentation } from './NodeDetailPresentation';
 
 export const FlowNode = memo(function FlowNode({ data, selected, type, width, height, id }: NodeProps) {
-  const value = data as { label?: string; description?: string; detailExpanded?: boolean; responsibility?: { title: string; kind: 'ROLE' | 'SYSTEM' } };
+  const value = data as { label?: string; description?: string; detailExpanded?: boolean; responsibility?: { title: string; kind: 'ROLE' | 'SYSTEM' }; semanticCode?: string };
   const detailPresentation = useNodeDetailPresentation();
   const label = value.label ?? '未命名流程';
   const description = value.description ?? '';
@@ -18,7 +18,7 @@ export const FlowNode = memo(function FlowNode({ data, selected, type, width, he
     detailPresentation.onOpenEditor(id, event.currentTarget);
   };
   return <NodeChrome nodeId={id} selected={selected} tone={type ?? 'process'} width={width} height={height} expanded={expanded}>
-    <span className="node-kicker">{flowLabel(type)}</span>
+    <span className="node-kicker">{value.semanticCode ? `${flowLabel(type)} · ${value.semanticCode}` : flowLabel(type)}</span>
     <InlineNodeTextEditor nodeId={id} field="label" value={value.label ?? ''} label={`${label} · 节点标题`} required>
       <strong>{label}</strong>
     </InlineNodeTextEditor>

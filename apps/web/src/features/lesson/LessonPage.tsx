@@ -1,4 +1,5 @@
 import type { CanvasDocument, CanvasNode, FlowLane, FlowStage, GuideVersionSnapshot, ImageAnnotationSupplement } from '@guideanything/contracts';
+import { deriveSemanticFlow, hasSemanticFlow } from '@guideanything/canvas-core';
 import {
   type Edge,
   type Node,
@@ -24,7 +25,7 @@ export interface LessonApi {
 export function resolveStepStage(document: CanvasDocument, nodeId: string): FlowStage | null {
   const node = document.nodes.find((item) => item.id === nodeId);
   if (!node) return null;
-  const ownerId = node.source?.referenceNodeId ?? node.contentParentId ?? nodeId;
+  const ownerId = node.source?.referenceNodeId ?? node.attachment?.ownerNodeId ?? node.contentParentId ?? nodeId;
   const owner = document.nodes.find((item) => item.id === ownerId);
   if (!owner || owner.source) return null;
   return document.stages?.find((stage) => stage.id === owner.stageId) ?? null;
@@ -32,7 +33,7 @@ export function resolveStepStage(document: CanvasDocument, nodeId: string): Flow
 
 export function resolveStepLane(document: CanvasDocument, nodeId: string): FlowLane | null {
   const node = document.nodes.find((item) => item.id === nodeId);
-  const ownerId = node?.source?.referenceNodeId ?? node?.contentParentId ?? nodeId;
+  const ownerId = node?.source?.referenceNodeId ?? node?.attachment?.ownerNodeId ?? node?.contentParentId ?? nodeId;
   const owner = document.nodes.find((item) => item.id === ownerId);
   return owner && !owner.source && owner.laneId
     ? document.lanes?.find((lane) => lane.id === owner.laneId) ?? null
@@ -43,9 +44,15 @@ export function resourcesForStep(document: CanvasDocument, nodeId: string): Canv
   return document.nodes.filter((node) =>
     !node.hidden
     && !node.source
-    && node.contentParentId === nodeId
+    && (node.attachment?.ownerNodeId ?? node.contentParentId) === nodeId
     && (node.type === 'markdown' || node.type === 'image' || node.type === 'video'),
   );
+}
+
+export function lessonStepsForDocument(document: CanvasDocument) {
+  return hasSemanticFlow(document)
+    ? deriveSemanticFlow(document).lessonSteps
+    : [...document.steps].sort((left, right) => left.order - right.order);
 }
 
 export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }: { versionId: string; api: LessonApi; personalApi?: PersonalApi; focusNodeId?: string; onBack: () => void }) {
@@ -73,8 +80,7 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
   }, [api, personalApi, versionId]);
 
   const version = versionHistory[versionHistory.length - 1] ?? null;
-  const lessonSteps = useMemo(() => version ? [...version.document.steps]
-    .sort((a, b) => a.order - b.order)
+  const lessonSteps = useMemo(() => version ? lessonStepsForDocument(version.document)
     .map((step) => ({
       step,
       stage: resolveStepStage(version.document, step.nodeId),

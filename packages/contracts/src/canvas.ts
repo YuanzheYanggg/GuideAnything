@@ -3,6 +3,22 @@ import { z } from 'zod';
 const IdSchema = z.string().min(1).max(200);
 const PositionSchema = z.object({ x: z.number().finite(), y: z.number().finite() });
 
+const OutlineSchema = z.object({
+  parentId: IdSchema.optional(),
+  order: z.number().int().min(0).max(1_000_000),
+  kind: z.enum(['STEP', 'BRANCH']),
+});
+
+const ResourceAttachmentSchema = z.object({
+  ownerNodeId: IdSchema,
+  order: z.number().int().min(0).max(1_000_000),
+});
+
+const CanvasEdgeSemanticSchema = z.object({
+  kind: z.enum(['FLOW', 'BRANCH', 'EXCEPTION', 'RETRY', 'RESOURCE_REFERENCE']),
+  order: z.number().int().min(0).max(1_000_000).optional(),
+});
+
 const SourceTraceSchema = z.object({
   referenceNodeId: IdSchema,
   sourceGuideId: IdSchema,
@@ -20,6 +36,8 @@ const NodeBaseSchema = z.object({
   stageId: IdSchema.optional(),
   laneId: IdSchema.optional(),
   contentParentId: IdSchema.optional(),
+  outline: OutlineSchema.optional(),
+  attachment: ResourceAttachmentSchema.optional(),
 });
 
 const FlowDataSchema = z.object({
@@ -134,6 +152,9 @@ export type EdgeRouting = z.infer<typeof EdgeRoutingSchema>;
 export type EdgeRouteMode = z.infer<typeof EdgeRouteModeSchema>;
 export type EdgeWaypoint = z.infer<typeof EdgeWaypointSchema>;
 export type EdgePresentation = z.infer<typeof EdgePresentationSchema>;
+export type FlowOutline = z.infer<typeof OutlineSchema>;
+export type ResourceAttachment = z.infer<typeof ResourceAttachmentSchema>;
+export type CanvasEdgeSemantic = z.infer<typeof CanvasEdgeSemanticSchema>;
 
 export const FlowStageSchema = z.object({
   id: IdSchema,
@@ -195,6 +216,7 @@ export const CanvasEdgeSchema = z.object({
   hidden: z.boolean().optional(),
   sourceTrace: SourceTraceSchema.optional(),
   presentation: EdgePresentationSchema.optional(),
+  semantic: CanvasEdgeSemanticSchema.optional(),
 });
 
 export const LessonStepSchema = z.object({
@@ -259,11 +281,38 @@ export const CanvasDocumentSchema = z.object({
 
   document.nodes.forEach((node, index) => {
     const primary = primaryTypes.has(node.type) && !node.source;
+    const content = contentTypes.has(node.type) && !node.source;
     if (node.stageId && (!primary || !stageIds.has(node.stageId))) {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'stageId'], message: '阶段只能标记存在的一级主流程节点' });
     }
     if (node.laneId && (!primary || !laneIds.has(node.laneId))) {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'laneId'], message: '责任泳道只能标记存在的一级主流程节点' });
+    }
+    if (node.outline) {
+      if (!primary) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'outline'], message: '流程顺序只能标记编辑态一级主流程节点' });
+      }
+      const parent = node.outline.parentId ? nodesById.get(node.outline.parentId) : undefined;
+      const parentPrimary = Boolean(parent && primaryTypes.has(parent.type) && !parent.source);
+      if (node.outline.parentId && !parentPrimary) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'outline', 'parentId'], message: '流程父节点必须是存在的一级主流程节点' });
+      }
+      if (node.outline.kind === 'BRANCH' && (!parentPrimary || parent?.type !== 'decision')) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'outline', 'kind'], message: '判断分支必须直属于判断节点' });
+      }
+      if (node.outline.kind === 'BRANCH' && !node.outline.parentId) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'outline', 'parentId'], message: '判断分支必须指定父判断节点' });
+      }
+    }
+    if (node.attachment) {
+      const owner = nodesById.get(node.attachment.ownerNodeId);
+      const ownerPrimary = Boolean(owner && primaryTypes.has(owner.type) && !owner.source);
+      if (!content || !ownerPrimary) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'attachment'], message: '资料主挂靠必须指向一级主流程节点' });
+      }
+      if (node.contentParentId && node.contentParentId !== node.attachment.ownerNodeId) {
+        context.addIssue({ code: 'custom', path: ['nodes', index, 'attachment', 'ownerNodeId'], message: '资料主挂靠不能与兼容挂靠冲突' });
+      }
     }
     if (node.type === 'image' && node.data.annotations) {
       const annotationIds = new Set<string>();
@@ -308,6 +357,24 @@ export const CanvasDocumentSchema = z.object({
     edgeIds.add(edge.id);
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
       context.addIssue({ code: 'custom', path: ['edges', index], message: '连线端点必须存在' });
+    }
+    if (!edge.semantic) return;
+    const source = nodesById.get(edge.source);
+    const target = nodesById.get(edge.target);
+    const sourcePrimary = Boolean(source && primaryTypes.has(source.type) && !source.source);
+    const targetPrimary = Boolean(target && primaryTypes.has(target.type) && !target.source);
+    const targetContent = Boolean(target && contentTypes.has(target.type) && !target.source);
+    if (edge.semantic.kind === 'RESOURCE_REFERENCE') {
+      if (!sourcePrimary || !targetContent) {
+        context.addIssue({ code: 'custom', path: ['edges', index, 'semantic'], message: '资料引用必须从一级主流程节点指向资料' });
+      }
+      return;
+    }
+    if (!sourcePrimary || !targetPrimary) {
+      context.addIssue({ code: 'custom', path: ['edges', index, 'semantic'], message: '流程语义边必须连接一级主流程节点' });
+    }
+    if (edge.semantic.kind === 'BRANCH' && source?.type !== 'decision') {
+      context.addIssue({ code: 'custom', path: ['edges', index, 'semantic'], message: '判断分支必须从判断节点发出' });
     }
   });
 

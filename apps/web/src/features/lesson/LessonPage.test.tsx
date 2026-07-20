@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import { LessonPage, resolveStepLane, resolveStepStage, resourcesForStep, toLessonFlowEdges } from './LessonPage';
+import { LessonPage, lessonStepsForDocument, resolveStepLane, resolveStepStage, resourcesForStep, toLessonFlowEdges } from './LessonPage';
 import { createPersonalApiMock } from '../../test/workspace-api-mocks';
 
 const version: GuideVersionSnapshot = {
@@ -47,6 +47,23 @@ const hierarchyVersion: GuideVersionSnapshot = {
 };
 
 describe('LessonPage', () => {
+  it('derives the teaching path from semantic sequence codes and keeps attached resources discoverable', () => {
+    const document: GuideVersionSnapshot['document'] = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'later', type: 'process' as const, position: { x: 0, y: 0 }, zIndex: 0, outline: { order: 1, kind: 'STEP' as const }, data: { label: '后续操作', shape: 'process' as const } },
+        { id: 'first', type: 'process' as const, position: { x: 0, y: 0 }, zIndex: 1, outline: { order: 0, kind: 'STEP' as const }, data: { label: '先确认', shape: 'process' as const } },
+        { id: 'note', type: 'markdown' as const, position: { x: 0, y: 0 }, zIndex: 2, attachment: { ownerNodeId: 'first', order: 0 }, data: { markdown: '# 填写规则' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+
+    expect(lessonStepsForDocument(document).map((step) => `${step.nodeId}:${step.title}`)).toEqual([
+      'first:先确认', 'note:填写规则', 'later:后续操作',
+    ]);
+    expect(resourcesForStep(document, 'first').map((node) => node.id)).toEqual(['note']);
+  });
+
   it('derives orthogonal route data for the published flow map', () => {
     const edges = toLessonFlowEdges(version.document);
 

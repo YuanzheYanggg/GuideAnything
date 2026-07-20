@@ -1,5 +1,5 @@
 import type { CanvasDocument, CanvasNode, FlowLane, FlowStage } from '@guideanything/contracts';
-import { isContentNode, isPrimaryFlowNode } from '@guideanything/canvas-core';
+import { deriveSemanticFlow, isContentNode, isPrimaryFlowNode } from '@guideanything/canvas-core';
 import { useState } from 'react';
 
 export interface HierarchyPanelProps {
@@ -33,7 +33,8 @@ export function HierarchyPanel({
 }: HierarchyPanelProps) {
   const [stageDrafts, setStageDrafts] = useState<Record<string, string>>({});
   const [laneDrafts, setLaneDrafts] = useState<Record<string, string>>({});
-  const primary = document.nodes.filter(isPrimaryFlowNode);
+  const semanticOrder = new Map(deriveSemanticFlow(document).items.map((item, index) => [item.nodeId, index]));
+  const primary = document.nodes.filter(isPrimaryFlowNode).sort((left, right) => (semanticOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (semanticOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER));
   const content = document.nodes.filter(isContentNode);
   const derivedByReference = new Map<string, CanvasNode[]>();
   document.nodes.forEach((node) => {
@@ -97,20 +98,20 @@ export function HierarchyPanel({
       <div className="hierarchy-lane-actions"><button type="button" onClick={() => onAddLane('ROLE')} disabled={editingLocked}>添加角色泳道</button><button type="button" onClick={() => onAddLane('SYSTEM')} disabled={editingLocked}>添加系统泳道</button></div>
     </section>
     <div role="tree" aria-label="流程结构">
-      {stages.map((stage) => <HierarchyStage key={stage.id} stage={stage} primary={primary.filter((node) => node.stageId === stage.id)} content={content} derivedByReference={derivedByReference} selectedIds={selectedIds} onSelect={onSelect} />)}
-      <HierarchyStage stage={{ id: '__none__', title: '未分阶段', order: Number.MAX_SAFE_INTEGER }} primary={primary.filter((node) => !node.stageId)} content={content} derivedByReference={derivedByReference} selectedIds={selectedIds} onSelect={onSelect} />
-      <LooseContent content={content.filter((node) => !node.contentParentId)} selectedIds={selectedIds} onSelect={onSelect} />
+      {stages.map((stage) => <HierarchyStage key={stage.id} stage={stage} primary={primary.filter((node) => node.stageId === stage.id)} content={content} semanticOrder={semanticOrder} derivedByReference={derivedByReference} selectedIds={selectedIds} onSelect={onSelect} />)}
+      <HierarchyStage stage={{ id: '__none__', title: '未分阶段', order: Number.MAX_SAFE_INTEGER }} primary={primary.filter((node) => !node.stageId)} content={content} semanticOrder={semanticOrder} derivedByReference={derivedByReference} selectedIds={selectedIds} onSelect={onSelect} />
+      <LooseContent content={content.filter((node) => !(node.attachment?.ownerNodeId ?? node.contentParentId))} selectedIds={selectedIds} onSelect={onSelect} />
     </div>
   </aside>;
 }
 
-function HierarchyStage({ stage, primary, content, derivedByReference, selectedIds, onSelect }: { stage: FlowStage; primary: CanvasNode[]; content: CanvasNode[]; derivedByReference: Map<string, CanvasNode[]>; selectedIds: string[]; onSelect: (ids: string[]) => void }) {
+function HierarchyStage({ stage, primary, content, semanticOrder, derivedByReference, selectedIds, onSelect }: { stage: FlowStage; primary: CanvasNode[]; content: CanvasNode[]; semanticOrder: Map<string, number>; derivedByReference: Map<string, CanvasNode[]>; selectedIds: string[]; onSelect: (ids: string[]) => void }) {
   return <section className="hierarchy-stage" role="treeitem" aria-label={stage.title}>
     <div className="hierarchy-stage-title">{stage.title}<span>{primary.length}</span></div>
     <div role="group">
       {primary.map((node) => <div className="hierarchy-flow" key={node.id}>
         <SelectNode node={node} selected={selectedIds.includes(node.id)} onSelect={onSelect} />
-        {content.filter((item) => item.contentParentId === node.id).map((item) => <SelectNode key={item.id} node={item} selected={selectedIds.includes(item.id)} onSelect={onSelect} />)}
+        {content.filter((item) => (item.attachment?.ownerNodeId ?? item.contentParentId) === node.id).sort((left, right) => (semanticOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (semanticOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER)).map((item) => <SelectNode key={item.id} node={item} selected={selectedIds.includes(item.id)} onSelect={onSelect} />)}
         {node.type === 'subguide' && node.data.expanded ? <DerivedSubguideContent reference={node} derived={derivedByReference.get(node.id) ?? []} selectedIds={selectedIds} onSelect={onSelect} /> : null}
       </div>)}
       {primary.length === 0 ? <p className="hierarchy-empty">还没有流程节点</p> : null}

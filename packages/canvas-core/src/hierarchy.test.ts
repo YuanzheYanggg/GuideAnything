@@ -15,6 +15,68 @@ const edge = (id: string, source: string, target: string) => ({ id, source, targ
 const makeDocument = (overrides: Partial<CanvasDocument>): CanvasDocument => ({ schemaVersion: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [], ...overrides });
 
 describe('flow hierarchy layout', () => {
+  it('uses semantic order to place a fixed stage and lane matrix without reading prior coordinates', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      stages: [
+        { id: 'intake', title: '需求确认', order: 0 },
+        { id: 'production', title: '生产准备', order: 1 },
+      ],
+      lanes: [
+        { id: 'sales', title: '业务', kind: 'ROLE', order: 0 },
+        { id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 1 },
+      ],
+      nodes: [
+        { ...process('receive', 'intake', 'sales'), position: { x: 9_000, y: 8_000 }, outline: { order: 0, kind: 'STEP' } },
+        { ...process('confirm', 'intake', 'erp'), position: { x: -2_000, y: -1_000 }, outline: { order: 1, kind: 'STEP' } },
+        { ...process('revise', 'intake', 'sales'), position: { x: 50_000, y: 120 }, outline: { order: 2, kind: 'STEP' } },
+        { ...process('prepare', 'production', 'erp'), position: { x: 80, y: 80 }, outline: { order: 3, kind: 'STEP' } },
+        { ...markdown('specification'), attachment: { ownerNodeId: 'confirm', order: 0 } },
+      ],
+      edges: [
+        { ...edge('receive-confirm', 'receive', 'confirm'), semantic: { kind: 'FLOW' } },
+        { ...edge('confirm-revise', 'confirm', 'revise'), semantic: { kind: 'FLOW' } },
+        { ...edge('revise-prepare', 'revise', 'prepare'), semantic: { kind: 'FLOW' } },
+      ],
+      entryNodeId: 'receive',
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+    const receive = byId.get('receive')!;
+    const confirm = byId.get('confirm')!;
+    const revise = byId.get('revise')!;
+    const prepare = byId.get('prepare')!;
+    const specification = byId.get('specification')!;
+
+    expect(receive.position.x).toBeLessThan(confirm.position.x);
+    expect(receive.position.y).toBe(confirm.position.y);
+    expect(revise.position.x).toBe(receive.position.x);
+    expect(revise.position.y).toBeGreaterThan(receive.position.y);
+    expect(prepare.position.y).toBeGreaterThan(revise.position.y);
+    expect(specification.position.x).toBeGreaterThan(confirm.position.x + 240);
+    expect(specification.position.y).toBe(confirm.position.y);
+    expect(result.report.attachedContentIds).toEqual(['specification']);
+  });
+
+  it('puts semantic appendix resources beyond every fixed lane column in the same flow row', () => {
+    const result = layoutFlowHierarchy(makeDocument({
+      stages: [{ id: 'intake', title: '需求确认', order: 0 }],
+      lanes: [
+        { id: 'sales', title: '业务', kind: 'ROLE', order: 0 },
+        { id: 'erp', title: 'ERP', kind: 'SYSTEM', order: 1 },
+      ],
+      nodes: [
+        { ...process('receive', 'intake', 'sales'), outline: { order: 0, kind: 'STEP' } },
+        { ...process('confirm', 'intake', 'erp'), outline: { order: 1, kind: 'STEP' } },
+        { ...markdown('specification'), attachment: { ownerNodeId: 'receive', order: 0 } },
+      ],
+      edges: [],
+    }));
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+    const confirm = byId.get('confirm')!;
+    const specification = byId.get('specification')!;
+
+    expect(specification.position.x).toBeGreaterThan(confirm.position.x + 240);
+  });
+
   it('moves a primary node into its new stage and keeps stage rows separated', () => {
     const result = movePrimaryNodeToStage(makeDocument({
       stages: [
