@@ -50,6 +50,44 @@ describe('CanvasDocumentSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('rejects a branch outline whose parent is not a decision node', () => {
+    const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      nodes: [
+        {
+          ...hierarchyDocument().nodes[0],
+          type: 'process',
+          data: { label: '确认原料', shape: 'process' },
+          outline: { order: 0, kind: 'STEP' },
+        },
+        {
+          id: 'invalid-branch',
+          type: 'process',
+          position: { x: 260, y: 0 },
+          zIndex: 1,
+          stageId: 'prepare',
+          outline: { parentId: 'start', order: 0, kind: 'BRANCH' },
+          data: { label: '不应成为分支', shape: 'process' },
+        },
+      ],
+    }));
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a resource attachment whose owner is not a primary node', () => {
+    const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      nodes: [
+        hierarchyDocument().nodes[0],
+        {
+          ...hierarchyDocument().nodes[1],
+          attachment: { ownerNodeId: 'note', order: 0 },
+        },
+      ],
+    }));
+
+    expect(result.success).toBe(false);
+  });
+
   it('rejects duplicate, missing, resource, and derived lane assignments', () => {
     const lane = { id: 'sales', title: '销售人员', kind: 'ROLE', order: 0 };
 

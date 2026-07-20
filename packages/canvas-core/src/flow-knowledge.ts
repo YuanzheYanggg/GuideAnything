@@ -23,6 +23,8 @@ import {
   type LessonStep,
 } from '@guideanything/contracts';
 
+import { deriveSemanticFlow, hasSemanticFlow } from './semantic-flow';
+
 const PRIMARY_TYPES = new Set<CanvasNode['type']>(['start', 'end', 'process', 'decision', 'data', 'subguide']);
 const CONTENT_TYPES = new Set<CanvasNode['type']>(['markdown', 'image', 'video']);
 
@@ -43,11 +45,14 @@ export interface CompileFlowKnowledgeSnapshotInputV2 extends CompileFlowKnowledg
 export function compileFlowKnowledgeSnapshotV2(
   input: CompileFlowKnowledgeSnapshotInputV2,
 ): FlowKnowledgeSnapshotV2 {
-  const steps = input.document.steps.map((step) => LessonStepSchema.parse(step));
+  const authoredSteps = input.document.steps.map((step) => LessonStepSchema.parse(step));
   const document = CanvasDocumentSchema.parse({
     ...input.document,
-    steps: steps.filter((step) => input.document.nodes.some((node) => node.id === step.nodeId)),
+    steps: authoredSteps.filter((step) => input.document.nodes.some((node) => node.id === step.nodeId)),
   });
+  const steps = hasSemanticFlow(document)
+    ? deriveSemanticFlow(document).lessonSteps
+    : authoredSteps;
   const stages = [...(document.stages ?? [])].map(projectStage).sort(compareOrderThenId);
   const lanes = [...(document.lanes ?? [])].map(projectLane).sort(compareOrderThenId);
   const stageById = new Map(stages.map((stage) => [stage.id, stage]));
@@ -289,15 +294,16 @@ function compileV2Relations(
   });
 
   resources.forEach(({ node }) => {
-    if (node.contentParentId && primaryIds.has(node.contentParentId) && !actualResourceUses.has(resourceUseKey(node.contentParentId, node.id))) {
+    const ownerId = node.attachment?.ownerNodeId ?? node.contentParentId;
+    if (ownerId && primaryIds.has(ownerId) && !actualResourceUses.has(resourceUseKey(ownerId, node.id))) {
       addV2Relation(relationsById, {
         kind: 'USES_RESOURCE',
-        id: synthesizedRelationId('USES_RESOURCE', node.contentParentId, node.id),
-        sourceNodeId: node.contentParentId,
+        id: synthesizedRelationId('USES_RESOURCE', ownerId, node.id),
+        sourceNodeId: ownerId,
         resourceId: node.id,
       });
     }
-    if (node.contentParentId && !primaryIds.has(node.contentParentId)) diagnostics.invalidResourceRelationIds.add(node.contentParentId);
+    if (ownerId && !primaryIds.has(ownerId)) diagnostics.invalidResourceRelationIds.add(ownerId);
     resourceReferencesForNode(node, primaryIds, resourceIds, diagnostics).forEach((relation) => addV2Relation(relationsById, relation));
   });
 

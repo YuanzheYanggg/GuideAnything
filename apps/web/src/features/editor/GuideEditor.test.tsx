@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import type { CanvasDocument, CanvasEdge, CanvasNode, GuideVersionSnapshot } from '@guideanything/contracts';
 
-import { GuideEditor, persistableNodeChanges, removeHierarchyItem, removeNodesFromDocument, toCanvasEdge, toFlowNodes, updateInlineNodeText, type EditorApi, type GuideDraftDetail } from './GuideEditor';
+import { GuideEditor, persistableNodeChanges, removeHierarchyItem, removeNodesFromDocument, resourceAppendixGroups, toCanvasEdge, toFlowNodes, updateInlineNodeText, type EditorApi, type GuideDraftDetail } from './GuideEditor';
 import type { GuideDigestProposal, GuideFlowSnapshotStatus } from './GuideDigestDialog';
 import { createPersonalApiMock } from '../../test/workspace-api-mocks';
 
@@ -93,6 +93,33 @@ function openHierarchyPanel() {
 }
 
 describe('GuideEditor', () => {
+  it('groups one-owner resources into a single appendix frame', () => {
+    const groups = resourceAppendixGroups({
+      schemaVersion: 1,
+      nodes: [
+        { id: 'step', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '处理', shape: 'process' } },
+        { id: 'one', type: 'markdown', position: { x: 320, y: 0 }, zIndex: 1, attachment: { ownerNodeId: 'step', order: 1 }, data: { markdown: '资料一' } },
+        { id: 'two', type: 'image', position: { x: 320, y: 210 }, zIndex: 2, attachment: { ownerNodeId: 'step', order: 0 }, data: { url: 'https://example.com/a.png', alt: '资料二' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    });
+
+    expect(groups).toEqual([expect.objectContaining({ ownerId: 'step', resourceIds: ['two', 'one'] })]);
+  });
+
+  it('sizes an appendix frame around a resource’s persisted dimensions', () => {
+    const groups = resourceAppendixGroups({
+      schemaVersion: 1,
+      nodes: [
+        { id: 'step', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '处理', shape: 'process' } },
+        { id: 'wide', type: 'image', position: { x: 320, y: 0 }, zIndex: 1, size: { width: 640, height: 420 }, attachment: { ownerNodeId: 'step', order: 0 }, data: { url: 'https://example.com/a.png', alt: '宽图片' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    });
+
+    expect(groups[0]).toMatchObject({ width: 676, height: 468 });
+  });
+
   it('does not retry an in-flight real save after a programmatic move and generates from its revision', async () => {
     const document: CanvasDocument = {
       schemaVersion: 1,
@@ -598,7 +625,7 @@ describe('GuideEditor', () => {
     await waitFor(() => expect(screen.getByText(/已保存/)).toBeVisible());
   });
 
-  it('requeues the latest automatic layout after an earlier save finishes', async () => {
+  it('does not create a redundant save when semantic insertion has already reflowed the layout', async () => {
     const pending: Array<(value: GuideDraftDetail) => void> = [];
     const api = {
       ...createApi(),
@@ -616,12 +643,8 @@ describe('GuideEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
     pending[0]?.({ ...emptyGuide, revision: 1 });
 
-    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledTimes(2));
-    expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 1, expect.objectContaining({
-      document: expect.objectContaining({ nodes: expect.any(Array) }),
-    }));
-    pending[1]?.({ ...emptyGuide, revision: 2 });
     await waitFor(() => expect(screen.getByText(/已保存/)).toBeVisible());
+    expect(api.saveGuide).toHaveBeenCalledTimes(1);
   });
 
   it('preserves expanded-edge provenance when React Flow reports an edge update', () => {
@@ -690,7 +713,7 @@ describe('GuideEditor', () => {
     expect(api.publishGuide).toHaveBeenCalledWith('guide-host');
   });
 
-  it('connects toolbar-created resources to the selected node, previews hierarchy, and applies it as one undoable change', async () => {
+  it('attaches toolbar-created resources to the selected node, previews hierarchy, and applies it as one undoable change', async () => {
     const api = createApi();
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
@@ -707,10 +730,8 @@ describe('GuideEditor', () => {
     const savedDocument = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[2].document as CanvasDocument;
     const markdown = savedDocument.nodes.find((node) => node.type === 'markdown');
     expect(markdown).toBeDefined();
-    expect(markdown).not.toHaveProperty('contentParentId');
-    expect(savedDocument.edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ target: markdown?.id }),
-    ]));
+    expect(markdown).toMatchObject({ attachment: expect.objectContaining({ ownerNodeId: expect.any(String) }) });
+    expect(savedDocument.edges).toEqual([]);
 
     const savesBeforePreview = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
@@ -718,6 +739,58 @@ describe('GuideEditor', () => {
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
     fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
     fireEvent.click(screen.getByRole('button', { name: '撤销' }));
+  });
+
+  it('lets an author move the selected step earlier and persists the renumbered semantic order', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      stages: [{ id: 'intake', title: '需求确认', order: 0 }],
+      lanes: [{ id: 'sales', title: '业务', kind: 'ROLE', order: 0 }],
+      nodes: [
+        { id: 'receive', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, stageId: 'intake', laneId: 'sales', outline: { order: 0, kind: 'STEP' }, data: { label: '收到需求', shape: 'start' } },
+        { id: 'confirm', type: 'process', position: { x: 0, y: 220 }, zIndex: 1, stageId: 'intake', laneId: 'sales', outline: { order: 1, kind: 'STEP' }, data: { label: '确认原料', shape: 'process' } },
+        { id: 'archive', type: 'process', position: { x: 0, y: 440 }, zIndex: 2, stageId: 'intake', laneId: 'sales', outline: { order: 2, kind: 'STEP' }, data: { label: '归档需求', shape: 'process' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'receive', exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    openHierarchyPanel();
+    fireEvent.click(screen.getByRole('button', { name: '选择流程节点 归档需求' }));
+    fireEvent.click(await screen.findByRole('button', { name: '前移步骤' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
+    expect(saved.nodes.find((node) => node.id === 'archive')?.outline?.order).toBe(1);
+    expect(saved.nodes.find((node) => node.id === 'confirm')?.outline?.order).toBe(2);
+  });
+
+  it('appends a manually reattached resource after its owner\'s existing appendix resources', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'confirm', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, outline: { order: 0, kind: 'STEP' }, data: { label: '确认原料', shape: 'process' } },
+        { id: 'first', type: 'markdown', position: { x: 360, y: 0 }, zIndex: 1, attachment: { ownerNodeId: 'confirm', order: 0 }, data: { markdown: '## 第一份资料' } },
+        { id: 'second', type: 'markdown', position: { x: 360, y: 220 }, zIndex: 2, attachment: { ownerNodeId: 'confirm', order: 1 }, data: { markdown: '## 第二份资料' } },
+        { id: 'third', type: 'markdown', position: { x: 0, y: 280 }, zIndex: 3, data: { markdown: '## 第三份资料' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+    openHierarchyPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: '选择资料 第三份资料' }));
+    fireEvent.change(screen.getByLabelText('挂靠主节点'), { target: { value: 'confirm' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
+    expect(saved.nodes.find((node) => node.id === 'third')?.attachment).toEqual({ ownerNodeId: 'confirm', order: 2 });
   });
 
   it('moves a node into the selected business stage instead of leaving it at its old canvas position', async () => {
@@ -982,13 +1055,13 @@ describe('GuideEditor', () => {
 
     expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
       document: expect.objectContaining({
-        nodes: expect.arrayContaining([expect.objectContaining({ type: 'process', position: { x: 480, y: 240 } })]),
-        edges: expect.arrayContaining([expect.objectContaining({ source: 'start', sourceHandle: 'out', target: expect.stringMatching(/^process-/) })]),
+        nodes: expect.arrayContaining([expect.objectContaining({ type: 'process', outline: expect.objectContaining({ kind: 'STEP' }) })]),
+        edges: expect.arrayContaining([expect.objectContaining({ source: 'start', sourceHandle: 'out', target: expect.stringMatching(/^process-/), semantic: { kind: 'FLOW' } })]),
       }),
     }));
   });
 
-  it('creates resources as reusable references with a real edge', async () => {
+  it('creates resources as one-owner appendix material without a flow edge', async () => {
     const user = userEvent.setup();
     const document: CanvasDocument = {
       schemaVersion: 1,
@@ -1007,8 +1080,8 @@ describe('GuideEditor', () => {
 
     const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document;
     const markdown = saved.nodes.find((node: CanvasDocument['nodes'][number]) => node.type === 'markdown');
-    expect(markdown).not.toHaveProperty('contentParentId');
-    expect(saved.edges).toContainEqual(expect.objectContaining({ source: 'process-a', target: markdown?.id, sourceHandle: 'out' }));
+    expect(markdown).toMatchObject({ attachment: { ownerNodeId: 'process-a', order: 0 } });
+    expect(saved.edges).toEqual([]);
   });
 
   it('creates a persistent reference from a flow node to existing Markdown material', async () => {
@@ -1032,6 +1105,32 @@ describe('GuideEditor', () => {
     await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
     expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
       document: expect.objectContaining({ edges: [expect.objectContaining({ source: 'process-a', target: 'note', sourceHandle: 'out', targetHandle: 'in' })] }),
+    }));
+  });
+
+  it('converts an existing target into a semantic branch when connected from a decision', async () => {
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'decision', type: 'decision', position: { x: 0, y: 0 }, zIndex: 0, outline: { order: 0, kind: 'STEP' }, data: { label: '原料合格？', shape: 'decision', branchLabels: ['通过', '退回'] } },
+        { id: 'continue', type: 'process', position: { x: 360, y: 0 }, zIndex: 1, outline: { order: 1, kind: 'STEP' }, data: { label: '继续打样', shape: 'process' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    act(() => reactFlowCallbacks.onConnectStart?.({} as MouseEvent, { nodeId: 'decision', handleId: 'yes', handleType: 'source' }));
+    act(() => reactFlowCallbacks.onConnect?.({ source: 'decision', sourceHandle: 'yes', target: 'continue', targetHandle: 'in' }));
+    act(() => reactFlowCallbacks.onConnectEnd?.({ clientX: 360, clientY: 0 } as MouseEvent, { toNode: { id: 'continue' }, isValid: true }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
+    expect(saved.nodes.find((node) => node.id === 'continue')?.outline).toEqual({ parentId: 'decision', order: 0, kind: 'BRANCH' });
+    expect(saved.edges).toContainEqual(expect.objectContaining({
+      source: 'decision', target: 'continue', semantic: { kind: 'BRANCH', order: 0 }, label: '通过',
     }));
   });
 

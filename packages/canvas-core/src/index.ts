@@ -8,4 +8,5 @@ export * from './image-annotations';
 export * from './layout';
 export * from './manual-routing';
 export * from './routing';
+export * from './semantic-flow';
 export * from './subguide';

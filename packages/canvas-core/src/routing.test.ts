@@ -10,6 +10,29 @@ const process = (id: string, x: number, y: number, stageId?: string): CanvasNode
 const edge = (id: string, source: string, target: string, extra: Partial<CanvasEdge> = {}): CanvasEdge => ({ id, source, target, ...extra });
 
 describe('orthogonal edge routing', () => {
+  it('uses semantic edge intent for branches and excludes resource references from canvas routes', () => {
+    const result = routeCanvasEdges(document(
+      [process('decision', 0, 0), process('pass', 400, 0), process('resource', 400, 220)],
+      [
+        edge('pass-edge', 'decision', 'pass', { semantic: { kind: 'BRANCH', order: 0 } }),
+        edge('resource-reference', 'pass', 'resource', { semantic: { kind: 'RESOURCE_REFERENCE' } }),
+      ],
+    ));
+
+    expect(result.routesByEdgeId.get('pass-edge')?.kind).toBe('BRANCH');
+    expect(result.routesByEdgeId.has('resource-reference')).toBe(false);
+  });
+
+  it('routes semantic retry and exception links through the outer feedback channel', () => {
+    const result = routeCanvasEdges(document(
+      [process('start', 0, 0), process('retry', 400, 0)],
+      [edge('retry-link', 'retry', 'start', { semantic: { kind: 'RETRY' } })],
+    ));
+
+    expect(result.routesByEdgeId.get('retry-link')?.kind).toBe('BACK');
+    expect(result.report.backEdgeIds).toEqual(['retry-link']);
+  });
+
   it('routes a forward edge using only orthogonal segments', () => {
     const result = routeCanvasEdges(document([process('a', 0, 0), process('b', 400, 0)], [edge('ab', 'a', 'b')]));
     const route = result.routesByEdgeId.get('ab')!;

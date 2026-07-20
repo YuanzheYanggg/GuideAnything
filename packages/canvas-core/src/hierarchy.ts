@@ -1,5 +1,7 @@
 import type { CanvasDocument, CanvasEdge, CanvasNode, FlowLane, FlowStage } from '@guideanything/contracts';
 
+import { deriveSemanticFlow, hasSemanticFlow } from './semantic-flow';
+
 const BASE_RANK_GAP = 72;
 const NODE_GAP_Y = 32;
 const STAGE_GAP_Y = 96;
@@ -33,7 +35,8 @@ interface PrimaryPlacement {
   byId: Map<string, CanvasNode>;
   unassignedContentX: number;
   unassignedContentY: number;
-  contentPlacement: 'right' | 'below';
+  contentPlacement: 'right' | 'below' | 'appendix';
+  appendixX?: number;
 }
 
 interface GridRow {
@@ -161,7 +164,7 @@ export function translateStageNodes(document: CanvasDocument, stageId: string, d
     nodes: document.nodes.map((node) => {
       const belongsToStage = primaryIds.has(node.id)
         || (isContentNode(node) && (
-          Boolean(node.contentParentId && primaryIds.has(node.contentParentId))
+          Boolean(contentOwnerId(node) && primaryIds.has(contentOwnerId(node)!))
           || linkedContentIds.has(node.id)
         ));
       return belongsToStage
@@ -176,7 +179,8 @@ export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutRe
   const primary = visible.filter(isPrimaryFlowNode).sort(compareNodes);
   const content = visible.filter(isContentNode).sort(compareNodes);
   const primaryIds = new Set(primary.map((node) => node.id));
-  const connectedContent = flowThroughContent(content, document.edges);
+  const useSemanticLayout = hasSemanticFlow(document);
+  const connectedContent = useSemanticLayout ? [] : flowThroughContent(content, document.edges);
   const connectedContentIds = new Set(connectedContent.map((node) => node.id));
   const layoutNodes = [...primary, ...connectedContent].sort(compareNodes);
   const layoutNodeIds = new Set(layoutNodes.map((node) => node.id));
@@ -187,7 +191,10 @@ export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutRe
   const looseContent = unassignedContent(remainingContent, primaryIds);
   const stages = document.stages ?? [];
   const lanes = orderedLanes(document.lanes ?? []);
-  const positioned = placePrimary(layoutNodes, ranked.rankById, stages, contentByParent, document.edges);
+  const semanticPrimary = semanticPrimaryNodes(document, primaryIds);
+  const positioned = useSemanticLayout
+    ? placeSemanticMatrix(semanticPrimary, stages, lanes, contentByParent, looseContent)
+    : placePrimary(layoutNodes, ranked.rankById, stages, contentByParent, document.edges);
   const withExpandedSubguides = placeExpandedSubguideArtifacts(document.nodes, positioned);
   const withContent = placeContent(remainingContent, withExpandedSubguides, contentByParent);
   const byId = new Map(withContent.map((node) => [node.id, node]));
@@ -553,16 +560,126 @@ function findCycleNodeIds(primary: CanvasNode[], outgoing: Map<string, string[]>
 function attachedContentByParent(content: CanvasNode[], primaryIds: Set<string>): Map<string, CanvasNode[]> {
   const result = new Map<string, CanvasNode[]>();
   content.forEach((node) => {
-    if (!node.contentParentId || !primaryIds.has(node.contentParentId)) return;
-    const attachments = result.get(node.contentParentId);
+    const ownerId = contentOwnerId(node);
+    if (!ownerId || !primaryIds.has(ownerId)) return;
+    const attachments = result.get(ownerId);
     if (attachments) attachments.push(node);
-    else result.set(node.contentParentId, [node]);
+    else result.set(ownerId, [node]);
   });
+  result.forEach((attachments) => attachments.sort(compareContentAttachment));
   return result;
 }
 
 function unassignedContent(content: CanvasNode[], primaryIds: Set<string>): CanvasNode[] {
-  return content.filter((node) => !node.contentParentId || !primaryIds.has(node.contentParentId));
+  return content.filter((node) => {
+    const ownerId = contentOwnerId(node);
+    return !ownerId || !primaryIds.has(ownerId);
+  });
+}
+
+function contentOwnerId(node: CanvasNode): string | undefined {
+  return node.attachment?.ownerNodeId ?? node.contentParentId;
+}
+
+function compareContentAttachment(left: CanvasNode, right: CanvasNode): number {
+  return (left.attachment?.order ?? Number.MAX_SAFE_INTEGER) - (right.attachment?.order ?? Number.MAX_SAFE_INTEGER)
+    || compareNodes(left, right);
+}
+
+function semanticPrimaryNodes(document: CanvasDocument, visiblePrimaryIds: Set<string>): CanvasNode[] {
+  const nodesById = new Map(document.nodes.map((node) => [node.id, node]));
+  return deriveSemanticFlow(document).items
+    .filter((item) => item.kind !== 'RESOURCE' && visiblePrimaryIds.has(item.nodeId))
+    .map((item) => nodesById.get(item.nodeId))
+    .filter((node): node is CanvasNode => Boolean(node));
+}
+
+function placeSemanticMatrix(
+  primary: CanvasNode[],
+  stages: FlowStage[],
+  lanes: FlowLane[],
+  contentByParent: Map<string, CanvasNode[]>,
+  looseContent: CanvasNode[],
+): PrimaryPlacement {
+  const orderedStageList = orderedStages(stages);
+  const stageIds = new Set(orderedStageList.map((stage) => stage.id));
+  const laneIds = new Set(lanes.map((lane) => lane.id));
+  const hasUnassignedStage = looseContent.length > 0 || primary.some((node) => !node.stageId || !stageIds.has(node.stageId));
+  const hasUnassignedLane = looseContent.length > 0 || primary.some((node) => !node.laneId || !laneIds.has(node.laneId));
+  const stageOrder: Array<FlowStage | null> = [...orderedStageList, ...(hasUnassignedStage ? [null] : [])];
+  const laneOrder: Array<FlowLane | null> = [...lanes, ...(hasUnassignedLane ? [null] : [])];
+  const laneIndexById = new Map(laneOrder.map((lane, index) => [lane?.id ?? null, index]));
+  const primaryByStage = new Map<string | null, CanvasNode[]>();
+  primary.forEach((node) => {
+    const stageId = node.stageId && stageIds.has(node.stageId) ? node.stageId : null;
+    const nodes = primaryByStage.get(stageId) ?? [];
+    nodes.push(node);
+    primaryByStage.set(stageId, nodes);
+  });
+
+  const columnWidths = laneOrder.map((lane) => {
+    const laneId = lane?.id ?? null;
+    const nodes = primary.filter((node) => (node.laneId && laneIds.has(node.laneId) ? node.laneId : null) === laneId);
+    return Math.max(EMPTY_GRID_CELL_WIDTH, ...nodes.map((node) => nodeSize(node).width));
+  });
+  const laneX = new Map<string | null, number>();
+  let nextX = 0;
+  laneOrder.forEach((lane, index) => {
+    const laneId = lane?.id ?? null;
+    laneX.set(laneId, nextX);
+    nextX += columnWidths[index]! + (index < laneOrder.length - 1 ? GRID_COLUMN_GAP : 0);
+  });
+
+  const nodes: CanvasNode[] = [];
+  const byId = new Map<string, CanvasNode>();
+  let stageY = 0;
+  stageOrder.forEach((stage) => {
+    const stageId = stage?.id ?? null;
+    const inStage = primaryByStage.get(stageId) ?? [];
+    const rows: CanvasNode[][] = [];
+    let lastLaneIndex = -1;
+    inStage.forEach((node) => {
+      const laneId = node.laneId && laneIds.has(node.laneId) ? node.laneId : null;
+      const laneIndex = laneIndexById.get(laneId) ?? 0;
+      const row = rows.at(-1);
+      if (!row || laneIndex <= lastLaneIndex) {
+        rows.push([node]);
+        lastLaneIndex = laneIndex;
+      } else {
+        row.push(node);
+        lastLaneIndex = laneIndex;
+      }
+    });
+
+    let rowY = stageY;
+    rows.forEach((row) => {
+      const rowHeight = Math.max(EMPTY_GRID_CELL_HEIGHT, ...row.map((node) => semanticOccupiedHeight(node, contentByParent)));
+      row.forEach((node) => {
+        const laneId = node.laneId && laneIds.has(node.laneId) ? node.laneId : null;
+        const positioned = { ...node, position: { x: laneX.get(laneId) ?? 0, y: rowY } };
+        nodes.push(positioned);
+        byId.set(node.id, positioned);
+      });
+      rowY += rowHeight + NODE_GAP_Y;
+    });
+    const stageHeight = Math.max(EMPTY_GRID_CELL_HEIGHT, rows.length > 0 ? rowY - stageY - NODE_GAP_Y : 0);
+    stageY += stageHeight + STAGE_GAP_Y;
+  });
+
+  return {
+    nodes,
+    byId,
+    unassignedContentX: laneX.get(null) ?? 0,
+    unassignedContentY: stageY,
+    contentPlacement: 'appendix',
+    appendixX: nextX + CONTENT_GAP_X,
+  };
+}
+
+function semanticOccupiedHeight(node: CanvasNode, contentByParent: Map<string, CanvasNode[]>): number {
+  const attached = contentByParent.get(node.id) ?? [];
+  const appendixHeight = attached.reduce((total, item, index) => total + nodeSize(item).height + (index > 0 ? CONTENT_GAP_Y : 0), 0);
+  return Math.max(nodeSize(node).height, appendixHeight);
 }
 
 function calculateRankX(primary: CanvasNode[], content: CanvasNode[], rankById: Map<string, number>, primaryIds: Set<string>): Map<number, number> {
@@ -875,23 +992,41 @@ function gridOccupiedHeight(node: CanvasNode, contentByParent: Map<string, Canva
 function placeContent(content: CanvasNode[], positioned: PrimaryPlacement, contentByParent: Map<string, CanvasNode[]>): CanvasNode[] {
   const nodes = [...positioned.nodes];
   const nextYByParent = new Map<string, number>();
+  const appendixYByParent = new Map<string, number>();
+  if (positioned.contentPlacement === 'appendix') {
+    const appendixOwners = [...contentByParent.entries()]
+      .map(([ownerId, attachments]) => ({ owner: positioned.byId.get(ownerId), attachments }))
+      .filter((entry): entry is { owner: CanvasNode; attachments: CanvasNode[] } => Boolean(entry.owner))
+      .sort((left, right) => left.owner.position.y - right.owner.position.y
+        || left.owner.position.x - right.owner.position.x
+        || left.owner.id.localeCompare(right.owner.id));
+    let nextAppendixY = Number.NEGATIVE_INFINITY;
+    appendixOwners.forEach(({ owner, attachments }) => {
+      const appendixY = Math.max(owner.position.y, nextAppendixY);
+      appendixYByParent.set(owner.id, appendixY);
+      const appendixHeight = attachments.reduce((total, item, index) => total + nodeSize(item).height + (index > 0 ? CONTENT_GAP_Y : 0), 0);
+      nextAppendixY = appendixY + appendixHeight + CONTENT_GAP_Y;
+    });
+  }
   let unassignedY = positioned.unassignedContentY;
   content.forEach((node) => {
-    const parent = node.contentParentId ? positioned.byId.get(node.contentParentId) : undefined;
+    const ownerId = contentOwnerId(node);
+    const parent = ownerId ? positioned.byId.get(ownerId) : undefined;
     if (!parent || !contentByParent.has(parent.id)) {
       nodes.push({ ...node, position: { x: positioned.unassignedContentX, y: unassignedY } });
       unassignedY += nodeSize(node).height + CONTENT_GAP_Y;
       return;
     }
-    const y = nextYByParent.get(parent.id) ?? parent.position.y;
+    const y = nextYByParent.get(parent.id) ?? appendixYByParent.get(parent.id) ?? parent.position.y;
     const below = positioned.contentPlacement === 'below';
+    const appendix = positioned.contentPlacement === 'appendix';
     const contentY = below && !nextYByParent.has(parent.id)
       ? parent.position.y + nodeSize(parent).height + CONTENT_GAP_Y
       : y;
     nodes.push({
       ...node,
       position: {
-        x: below ? parent.position.x : parent.position.x + nodeSize(parent).width + CONTENT_GAP_X,
+        x: below ? parent.position.x : appendix ? positioned.appendixX ?? parent.position.x + nodeSize(parent).width + CONTENT_GAP_X : parent.position.x + nodeSize(parent).width + CONTENT_GAP_X,
         y: contentY,
       },
     });
@@ -944,11 +1079,15 @@ function reportFor(
   connectedContentIds: Set<string>,
   edges: CanvasEdge[],
 ): HierarchyLayoutReport {
-  const attached = content.filter((node) => node.contentParentId && primaryIds.has(node.contentParentId));
+  const attached = content.filter((node) => {
+    const ownerId = contentOwnerId(node);
+    return Boolean(ownerId && primaryIds.has(ownerId));
+  });
+  const attachedIds = new Set(attached.map((node) => node.id));
   return {
     primaryNodeIds: primary.map((node) => node.id),
     attachedContentIds: attached.map((node) => node.id),
-    unassignedContentIds: content.filter((node) => !connectedContentIds.has(node.id) && (!node.contentParentId || !primaryIds.has(node.contentParentId))).map((node) => node.id),
+    unassignedContentIds: content.filter((node) => !connectedContentIds.has(node.id) && !attachedIds.has(node.id)).map((node) => node.id),
     unconnectedPrimaryIds: ranked.unconnectedPrimaryIds.filter((id) => primaryIds.has(id)),
     cycleNodeIds: ranked.cycleNodeIds.filter((id) => primaryIds.has(id)),
     backEdgeIds: edges
@@ -976,7 +1115,8 @@ function stageForNode(
   stagesById: Map<string, FlowStage>,
   edges: CanvasEdge[] = [],
 ): string | null {
-  const parent = isContentNode(node) && node.contentParentId ? nodesById.get(node.contentParentId) : undefined;
+  const ownerId = isContentNode(node) ? contentOwnerId(node) : undefined;
+  const parent = ownerId ? nodesById.get(ownerId) : undefined;
   const linkedParent = !parent && isContentNode(node)
     ? edges
       .filter((edge) => !edge.hidden && !edge.sourceTrace && edge.target === node.id)

@@ -81,7 +81,7 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
   const rects = visibleNodes.map(nodeRect);
   const rectById = new Map(rects.map((rect) => [rect.id, rect]));
   const routable = document.edges
-    .filter((edge) => !edge.hidden && !edge.sourceTrace && rectById.has(edge.source) && rectById.has(edge.target))
+    .filter((edge) => !edge.hidden && !edge.sourceTrace && edge.semantic?.kind !== 'RESOURCE_REFERENCE' && rectById.has(edge.source) && rectById.has(edge.target))
     .sort((left, right) => left.id.localeCompare(right.id));
   const maximumRight = Math.max(0, ...rects.map((rect) => rect.x + rect.width));
   const minimumTop = Math.min(0, ...rects.map((rect) => rect.y));
@@ -245,6 +245,8 @@ export function snapNodeForStraightRoute(
 function classify(edge: CanvasEdge, source: NodeRect, target: NodeRect, nodes: CanvasNode[]): RouteKind {
   const sourceNode = nodes.find((node) => node.id === edge.source);
   const targetNode = nodes.find((node) => node.id === edge.target);
+  if (edge.semantic?.kind === 'RETRY' || edge.semantic?.kind === 'EXCEPTION') return 'BACK';
+  if (edge.semantic?.kind === 'BRANCH') return 'BRANCH';
   if (sourceNode?.stageId && targetNode?.stageId && sourceNode.stageId !== targetNode.stageId) return 'CROSS_STAGE';
   if (edge.sourceHandle !== 'no' && target.y > source.y + source.height + CHANNEL_GAP && target.x <= source.x) return 'WRAP';
   const nearlySameRow = Math.abs(target.y - source.y) <= DEFAULT_ALIGNMENT_THRESHOLD;

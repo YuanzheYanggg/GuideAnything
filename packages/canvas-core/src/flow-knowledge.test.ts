@@ -191,6 +191,31 @@ describe('compileFlowKnowledgeSnapshotV1', () => {
 });
 
 describe('compileFlowKnowledgeSnapshotV2', () => {
+  it('uses semantic order, owner attachments, and resource references instead of legacy lesson rows', () => {
+    const document = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'later', type: 'process', position: { x: 8_000, y: 8_000 }, zIndex: 0, outline: { order: 1, kind: 'STEP' }, data: { label: '后续操作', shape: 'process' } },
+        { id: 'first', type: 'process', position: { x: -2_000, y: 4_000 }, zIndex: 1, outline: { order: 0, kind: 'STEP' }, data: { label: '先确认', shape: 'process' } },
+        { id: 'note', type: 'markdown', position: { x: 10, y: 10 }, zIndex: 2, attachment: { ownerNodeId: 'first', order: 0 }, data: { markdown: '# 填写规则' } },
+      ],
+      edges: [{ id: 'later-reference', source: 'later', target: 'note', semantic: { kind: 'RESOURCE_REFERENCE' } }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    } as CanvasDocument;
+
+    const snapshot = compileFlowKnowledgeSnapshotV2(input(document));
+
+    expect(snapshot.learningPath).toEqual([
+      { id: 'semantic-step:first', order: 0, targetNodeId: 'first' },
+      { id: 'semantic-step:note', order: 1, targetResourceId: 'note' },
+      { id: 'semantic-step:later', order: 2, targetNodeId: 'later' },
+    ]);
+    expect(snapshot.relations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'USES_RESOURCE', sourceNodeId: 'first', resourceId: 'note' }),
+      expect.objectContaining({ kind: 'USES_RESOURCE', sourceNodeId: 'later', resourceId: 'note' }),
+    ]));
+  });
+
   it('projects current Canvas documents into semantic resources, relations, and learning steps', () => {
     const snapshot = compileFlowKnowledgeSnapshotV2(input(currentCanvasDocument()));
 
