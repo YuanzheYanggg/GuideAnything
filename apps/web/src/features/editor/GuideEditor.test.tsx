@@ -1950,8 +1950,8 @@ describe('GuideEditor', () => {
     await user.type(widthInput, '4');
     await user.click(screen.getByRole('button', { name: '选择线型' }));
     await user.click(screen.getByRole('button', { name: '点线' }));
-    await user.click(screen.getByRole('button', { name: '选择连线路由' }));
-    await user.click(screen.getByRole('button', { name: '直线' }));
+    await user.click(screen.getByRole('button', { name: '选择画线风格' }));
+    await user.click(screen.getByRole('button', { name: '斜线' }));
     await user.click(screen.getByRole('button', { name: '选择箭头' }));
     await user.click(screen.getByRole('button', { name: '双向箭头' }));
     await user.click(screen.getByRole('button', { name: '保存草稿' }));
@@ -1959,12 +1959,12 @@ describe('GuideEditor', () => {
     await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
     expect(api.saveGuide).toHaveBeenLastCalledWith('guide-host', 0, expect.objectContaining({
       document: expect.objectContaining({ edges: [expect.objectContaining({
-        id: 'business', presentation: { color: '#1020ff', width: 4, pattern: 'dotted', routing: 'straight', arrows: 'both' },
+        id: 'business', presentation: { color: '#1020ff', width: 4, pattern: 'dotted', pathStyle: 'diagonal', arrows: 'both' },
       })] }),
     }));
   });
 
-  it('switches a manually routed edge to a true straight route and clears stale manual geometry', async () => {
+  it('changes a manual edge to smooth style without clearing its geometry or anchors', async () => {
     const user = userEvent.setup();
     const document: CanvasDocument = {
       schemaVersion: 1,
@@ -1974,6 +1974,7 @@ describe('GuideEditor', () => {
       ],
       edges: [{ id: 'business', source: 'start', target: 'process-a', presentation: {
         routing: 'elbow',
+        pathStyle: 'orthogonal',
         routeMode: 'manual',
         waypoints: [{ x: 264, y: 52 }, { x: 264, y: 180 }, { x: 336, y: 180 }, { x: 336, y: 52 }],
         sourceAnchor: { side: 'RIGHT', offset: 0.5 },
@@ -1988,53 +1989,31 @@ describe('GuideEditor', () => {
     await screen.findByDisplayValue('订单教学');
 
     act(() => reactFlowCallbacks.onEdgeClick?.({} as MouseEvent, reactFlowCallbacks.edges[0]!));
-    await user.click(screen.getByRole('button', { name: '选择连线路由' }));
-    await user.click(screen.getByRole('button', { name: '直线' }));
+    await user.click(screen.getByRole('button', { name: '选择画线风格' }));
+    await user.click(screen.getByRole('button', { name: '平滑曲线' }));
 
     expect(testRouteData(reactFlowCallbacks.edges[0])?.route?.points).toEqual([
       { x: 240, y: 52 },
+      { x: 264, y: 52 },
+      { x: 264, y: 180 },
+      { x: 336, y: 180 },
+      { x: 336, y: 52 },
       { x: 360, y: 52 },
     ]);
 
     await user.click(screen.getByRole('button', { name: '保存草稿' }));
     await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
     const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
-    expect(saved.edges[0]?.presentation).toEqual({ routing: 'straight' });
-  });
-
-  it('makes 恢复智能路线 an explicit smart route reset', async () => {
-    const user = userEvent.setup();
-    const document: CanvasDocument = {
-      schemaVersion: 1,
-      nodes: [
-        { id: 'start', type: 'start', position: { x: 0, y: 0 }, size: { width: 240, height: 104 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
-        { id: 'process-a', type: 'process', position: { x: 360, y: 0 }, size: { width: 240, height: 104 }, zIndex: 1, data: { label: '处理', shape: 'process' } },
-      ],
-      edges: [{ id: 'business', source: 'start', target: 'process-a', presentation: {
-        routing: 'elbow',
-        routeMode: 'manual',
-        waypoints: [{ x: 264, y: 52 }, { x: 264, y: 180 }, { x: 336, y: 180 }, { x: 336, y: 52 }],
-      } }],
-      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: ['process-a'],
-    };
-    const api = createApi({ document });
-    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
-    await screen.findByDisplayValue('订单教学');
-
-    act(() => reactFlowCallbacks.onEdgeClick?.({} as MouseEvent, reactFlowCallbacks.edges[0]!));
-    await user.click(screen.getByRole('button', { name: '选择连线路由' }));
-    await user.click(screen.getByRole('button', { name: '智能避让' }));
-
-    expect(testRouteData(reactFlowCallbacks.edges[0])?.route?.routing).toBe('smart');
-    expect(testRouteData(reactFlowCallbacks.edges[0])?.route?.points).toEqual([
-      { x: 240, y: 52 },
-      { x: 360, y: 52 },
-    ]);
-
-    await user.click(screen.getByRole('button', { name: '保存草稿' }));
-    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
-    const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
-    expect(saved.edges[0]?.presentation).toEqual({ routing: 'smart' });
+    expect(saved.edges[0]?.presentation).toEqual({
+      routing: 'elbow',
+      pathStyle: 'smooth',
+      routeMode: 'manual',
+      waypoints: [{ x: 264, y: 52 }, { x: 264, y: 180 }, { x: 336, y: 180 }, { x: 336, y: 52 }],
+      sourceAnchor: { side: 'RIGHT', offset: 0.5 },
+      sourceAnchorMode: 'manual',
+      targetAnchor: { side: 'LEFT', offset: 0.5 },
+      targetAnchorMode: 'manual',
+    });
   });
 
   it('validates a manual draft created from an automatic straight route', async () => {
@@ -2071,6 +2050,7 @@ describe('GuideEditor', () => {
         { id: 'process-a', type: 'process', position: { x: 360, y: 0 }, size: { width: 240, height: 104 }, zIndex: 1, data: { label: '处理', shape: 'process' } },
       ],
       edges: [{ id: 'business', source: 'start', target: 'process-a', presentation: {
+        pathStyle: 'smooth',
         sourceAnchor: { side: 'RIGHT', offset: 0.5 },
         targetAnchor: { side: 'LEFT', offset: 0.5 },
       } }],
@@ -2097,12 +2077,13 @@ describe('GuideEditor', () => {
     const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
     const savedEdge = saved.edges.find((edge) => edge.id === 'business');
     expect(savedEdge?.presentation).toEqual(expect.objectContaining({
-      routing: 'elbow',
+      pathStyle: 'smooth',
       routeMode: 'manual',
       waypoints: expect.arrayContaining([expect.objectContaining({ y: 180 })]),
       sourceAnchor: { side: 'RIGHT', offset: 0.5 },
       targetAnchor: { side: 'LEFT', offset: 0.5 },
     }));
+    expect(savedEdge?.presentation).not.toHaveProperty('routing');
   });
 
   it('deletes a selected business edge with Delete', async () => {

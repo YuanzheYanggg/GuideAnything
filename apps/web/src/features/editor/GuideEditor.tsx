@@ -56,7 +56,7 @@ import { EdgeToolbar } from './EdgeToolbar';
 import { CanvasLayoutPreviewDialog } from './CanvasLayoutPreviewDialog';
 import { EditorToolbar } from './EditorToolbar';
 import { ManualRouteEditor } from './ManualRouteEditor';
-import { edgeAnchorFromClientPoint, edgePresentationForRouting, isEditableBusinessEdge, resolveEdgeVisuals } from './edge-presentation';
+import { edgeAnchorFromClientPoint, edgePresentationForPathStyle, isEditableBusinessEdge, resetEdgeRoutePresentation, resolveEdgeVisuals } from './edge-presentation';
 import { findNearestEndpointSnap, pointForEndpointAnchor } from './edge-anchor-snap';
 import { routeLabelPoint } from './OrthogonalEdge';
 import { connectSemanticNodes, insertSemanticNode, moveSemanticOutlineNode } from './semantic-node-actions';
@@ -392,7 +392,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     return {
       ...renderedDocument,
       edges: renderedDocument.edges.map((edge) => edge.id === manualRouteDraft.edgeId
-        ? { ...edge, presentation: { ...edge.presentation, routing: 'elbow' as const, routeMode: 'manual' as const, waypoints: manualRouteDraft.points.slice(1, -1) } }
+        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual' as const, waypoints: manualRouteDraft.points.slice(1, -1) } }
         : edge),
     };
   }, [manualRouteDraft, renderedDocument]);
@@ -402,7 +402,15 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     ...renderedDocument.edges.filter((edge) => edge.semantic?.kind !== 'RESOURCE_REFERENCE').map((edge) => {
       const route = routing?.routesByEdgeId.get(edge.id);
       const displayRoute = route && manualRouteDraft?.edgeId === edge.id
-        ? { ...route, points: manualRouteDraft.points, collision: manualDraftConflict, bridges: [] }
+        ? {
+          ...route,
+          points: manualRouteDraft.points,
+          collision: manualDraftConflict,
+          bridges: [],
+          directPathSafe: false,
+          smoothSegments: [],
+          smoothPathSafe: false,
+        }
         : route;
       return renderEdge(
         renderedDocument,
@@ -726,11 +734,10 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     if (layoutPreview || !document || !selectedEdgeId) return;
     const selected = document.edges.find((edge) => edge.id === selectedEdgeId);
     if (!selected || !isEditableBusinessEdge(document, selected)) return;
-    const nextPresentation = partial.routing !== undefined
-      ? edgePresentationForRouting({ ...selected.presentation, ...partial }, partial.routing)
+    const nextPresentation = partial.pathStyle !== undefined
+      ? edgePresentationForPathStyle({ ...selected.presentation, ...partial }, partial.pathStyle)
       : { ...selected.presentation, ...partial };
     commit({ ...document, edges: document.edges.map((edge) => edge.id === selected.id ? { ...edge, presentation: nextPresentation } : edge) });
-    if (partial.routing !== undefined) setManualRouteDraft(null);
   }, [commit, document, layoutPreview, selectedEdgeId]);
 
   const startManualRouteEdit = useCallback(() => {
@@ -760,7 +767,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     commit({
       ...document,
       edges: document.edges.map((edge) => edge.id === selected.id
-        ? { ...edge, presentation: { ...edge.presentation, routing: 'elbow', routeMode: 'manual', waypoints: nextPoints.slice(1, -1) } }
+        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual', waypoints: nextPoints.slice(1, -1) } }
         : edge),
     });
     setManualRouteDraft({ edgeId: selected.id, points: nextPoints });
@@ -777,7 +784,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     commit({
       ...document,
       edges: document.edges.map((edge) => edge.id === selected.id
-        ? { ...edge, presentation: { ...edge.presentation, routing: 'elbow', routeMode: 'manual', waypoints: manualRouteDraft.points.slice(1, -1) } }
+        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual', waypoints: manualRouteDraft.points.slice(1, -1) } }
         : edge),
     });
     setManualRouteDraft(null);
@@ -789,7 +796,10 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     if (!selected || !isEditableBusinessEdge(document, selected)) return;
     const edges = document.edges.map((edge) => {
       if (edge.id !== selected.id) return edge;
-      return { ...edge, presentation: edgePresentationForRouting(edge.presentation, 'smart') };
+      const presentation = resetEdgeRoutePresentation(edge.presentation);
+      if (presentation) return { ...edge, presentation };
+      const { presentation: _presentation, ...withoutPresentation } = edge;
+      return withoutPresentation;
     });
     commit({ ...document, edges });
     setManualRouteDraft(null);

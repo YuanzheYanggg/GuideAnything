@@ -91,18 +91,23 @@ describe('EdgeToolbar', () => {
     expect(onChange).toHaveBeenLastCalledWith({ width: 7 });
   });
 
-  it('selects a persisted routing mode separately from the visual line pattern', async () => {
+  it('selects a visual path style without clearing manual geometry', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
-    render(<EdgeToolbar presentation={{ pattern: 'dashed' }} onChange={onChange} onClose={vi.fn()} />);
+    render(<EdgeToolbar presentation={{
+      routeMode: 'manual',
+      waypoints: [{ x: 120, y: 80 }],
+      sourceAnchor: { side: 'RIGHT', offset: 0.5 },
+      sourceAnchorMode: 'manual',
+    }} onChange={onChange} onClose={vi.fn()} />);
 
-    await user.click(screen.getByRole('button', { name: '选择连线路由' }));
+    await user.click(screen.getByRole('button', { name: '选择画线风格' }));
     expect(screen.getByRole('button', { name: '折线' })).toHaveAttribute('aria-pressed', 'true');
 
-    await user.click(screen.getByRole('button', { name: '直线' }));
+    await user.click(screen.getByRole('button', { name: '平滑曲线' }));
 
-    expect(onChange).toHaveBeenLastCalledWith({ routing: 'straight' });
-    expect(screen.queryByRole('menu', { name: '连线路由' })).not.toBeInTheDocument();
+    expect(onChange).toHaveBeenLastCalledWith({ pathStyle: 'smooth' });
+    expect(screen.queryByRole('menu', { name: '画线风格' })).not.toBeInTheDocument();
   });
 
   it('starts manual route editing and exposes save, cancel, and reset actions', async () => {
@@ -129,7 +134,7 @@ describe('EdgeToolbar', () => {
     rerender(<EdgeToolbar {...props} routeEditing />);
     await user.click(screen.getByRole('button', { name: '保存走向' }));
     await user.click(screen.getByRole('button', { name: '取消编辑' }));
-    await user.click(screen.getByRole('button', { name: '恢复智能路线' }));
+    await user.click(screen.getByRole('button', { name: '恢复自动走线' }));
 
     expect(onSaveRouteEdit).toHaveBeenCalledTimes(1);
     expect(onCancelRouteEdit).toHaveBeenCalledTimes(1);

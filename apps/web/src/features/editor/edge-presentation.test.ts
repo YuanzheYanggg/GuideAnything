@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CanvasDocument } from '@guideanything/contracts';
 
-import { edgeAnchorFromClientPoint, isEditableBusinessEdge, resolveEdgeVisuals } from './edge-presentation';
+import { edgeAnchorFromClientPoint, edgePresentationForPathStyle, isEditableBusinessEdge, resetEdgeRoutePresentation, resolveEdgeVisuals } from './edge-presentation';
 
 describe('edge presentation helpers', () => {
   it('maps persisted visual options to controlled SVG values', () => {
@@ -15,6 +15,47 @@ describe('edge presentation helpers', () => {
   it('passes a custom palette hex through to the SVG stroke', () => {
     expect(resolveEdgeVisuals({ color: '#1020ff' })).toMatchObject({
       style: { stroke: '#1020ff', strokeWidth: 2 },
+    });
+  });
+
+  it('changes only the visual path style without clearing manual geometry', () => {
+    const presentation = {
+      color: 'purple' as const,
+      routing: 'straight' as const,
+      routeMode: 'manual' as const,
+      waypoints: [{ x: 120, y: 80 }],
+      sourceAnchor: { side: 'RIGHT' as const, offset: 0.5 },
+      sourceAnchorMode: 'manual' as const,
+      targetAnchor: { side: 'LEFT' as const, offset: 0.5 },
+      targetAnchorMode: 'manual' as const,
+    };
+
+    expect(edgePresentationForPathStyle(presentation, 'smooth')).toEqual({ ...presentation, pathStyle: 'smooth' });
+  });
+
+  it('restores automatic geometry while preserving visual style and endpoint anchors', () => {
+    const presentation = {
+      color: 'purple' as const,
+      arrows: 'both' as const,
+      routing: 'straight' as const,
+      pathStyle: 'smooth' as const,
+      routeMode: 'manual' as const,
+      waypoints: [{ x: 120, y: 80 }],
+      sourceAnchor: { side: 'RIGHT' as const, offset: 0.5 },
+      sourceAnchorMode: 'manual' as const,
+      targetAnchor: { side: 'LEFT' as const, offset: 0.5 },
+      targetAnchorMode: 'manual' as const,
+    };
+
+    expect(resetEdgeRoutePresentation(presentation)).toEqual({
+      color: 'purple',
+      arrows: 'both',
+      routing: 'straight',
+      pathStyle: 'smooth',
+      sourceAnchor: presentation.sourceAnchor,
+      sourceAnchorMode: 'manual',
+      targetAnchor: presentation.targetAnchor,
+      targetAnchorMode: 'manual',
     });
   });
 

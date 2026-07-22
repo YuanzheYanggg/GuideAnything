@@ -1,5 +1,5 @@
 import { ArrowRight, LineSegments, Palette, X } from '@phosphor-icons/react';
-import type { EdgePresentation } from '@guideanything/contracts';
+import { resolveEdgePathStyle, type EdgePathStyle, type EdgePresentation } from '@guideanything/contracts';
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 
 import { AnimatedList } from '../../components/reactbits/AnimatedList';
@@ -29,18 +29,18 @@ const arrowOptions = [
   ['both', '双向箭头'],
 ] as const;
 
-const routingOptions = [
-  ['straight', '直线'],
-  ['smart', '智能避让'],
-  ['elbow', '折线'],
+const pathStyleOptions = [
+  ['orthogonal', '折线'],
+  ['smooth', '平滑曲线'],
+  ['diagonal', '斜线'],
 ] as const;
 
-type EdgeToolbarMenu = 'width' | 'pattern' | 'routing' | 'arrows' | null;
+type EdgeToolbarMenu = 'width' | 'pattern' | 'pathStyle' | 'arrows' | null;
 
 const menuMeta = {
   width: { trigger: '选择连线粗细', label: '连线粗细' },
   pattern: { trigger: '选择线型', label: '线型' },
-  routing: { trigger: '选择连线路由', label: '连线路由' },
+  pathStyle: { trigger: '选择画线风格', label: '画线风格' },
   arrows: { trigger: '选择箭头', label: '箭头' },
 } as const;
 
@@ -70,7 +70,7 @@ export function EdgeToolbar({
   const selectedWidth = presentation?.width ?? 2;
   const [widthInput, setWidthInput] = useState(() => String(selectedWidth));
   const selectedPattern = presentation?.pattern ?? 'solid';
-  const selectedRouting = presentation?.routing ?? 'elbow';
+  const selectedPathStyle = resolveEdgePathStyle(presentation);
   const selectedArrows = presentation?.arrows ?? 'forward';
   useEffect(() => setWidthInput(String(selectedWidth)), [selectedWidth]);
   const select = (partial: Partial<EdgePresentation>) => {
@@ -103,11 +103,11 @@ export function EdgeToolbar({
     </div>
     <ToolbarDivider />
     <div className="edge-toolbar-group edge-toolbar-group-end">
-      <ToolbarTrigger menu="routing" openMenu={openMenu} onToggle={toggleMenu} preview={<RoutingPreview value={selectedRouting} />} />
+      <ToolbarTrigger menu="pathStyle" openMenu={openMenu} onToggle={toggleMenu} preview={<PathStylePreview value={selectedPathStyle} />} />
       {routeEditing ? <div className="edge-toolbar-route-actions" role="group" aria-label="编辑连线走向">
         <button type="button" aria-label="保存走向" onClick={onSaveRouteEdit} disabled={manualRouteConflict}>保存</button>
         <button type="button" aria-label="取消编辑" onClick={onCancelRouteEdit}>取消</button>
-        <button type="button" aria-label="恢复智能路线" onClick={onResetRoute}>恢复智能</button>
+        <button type="button" aria-label="恢复自动走线" onClick={onResetRoute}>恢复自动</button>
       </div> : <button type="button" className="edge-toolbar-route-edit" aria-label="编辑走向" onClick={onStartRouteEdit}>编辑走向</button>}
       <ToolbarTrigger menu="arrows" openMenu={openMenu} onToggle={toggleMenu} preview={<ArrowPreview value={selectedArrows} />}>
         <ArrowRight size={22} weight="bold" aria-hidden="true" />
@@ -146,9 +146,9 @@ export function EdgeToolbar({
         <span className={`edge-toolbar-pattern-preview is-${value}`} aria-hidden="true" />
       </ToolbarOption>)}
     </ToolbarMenu> : null}
-    {openMenu === 'routing' ? <ToolbarMenu menu="routing">
-      {routingOptions.map(([value, label]) => <ToolbarOption key={value} label={label} selected={selectedRouting === value} onClick={() => select({ routing: value })}>
-        <RoutingPreview value={value} />
+    {openMenu === 'pathStyle' ? <ToolbarMenu menu="pathStyle">
+      {pathStyleOptions.map(([value, label]) => <ToolbarOption key={value} label={label} selected={selectedPathStyle === value} onClick={() => select({ pathStyle: value })}>
+        <PathStylePreview value={value} />
       </ToolbarOption>)}
     </ToolbarMenu> : null}
     {openMenu === 'arrows' ? <ToolbarMenu menu="arrows">
@@ -223,11 +223,11 @@ function ArrowPreview({ value }: { value: typeof arrowOptions[number][0] }) {
   </span>;
 }
 
-function RoutingPreview({ value }: { value: typeof routingOptions[number][0] }) {
-  const path = value === 'straight'
-    ? 'M 2 10 H 22'
-    : value === 'smart'
-      ? 'M 2 14 H 10 V 6 H 22'
+function PathStylePreview({ value }: { value: EdgePathStyle }) {
+  const path = value === 'diagonal'
+    ? 'M 2 15 L 22 5'
+    : value === 'smooth'
+      ? 'M 2 15 C 7 15 8 5 13 5 S 18 15 22 5'
       : 'M 2 6 H 10 V 14 H 22';
-  return <svg className={`edge-toolbar-routing-preview is-${value}`} viewBox="0 0 24 20" aria-hidden="true"><path d={path} /></svg>;
+  return <svg className={`edge-toolbar-path-style-preview is-${value}`} viewBox="0 0 24 20" aria-hidden="true"><path d={path} /></svg>;
 }
