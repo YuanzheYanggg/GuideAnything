@@ -94,6 +94,176 @@ describe('DatabaseAgentOutputCommitter', () => {
     expect(database.prepare('SELECT COUNT(*) AS count FROM workspace_question_cluster_examples').get())
       .toEqual({ count: 1 });
   });
+
+  it('does not persist a retrieval diagnostic for an ordinary supported answer', async () => {
+    const context = seedValidatingRun(database);
+    const committer = new DatabaseAgentOutputCommitter(database, {
+      now: () => new Date('2026-07-21T04:00:00.000Z'),
+    });
+
+    await committer.commit({
+      context,
+      answer: committedAnswer(context.runId),
+      references: [resolvedReference()],
+      retrievalTrace: minimalRetrievalTrace(),
+    } as Parameters<typeof committer.commit>[0]);
+
+    expect(database.prepare('SELECT COUNT(*) AS count FROM agent_retrieval_diagnostics').get())
+      .toEqual({ count: 0 });
+  });
+
+  it('persists a diagnostic for an explicitly mapped regression run even when the answer is supported', async () => {
+    const context = seedValidatingRun(database);
+    seedRegressionRun(database, context);
+    const committer = new DatabaseAgentOutputCommitter(database, {
+      now: () => new Date('2026-07-21T04:00:00.000Z'),
+    });
+
+    await committer.commit({
+      context,
+      answer: committedAnswer(context.runId),
+      references: [resolvedReference()],
+      retrievalTrace: minimalRetrievalTrace(),
+    } as Parameters<typeof committer.commit>[0]);
+
+    expect(database.prepare(
+      `SELECT guide_id, target_resource_node_id, target_annotation_id, reason_code
+       FROM agent_retrieval_diagnostics WHERE run_id = ?`,
+    ).get(context.runId)).toEqual({
+      guide_id: 'guide-regression',
+      target_resource_node_id: 'image-version-type',
+      target_annotation_id: 'version-type',
+      reason_code: 'NO_TARGET_LEAF',
+    });
+    expect(database.prepare(
+      `SELECT last_agent_verification
+       FROM workspace_flow_regression_cases WHERE id = 'case-regression'`,
+    ).get()).toEqual({ last_agent_verification: 'PASS' });
+  });
+
+  it('records a failed real-run verification when the committed Agent status differs from the case', async () => {
+    const context = seedValidatingRun(database);
+    seedRegressionRun(database, context);
+    const committer = new DatabaseAgentOutputCommitter(database, {
+      now: () => new Date('2026-07-21T04:00:00.000Z'),
+    });
+
+    await committer.commit({
+      context,
+      answer: { ...committedAnswer(context.runId), evidenceStatus: 'PARTIAL' },
+      references: [resolvedReference()],
+    });
+
+    expect(database.prepare(
+      `SELECT last_agent_verification
+       FROM workspace_flow_regression_cases WHERE id = 'case-regression'`,
+    ).get()).toEqual({ last_agent_verification: 'FAIL' });
+  });
+
+  it('records a failed real-run verification when the answer omits the pinned annotation citation', async () => {
+    const context = seedValidatingRun(database);
+    seedRegressionRun(database, context);
+    const committer = new DatabaseAgentOutputCommitter(database, {
+      now: () => new Date('2026-07-21T04:00:00.000Z'),
+    });
+
+    await committer.commit({
+      context,
+      answer: committedAnswer(context.runId),
+      references: [resolvedReference({
+        ...flowEvidence(),
+        locator: {
+          kind: 'WORKSPACE_FLOW',
+          guideId: 'guide-regression',
+          snapshotId: 'snapshot-regression',
+          nodeId: 'other-image',
+          annotationId: 'other-annotation',
+        },
+      })],
+    });
+
+    expect(database.prepare(
+      `SELECT last_agent_verification
+       FROM workspace_flow_regression_cases WHERE id = 'case-regression'`,
+    ).get()).toEqual({ last_agent_verification: 'FAIL' });
+  });
+
+  it('persists only a bounded retrieval trace and fingerprint for a partial answer', async () => {
+    const context = seedValidatingRun(database);
+    const committer = new DatabaseAgentOutputCommitter(database, {
+      now: () => new Date('2026-07-21T04:00:00.000Z'),
+      createId: () => 'assistant-message-diagnostic',
+    });
+
+    await committer.commit({
+      context,
+      answer: { ...committedAnswer(context.runId), evidenceStatus: 'PARTIAL' },
+      references: [resolvedReference()],
+      retrievalTrace: minimalRetrievalTrace(),
+    } as Parameters<typeof committer.commit>[0]);
+
+    const diagnostic = database.prepare(
+      `SELECT run_id, workspace_id, guide_id, target_resource_node_id, target_annotation_id,
+              query_fingerprint, reason_code, candidates_json, closure_json, created_at, expires_at
+       FROM agent_retrieval_diagnostics WHERE run_id = ?`,
+    ).get(context.runId) as Record<string, unknown> | undefined;
+    expect(diagnostic).toMatchObject({
+      run_id: context.runId,
+      workspace_id: 'workspace-1',
+      guide_id: null,
+      target_resource_node_id: null,
+      target_annotation_id: null,
+      reason_code: 'BUDGET_EXHAUSTED',
+      candidates_json: JSON.stringify([{
+        fragmentId: 'evidence-flow', projection: 'NODE', rank: 1, selected: true,
+      }]),
+      closure_json: JSON.stringify([{
+        id: 'approve', kind: 'NODE',
+      }]),
+      created_at: '2026-07-21T04:00:00.000Z',
+      expires_at: '2026-08-20T04:00:00.000Z',
+    });
+    expect(diagnostic?.query_fingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(JSON.stringify(diagnostic)).not.toContain('当前节点由谁负责');
+    expect(JSON.stringify(diagnostic)).not.toContain('隐藏推理');
+  });
+
+  it('removes only expired diagnostics when a new exceptional result is inserted', async () => {
+    const context = seedValidatingRun(database);
+    const stale = enqueueConversationRun(database, {
+      conversationId: context.conversationId,
+      ownerId: context.ownerId,
+      request: {
+        clientMessageId: 'client-expired-diagnostic',
+        text: '旧的诊断。',
+        sources: context.sources,
+        attachmentIds: [],
+      },
+    });
+    database.prepare(
+      `INSERT INTO agent_retrieval_diagnostics (
+        id, run_id, workspace_id, guide_id, target_resource_node_id, target_annotation_id,
+        query_fingerprint, reason_code, candidates_json, closure_json, created_at, expires_at
+      ) VALUES ('expired-diagnostic', ?, 'workspace-1', NULL, NULL, NULL,
+                ?, 'BUDGET_EXHAUSTED', '[]', '[]', '2026-06-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z')`,
+    ).run(stale.accepted.run.id, 'a'.repeat(64));
+    const committer = new DatabaseAgentOutputCommitter(database, {
+      now: () => new Date('2026-07-21T04:00:00.000Z'),
+    });
+
+    await committer.commit({
+      context,
+      answer: { ...committedAnswer(context.runId), evidenceStatus: 'PARTIAL' },
+      references: [resolvedReference()],
+      retrievalTrace: minimalRetrievalTrace(),
+    } as Parameters<typeof committer.commit>[0]);
+
+    expect(database.prepare(
+      'SELECT COUNT(*) AS count FROM agent_retrieval_diagnostics WHERE run_id = ?',
+    ).get(stale.accepted.run.id)).toEqual({ count: 0 });
+    expect(database.prepare('SELECT COUNT(*) AS count FROM agent_retrieval_diagnostics').get())
+      .toEqual({ count: 1 });
+  });
 });
 
 function seedValidatingRun(database: DatabaseSync): AgentRunExecutionContext {
@@ -172,10 +342,10 @@ function committedAnswer(runId: string): AgentCommittedAnswerV1 {
   };
 }
 
-function resolvedReference(): ResolvedAgentReference {
+function resolvedReference(evidence: ValidatedEvidenceV1 = flowEvidence()): ResolvedAgentReference {
   return {
     reference: { referenceId: 'reference-flow', href: '/references/reference-flow' },
-    evidence: flowEvidence(),
+    evidence,
   };
 }
 
@@ -186,9 +356,65 @@ function flowEvidence(): ValidatedEvidenceV1 {
     title: '审批节点',
     excerpt: '复核员负责审批。',
     locator: {
-      kind: 'WORKSPACE_FLOW', guideId: 'guide-1', snapshotId: 'snapshot-1', nodeId: 'approve',
+      kind: 'WORKSPACE_FLOW',
+      guideId: 'guide-regression',
+      snapshotId: 'snapshot-regression',
+      nodeId: 'image-version-type',
+      annotationId: 'version-type',
     },
   };
+}
+
+function minimalRetrievalTrace() {
+  return {
+    candidates: [{
+      fragmentId: 'evidence-flow', projection: 'NODE', rank: 1, selected: true,
+    }],
+    closure: [{ id: 'approve', kind: 'NODE' }],
+  };
+}
+
+function seedRegressionRun(database: DatabaseSync, context: AgentRunExecutionContext): void {
+  const now = '2026-07-21T00:00:00.000Z';
+  database.prepare(
+    `INSERT INTO guides (
+      id, owner_id, title, summary, tags_json, status, visibility, revision,
+      draft_document, created_at, updated_at
+    ) VALUES ('guide-regression', 'owner-1', '标注回归流程', '', '[]', 'DRAFT', 'INTERNAL', 0,
+              '{"schemaVersion":1,"nodes":[],"edges":[],"viewport":{"x":0,"y":0,"zoom":1},"steps":[],"exitNodeIds":[]}', ?, ?)`,
+  ).run(now, now);
+  database.prepare(
+    `INSERT INTO workspace_items (
+      id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+    ) VALUES ('item-guide-regression', 'workspace-1', 'GUIDE', 'guide-regression',
+              '标注回归流程', '', 'owner-1', ?, ?)`,
+  ).run(now, now);
+  database.prepare(
+    `INSERT INTO answer_citations (
+      reference_id, run_id, source_kind, internal_locator_json,
+      title, excerpt, revision, created_at
+    ) VALUES ('reference-regression-source', ?, 'WORKSPACE_FLOW', ?,
+              '版类型', '初样用于新建版型。', 'snapshot-regression', ?)`,
+  ).run(context.runId, JSON.stringify({
+    kind: 'WORKSPACE_FLOW',
+    guideId: 'guide-regression',
+    snapshotId: 'snapshot-regression',
+    nodeId: 'image-version-type',
+    annotationId: 'version-type',
+  }), now);
+  database.prepare(
+    `INSERT INTO workspace_flow_regression_cases (
+      id, workspace_id, guide_id, source_reference_id, resource_node_id, annotation_id,
+      question, expected_agent_status, status, created_by, created_at, updated_at,
+      last_verified_snapshot_id, last_retrieval_verification, last_agent_verification
+    ) VALUES ('case-regression', 'workspace-1', 'guide-regression', 'reference-regression-source',
+              'image-version-type', 'version-type', '版类型怎么设置？', 'SUPPORTED', 'ACTIVE',
+              'owner-1', ?, ?, NULL, NULL, NULL)`,
+  ).run(now, now);
+  database.prepare(
+    `INSERT INTO workspace_flow_regression_runs (run_id, case_id, requested_by, created_at)
+     VALUES (?, 'case-regression', 'owner-1', ?)`,
+  ).run(context.runId, now);
 }
 
 function seedUser(database: DatabaseSync, id: string): void {

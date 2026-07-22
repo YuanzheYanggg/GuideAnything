@@ -10,6 +10,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { httpError } from '../../lib/http-error';
 import { recordActivity } from '../workspaces/repository';
+import { describeDraftChange, parseDraftDocument, type DraftRevisionState } from './draft-history';
 
 export interface GuideDraft {
   id: string;
@@ -283,13 +284,26 @@ export function updateGuideInTransaction(
 export function listDraftHistory(database: DatabaseSync, guideId: string): GuideDraftHistorySnapshot[] {
   const rows = database.prepare(
     `SELECT draft.revision, draft.title, draft.summary, draft.tags_json,
+            draft.draft_document_json,
             draft.saved_by, draft.saved_at, user.display_name AS saved_by_name
      FROM guide_draft_revisions AS draft
      JOIN users AS user ON user.id = draft.saved_by
      WHERE draft.guide_id = ?
      ORDER BY draft.saved_at DESC, draft.revision DESC`,
   ).all(guideId) as unknown as DraftHistoryRow[];
-  return rows.map(mapDraftHistory);
+  const entries = rows.map((row) => ({
+    row,
+    state: {
+      title: row.title,
+      summary: row.summary,
+      tags: JSON.parse(row.tags_json) as string[],
+      document: parseDraftDocument(row.draft_document_json),
+    } satisfies DraftRevisionState,
+  }));
+  return entries.map((entry, index) => mapDraftHistory(
+    entry.row,
+    describeDraftChange(entry.state, entries[index + 1]?.state),
+  ));
 }
 
 export function restoreGuideDraft(
@@ -493,11 +507,12 @@ function recordDraftSnapshotInTransaction(database: DatabaseSync, guide: GuideDr
   ).run(guide.id, guide.id);
 }
 
-function mapDraftHistory(row: DraftHistoryRow): GuideDraftHistorySnapshot {
+function mapDraftHistory(row: DraftHistoryRow, changeSummary: string): GuideDraftHistorySnapshot {
   return {
     revision: row.revision,
     title: row.title,
     summary: row.summary,
+    changeSummary,
     tags: JSON.parse(row.tags_json) as string[],
     savedAt: row.saved_at,
     savedBy: { id: row.saved_by, displayName: row.saved_by_name },

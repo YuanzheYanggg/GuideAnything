@@ -2,6 +2,7 @@ import type { GuideDigestDraftV1 } from '@guideanything/contracts';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import { SanitizedMarkdown } from '../markdown/SanitizedMarkdown';
+import { EditorDialogSurface } from './EditorDialogSurface';
 
 export type GuideFlowSnapshotStatus = {
   guideRevision: number;
@@ -70,7 +71,7 @@ export function GuideDigestDialog({
   const [selectedTags, setSelectedTags] = useState<ReadonlySet<string>>(() => new Set());
   const [selectionError, setSelectionError] = useState('');
   const [busy, setBusy] = useState(false);
-  const dialogRef = useRef<HTMLElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const ready = status?.sourceStatus === 'READY'
     && status.snapshotId !== null
     && status.snapshotRevision === guide.revision
@@ -145,9 +146,15 @@ export function GuideDigestDialog({
   };
   const disabled = busy || generating;
 
-  return <div className="modal-backdrop" role="presentation">
-    <section ref={dialogRef} className="reference-modal guide-digest-dialog" role="dialog" aria-modal="true" aria-labelledby="guide-digest-title" onKeyDown={trapFocus}>
-      <button className="modal-close" type="button" onClick={onClose} disabled={disabled} aria-label="关闭指南总览">×</button>
+  return <EditorDialogSurface
+    ref={dialogRef}
+    className="reference-modal guide-digest-dialog"
+    ariaLabelledBy="guide-digest-title"
+    closeLabel="关闭指南总览"
+    closeDisabled={disabled}
+    onKeyDown={trapFocus}
+    onClose={onClose}
+  >
       <span className="eyebrow">GUIDE DIGEST REVIEW</span>
       <h2 id="guide-digest-title">生成指南总览</h2>
       <p>仅从当前已保存的流程快照生成；接受 Markdown 只记录提案审计，不会写入画布或检索。</p>
@@ -171,8 +178,7 @@ export function GuideDigestDialog({
         <details><summary>诊断信息</summary><code>proposal={proposal.id} · snapshot={proposal.baseSnapshotId} · revision={proposal.baseRevision}{sourceIds.length ? ` · sourceIds=${sourceIds.join(',')}` : ''}</code></details>
         <div className="guide-digest-actions"><button className="secondary-button" type="button" onClick={() => void run(() => onGenerate(true))} disabled={disabled}>重新生成</button><button className="secondary-button" type="button" onClick={() => void run(() => onReject(proposal.id))} disabled={disabled || proposal.status !== 'DRAFT'}>拒绝提案</button><label><input type="checkbox" checked={acceptMarkdown} disabled={disabled || isStale} onChange={(event) => setAcceptMarkdown(event.target.checked)} />接受 Markdown 审计记录</label><button className="primary-button" type="button" onClick={apply} disabled={disabled || isStale || proposal.status !== 'DRAFT'}>接受并应用到草稿</button></div>
       </div> : null}
-    </section>
-  </div>;
+  </EditorDialogSurface>;
 }
 
 function describeSources(sourceIds: readonly string[], sources: ReadonlyMap<string, string>): string[] {

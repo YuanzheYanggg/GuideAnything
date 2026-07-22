@@ -434,6 +434,31 @@ describe('knowledge routes, uploads, and flow synchronization', () => {
     ).get(publishedSnapshotId)).toEqual({ flow_snapshot_id: publishedSnapshotId });
   });
 
+  it('does not return superseded draft flow snapshots to knowledge search', async () => {
+    const created = await context.app.inject({
+      method: 'POST', url: '/api/guides', headers: authorization(context.tokens.author),
+      payload: { workspaceId, title: '版本过滤流程', summary: '当前流程', tags: [] },
+    });
+    const guideId = created.json().guide.id as string;
+    const first = await context.app.inject({
+      method: 'PATCH', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.author),
+      payload: { revision: 0, document: sampleDocument('# 旧版流程\nlegacyneedle。') },
+    });
+    expect(first.statusCode).toBe(200);
+    const second = await context.app.inject({
+      method: 'PATCH', url: `/api/guides/${guideId}`, headers: authorization(context.tokens.author),
+      payload: { revision: 1, document: sampleDocument('# 当前版流程\ncurrentneedle。') },
+    });
+    expect(second.statusCode).toBe(200);
+
+    expect(searchKnowledge(context.database, 'currentneedle', {
+      sourceKinds: ['WORKSPACE_FLOW'], workspaceId, userId: context.userIds.author, userRole: 'AUTHOR',
+    })).toHaveLength(1);
+    expect(searchKnowledge(context.database, 'legacyneedle', {
+      sourceKinds: ['WORKSPACE_FLOW'], workspaceId, userId: context.userIds.author, userRole: 'AUTHOR',
+    })).toEqual([]);
+  });
+
   it('stores V2 flow snapshots and materializes one overview plus semantic node and resource fragments', async () => {
     const document = sampleDocument('# 提交资料\n核对订单附件。');
     document.stages = [{ id: 'stage-review', title: '复核阶段', order: 0 }];
@@ -501,6 +526,201 @@ describe('knowledge routes, uploads, and flow synchronization', () => {
     expect(searchKnowledge(context.database, '概览标签', {
       sourceKinds: ['WORKSPACE_FLOW'], workspaceId, userId: context.userIds.author, userRole: 'AUTHOR',
     })).toHaveLength(1);
+  });
+
+  it('does not materialize or search a hidden flow resource', () => {
+    const document = sampleDocument('# 可见流程\n保留流程内容。');
+    document.nodes.push({
+      id: 'hidden-resource',
+      type: 'markdown',
+      position: { x: 420, y: 0 },
+      zIndex: 2,
+      visibility: 'HIDDEN',
+      data: { markdown: '# HIDDEN_FLOW_RESOURCE_MARKER_7XQ\n不应进入 AI 检索。' },
+    });
+    const flowContext = {
+      workspaceId,
+      workspaceItemId: 'item-hidden-resource',
+      guideId: 'guide-hidden-resource',
+      ownerId: context.userIds.author,
+      title: '隐藏资料流程',
+      summary: '流程摘要',
+      tags: ['隐藏'],
+      origin: { kind: 'DRAFT' as const, revision: 0 },
+      document,
+    };
+
+    seedFlowGuide(context, flowContext.guideId, flowContext.workspaceItemId, document);
+    const snapshot = syncGuideFlowSnapshot(context.database, flowContext);
+
+    expect(snapshot.resources.map((resource) => resource.id)).not.toContain('hidden-resource');
+    expect(searchKnowledge(context.database, 'HIDDEN_FLOW_RESOURCE_MARKER_7XQ', {
+      sourceKinds: ['WORKSPACE_FLOW'], workspaceId, userId: context.userIds.author, userRole: 'AUTHOR',
+    })).toEqual([]);
+  });
+
+  it('materializes image annotations as independent flow leaves and rebuilds a stale projection', () => {
+    const document = sampleDocument('# 打样说明\n确认版型与交期。');
+    document.nodes.push({
+      id: 'erp-image',
+      type: 'image',
+      position: { x: 480, y: 0 },
+      zIndex: 2,
+      attachment: { ownerNodeId: 'start', order: 0 },
+      data: {
+        url: 'https://example.com/erp.png',
+        alt: 'ERP 字段截图',
+        caption: '打样提案页面',
+        annotations: [
+          {
+            id: 'annotation-version-type',
+            order: 0,
+            title: '版类型',
+            body: '初样用于新建版型，修改样用于局部修改。',
+            shape: 'POINT',
+            region: { x: 0.4, y: 0.25 },
+          },
+          {
+            id: 'annotation-urgency',
+            order: 1,
+            title: '紧急度',
+            body: '加急时需要同步确认物料交付日期。',
+            shape: 'POINT',
+            region: { x: 0.6, y: 0.25 },
+          },
+        ],
+      },
+    });
+    const flowContext = {
+      workspaceId,
+      workspaceItemId: 'item-image-leaves',
+      guideId: 'guide-image-leaves',
+      ownerId: context.userIds.author,
+      title: '打样提案流程',
+      summary: '打样字段填写说明',
+      tags: ['打样'],
+      origin: { kind: 'DRAFT' as const, revision: 0 },
+      document,
+    };
+    seedFlowGuide(context, flowContext.guideId, flowContext.workspaceItemId, document);
+
+    const snapshot = syncGuideFlowSnapshot(context.database, flowContext);
+    const fragments = context.database.prepare(
+      `SELECT fragment.heading, fragment.content
+       FROM knowledge_fragments AS fragment
+       JOIN knowledge_documents AS document ON document.id = fragment.document_id
+       WHERE document.flow_snapshot_id = ?
+       ORDER BY fragment.ordinal`,
+    ).all(snapshot.snapshotId) as Array<{ heading: string; content: string }>;
+    const annotations = fragments.filter((fragment) => ['版类型', '紧急度'].includes(fragment.heading));
+    const overview = fragments.find((fragment) => fragment.heading === '打样提案流程');
+
+    expect(annotations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ heading: '版类型', content: expect.stringContaining('初样用于新建版型') }),
+      expect.objectContaining({ heading: '紧急度', content: expect.stringContaining('加急时需要同步确认') }),
+    ]));
+    expect(annotations.every((fragment) => fragment.content.includes('开始'))).toBe(true);
+    expect(overview?.content).toContain('流程结构索引');
+
+    const focusedQuestionHits = searchKnowledgeInternal(context.database, '打样流程里版类型应该怎么设置？', {
+      sourceKinds: ['WORKSPACE_FLOW'],
+      workspaceId,
+      userId: context.userIds.author,
+      userRole: 'AUTHOR',
+      limit: 6,
+    });
+    expect(focusedQuestionHits[0]).toMatchObject({
+      hit: { heading: '版类型' },
+      locator: {
+        kind: 'WORKSPACE_FLOW',
+        projection: 'IMAGE_ANNOTATION',
+        nodeId: 'erp-image',
+        annotationId: 'annotation-version-type',
+      },
+    });
+
+    const materialized = context.database.prepare(
+      `SELECT document.id, document.checksum, document.metadata_json, snapshot.document_checksum
+       FROM knowledge_documents AS document
+       JOIN flow_knowledge_snapshots AS snapshot ON snapshot.id = document.flow_snapshot_id
+       WHERE document.flow_snapshot_id = ?`,
+    ).get(snapshot.snapshotId) as {
+      id: string;
+      checksum: string;
+      metadata_json: string;
+      document_checksum: string;
+    };
+    const staleMetadata = JSON.parse(materialized.metadata_json) as Record<string, unknown>;
+    // Simulate the short-lived V2 projection that marked its document current
+    // before image annotations were emitted as their own leaves.
+    staleMetadata.flowIndexProjectionVersion = 2;
+    context.database.prepare('UPDATE knowledge_documents SET metadata_json = ? WHERE id = ?')
+      .run(JSON.stringify(staleMetadata), materialized.id);
+    context.database.prepare(
+      `DELETE FROM knowledge_fragments
+       WHERE document_id = ?
+         AND json_extract(internal_locator_json, '$.projection') = 'IMAGE_ANNOTATION'`,
+    ).run(materialized.id);
+
+    expect(reconcileGuideFlowSnapshots(context.database)).toMatchObject({ indexed: 1, failed: 0 });
+    expect(context.database.prepare(
+      'SELECT id, checksum FROM knowledge_documents WHERE flow_snapshot_id = ?',
+    ).get(snapshot.snapshotId)).toEqual({ id: materialized.id, checksum: materialized.document_checksum });
+    expect(context.database.prepare(
+      `SELECT COUNT(*) AS count
+       FROM knowledge_fragments
+       WHERE document_id = ?
+         AND json_extract(internal_locator_json, '$.projection') = 'IMAGE_ANNOTATION'`,
+    ).get(materialized.id)).toEqual({ count: 2 });
+  });
+
+  it('records only a health exception when a current annotation leaf disappears without rebinding it', () => {
+    const document = sampleDocument('# 打样说明\n确认版型。');
+    document.nodes.push({
+      id: 'health-image',
+      type: 'image',
+      position: { x: 480, y: 0 },
+      zIndex: 2,
+      attachment: { ownerNodeId: 'start', order: 0 },
+      data: {
+        url: 'https://example.com/health.png',
+        alt: '打样字段截图',
+        annotations: [{
+          id: 'version-type', order: 0, title: '版类型', body: '初样用于新建版型。',
+          shape: 'POINT', region: { x: 0.4, y: 0.25 },
+        }],
+      },
+    });
+    const flowContext = {
+      workspaceId,
+      workspaceItemId: 'item-health-check',
+      guideId: 'guide-health-check',
+      ownerId: context.userIds.author,
+      title: '打样提案流程',
+      summary: '',
+      tags: ['打样'],
+      origin: { kind: 'DRAFT' as const, revision: 0 },
+      document,
+    };
+    seedFlowGuide(context, flowContext.guideId, flowContext.workspaceItemId, document);
+    const snapshot = syncGuideFlowSnapshot(context.database, flowContext);
+    expect(context.database.prepare('SELECT * FROM flow_annotation_health_issues').all()).toEqual([]);
+
+    context.database.prepare(
+      `DELETE FROM knowledge_fragments
+       WHERE document_id = (SELECT id FROM knowledge_documents WHERE flow_snapshot_id = ?)
+         AND json_extract(internal_locator_json, '$.projection') = 'IMAGE_ANNOTATION'`,
+    ).run(snapshot.snapshotId);
+    syncGuideFlowSnapshot(context.database, flowContext);
+
+    expect(context.database.prepare(
+      `SELECT resource_node_id, annotation_id, code
+       FROM flow_annotation_health_issues WHERE snapshot_id = ?`,
+    ).all(snapshot.snapshotId)).toEqual(expect.arrayContaining([{
+      resource_node_id: 'health-image',
+      annotation_id: 'version-type',
+      code: 'ANNOTATION_LEAF_MISSING',
+    }]));
   });
 
   it('keeps a current draft origin idempotent by document checksum', () => {

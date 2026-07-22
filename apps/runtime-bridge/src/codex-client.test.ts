@@ -610,6 +610,34 @@ describe('CodexRuntime thread and turn safety', () => {
     });
   });
 
+  it('reports bounded schema paths without exposing the invalid structured output', async () => {
+    const { runtime, rpc, runtimeConfig } = await initializedRuntime();
+    const handle = await startHandle(
+      runtime,
+      rpc,
+      runtimeConfig,
+      runRequest({ role: 'ROUTER', outputKind: 'ROUTE_DECISION' }),
+    );
+    emitFinal(rpc, 'thread-1', 'turn-1', {
+      ...VALID_ROUTE_DECISION,
+      intent: 'PRIVATE_ROUTE_OUTPUT_SHOULD_NOT_LEAK',
+      route: 'FOCUSED',
+    });
+    rpc.emit('turn/completed', {
+      threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [] },
+    });
+
+    const failure = (await collectEvents(handle)).find((event) => event.type === 'FAILED');
+    expect(failure).toBeDefined();
+    if (!failure || failure.type !== 'FAILED') throw new Error('expected a FAILED event');
+    expect(failure.payload.code).toBe('INVALID_ROUTE_DECISION');
+    expect(failure.payload.message).toContain('结构化输出校验失败');
+    expect(failure.payload.message).toContain('budget');
+    expect(failure.payload.message).toContain('custom');
+    expect(failure.payload.message).not.toContain('PRIVATE_ROUTE_OUTPUT');
+    expect(failure.payload.message.length).toBeLessThan(500);
+  });
+
   it('rejects filesystem roots supplied by a caller and role/effort substitution', async () => {
     const { runtime } = await initializedRuntime();
 

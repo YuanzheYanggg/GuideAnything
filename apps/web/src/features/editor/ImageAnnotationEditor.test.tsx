@@ -19,6 +19,7 @@ describe('ImageAnnotationEditor', () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     render(<Harness onClose={onClose} />);
+    expect(screen.getByRole('dialog', { name: '图片标注编辑器' })).toHaveClass('editor-dialog-surface');
     const surface = screen.getByTestId('annotation-surface');
     expect(surface.parentElement).toHaveClass('annotation-image-frame');
     vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({ x: 10, y: 20, left: 10, top: 20, right: 810, bottom: 470, width: 800, height: 450, toJSON: () => ({}) });
@@ -53,6 +54,16 @@ describe('ImageAnnotationEditor', () => {
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId('annotation-state')).toHaveTextContent('快捷关闭仍保存');
+  });
+
+  it('selects a valid deep-linked annotation instead of the first marker', () => {
+    render(<Harness focusAnnotationId="second" initialAnnotations={[
+      { id: 'first', order: 0, title: '第一个', shape: 'POINT', region: { x: 0.2, y: 0.3 } },
+      { id: 'second', order: 1, title: '版类型', shape: 'POINT', region: { x: 0.7, y: 0.6 } },
+    ]} />);
+
+    expect(screen.getByLabelText('标注 2 标题')).toHaveValue('版类型');
+    expect(screen.queryByLabelText('标注 1 标题')).not.toBeInTheDocument();
   });
 
   it('creates a rectangle, reorders annotations, and deletes the selected one', async () => {
@@ -108,15 +119,16 @@ describe('ImageAnnotationEditor', () => {
   });
 });
 
-function Harness({ onClose = vi.fn(), initialAnnotations = [], onUploadSupplement = vi.fn() }: {
+function Harness({ onClose = vi.fn(), initialAnnotations = [], onUploadSupplement = vi.fn(), focusAnnotationId }: {
   onClose?: () => void;
   initialAnnotations?: CanvasNode<'image'>['data']['annotations'];
   onUploadSupplement?: (file: File) => Promise<{ assetId: string; url: string; alt: string }>;
+  focusAnnotationId?: string;
 }) {
   const [data, setData] = useState<CanvasNode<'image'>['data']>({ ...imageNode.data, annotations: initialAnnotations });
   const annotations = data.annotations ?? [];
   return <>
-    <ImageAnnotationEditor node={{ ...imageNode, data }} nodes={[imageNode, target]} onChange={setData} onUploadSupplement={onUploadSupplement} onClose={onClose} />
+    <ImageAnnotationEditor node={{ ...imageNode, data }} nodes={[imageNode, target]} {...(focusAnnotationId ? { focusAnnotationId } : {})} onChange={setData} onUploadSupplement={onUploadSupplement} onClose={onClose} />
     <output data-testid="annotation-state">{annotations.map((item) => `${item.title}:${item.region.x.toFixed(3)},${item.region.y.toFixed(3)},${item.camera?.zoom ?? 0}:${item.supplementalImages?.map((image) => image.caption ?? image.alt).join(',') ?? ''}`).join('|')}</output>
   </>;
 }

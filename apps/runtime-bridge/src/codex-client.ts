@@ -589,8 +589,13 @@ export class CodexRuntime {
     try {
       const normalized = removeStructuredOutputNullPlaceholders(JSON.parse(value.text));
       context.structuredOutput = parseStructuredOutput(context.outputKind, normalized);
-    } catch {
-      this.#fail(context, invalidOutputCode(context.outputKind), false);
+    } catch (error) {
+      this.#fail(
+        context,
+        invalidOutputCode(context.outputKind),
+        false,
+        structuredOutputFailureMessage(error),
+      );
     }
   }
 
@@ -679,11 +684,16 @@ export class CodexRuntime {
     context.queue.push(event);
   }
 
-  #fail(context: RunContext, code: string, retryable: boolean): void {
+  #fail(
+    context: RunContext,
+    code: string,
+    retryable: boolean,
+    message = 'Codex 运行时拒绝了不安全、无效或未完成的输出。',
+  ): void {
     if (context.terminal) return;
     this.#push(context, 'FAILED', {
       code,
-      message: 'Codex 运行时拒绝了不安全、无效或未完成的输出。',
+      message,
       retryable,
     });
     this.#finish(context);
@@ -893,6 +903,23 @@ function parseStructuredOutput(
   if (outputKind === 'TASK_FINDING') return TaskFindingV1Schema.parse(value);
   if (outputKind === 'GUIDE_DIGEST') return GuideDigestDraftV1Schema.parse(value);
   return AgentInternalAnswerV1Schema.parse(value);
+}
+
+function structuredOutputFailureMessage(error: unknown): string | undefined {
+  if (!(error instanceof z.ZodError)) return undefined;
+  const issues = error.issues.slice(0, 8).map((issue) => {
+    const path = issue.path.length === 0
+      ? '$'
+      : issue.path.map((segment) => (
+        typeof segment === 'number' && Number.isSafeInteger(segment)
+          ? String(segment)
+          : String(segment).replace(/[^A-Za-z0-9_-]/gu, '_')
+      )).join('.');
+    const code = String(issue.code).replace(/[^A-Za-z0-9_-]/gu, '_');
+    return `${path}:${code}`;
+  });
+  if (issues.length === 0) return '结构化输出校验失败。';
+  return `结构化输出校验失败：${issues.join(', ')}`.slice(0, 450);
 }
 
 function invalidOutputCode(outputKind: BridgeOutputKindV1): string {

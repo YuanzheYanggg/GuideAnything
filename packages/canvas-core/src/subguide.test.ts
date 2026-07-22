@@ -389,6 +389,33 @@ describe('expandSubguide', () => {
     const reopened = setSubguideExpanded(collapsed, 'ref-1', true);
     expect(reopened.nodes.find((node) => node.id === nestedDerived.id)?.hidden).toBe(false);
   });
+
+  it('drops expanded artifacts whose subguide reference is already missing', () => {
+    const sourceTrace = {
+      referenceNodeId: 'missing-reference',
+      sourceGuideId: 'guide-source',
+      sourceVersionId: 'version-1',
+      sourceElementId: 'source-step',
+    };
+    const orphanId = 'ref:missing-reference:source-step';
+    const corrupted: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [{ id: orphanId, type: 'process', position: { x: 0, y: 0 }, zIndex: 0, source: sourceTrace, data: { label: '孤儿步骤', shape: 'process' } }],
+      edges: [{ id: 'orphan-edge', source: orphanId, target: orphanId, sourceTrace }],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      steps: [{ id: 'orphan-step', order: 0, title: '孤儿步骤', nodeId: orphanId, source: sourceTrace }],
+      entryNodeId: orphanId,
+      exitNodeIds: [orphanId],
+    };
+
+    const repaired = reconcileSubguideEdges(corrupted);
+
+    expect(repaired.nodes).toEqual([]);
+    expect(repaired.edges).toEqual([]);
+    expect(repaired.steps).toEqual([]);
+    expect(repaired.entryNodeId).toBeUndefined();
+    expect(repaired.exitNodeIds).toEqual([]);
+  });
 });
 
 function addEdge(document: CanvasDocument, edge: CanvasEdge): CanvasDocument {

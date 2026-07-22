@@ -1,5 +1,7 @@
 import { useEffect } from 'react';
 
+import { EditorDialogSurface } from './EditorDialogSurface';
+
 export function HierarchyDeletionDialog({
   kind,
   title,
@@ -25,8 +27,13 @@ export function HierarchyDeletionDialog({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onCancel]);
 
-  return <div className="modal-backdrop hierarchy-deletion-backdrop" role="presentation">
-    <section className="reference-modal hierarchy-deletion-dialog" role="dialog" aria-modal="true" aria-labelledby="hierarchy-deletion-title">
+  return <EditorDialogSurface
+    className="reference-modal hierarchy-deletion-dialog"
+    backdropClassName="hierarchy-deletion-backdrop"
+    ariaLabelledBy="hierarchy-deletion-title"
+    closeLabel="关闭删除确认"
+    onClose={onCancel}
+  >
       <span className="eyebrow">REMOVE {kind === 'stage' ? 'STAGE' : 'LANE'}</span>
       <h2 id="hierarchy-deletion-title">{heading}</h2>
       <p>将解除 {affectedNodeCount} 个流程节点的归属；节点与连线会保留。</p>
@@ -34,6 +41,5 @@ export function HierarchyDeletionDialog({
         <button className="secondary-button" type="button" onClick={onCancel}>取消删除</button>
         <button className="primary-button" type="button" onClick={onConfirm} aria-label={'确认删除' + title}>确认删除</button>
       </div>
-    </section>
-  </div>;
+  </EditorDialogSurface>;
 }

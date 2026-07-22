@@ -114,6 +114,20 @@ describe('compileFlowKnowledgeSnapshotV1', () => {
     expect(snapshot.diagnostics.danglingTargetNodeIds).toEqual(['missing-target']);
   });
 
+  it('omits hidden resources from legacy attachments while keeping visible resources', () => {
+    const document = flowDocument();
+    const snapshot = compileFlowKnowledgeSnapshotV1(input({
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'image'
+        ? { ...node, visibility: 'HIDDEN' as const }
+        : node),
+    }));
+    const attachmentIds = snapshot.nodes.flatMap((node) => node.attachments).map((attachment) => attachment.nodeId);
+
+    expect(attachmentIds).not.toContain('image');
+    expect(attachmentIds).toContain('note');
+  });
+
   it('excludes derived nodes and source-traced presentation edges', () => {
     const snapshot = compileFlowKnowledgeSnapshotV1(input(flowDocument()));
 
@@ -256,6 +270,28 @@ describe('compileFlowKnowledgeSnapshotV2', () => {
       invalidLearningTargetIds: ['derived-helper'],
       excludedDerivedNodeIds: ['derived-helper'],
     });
+  });
+
+  it('omits hidden resources from the snapshot, relations, learning path, and diagnostics', () => {
+    const document = currentCanvasDocument();
+    const snapshot = compileFlowKnowledgeSnapshotV2(input({
+      ...document,
+      nodes: document.nodes.map((node) => node.id === 'image-proof'
+        ? { ...node, visibility: 'HIDDEN' as const }
+        : node),
+    }));
+
+    expect(snapshot.resources.map((resource) => resource.id)).not.toContain('image-proof');
+    expect(snapshot.relations.some((relation) => (
+      ('resourceId' in relation && relation.resourceId === 'image-proof')
+      || ('sourceResourceId' in relation && relation.sourceResourceId === 'image-proof')
+      || ('targetResourceId' in relation && relation.targetResourceId === 'image-proof')
+    ))).toBe(false);
+    expect(snapshot.learningPath).not.toContainEqual(expect.objectContaining({ targetResourceId: 'image-proof' }));
+    expect(snapshot.diagnostics.danglingFlowEdgeIds).not.toContain('use-image-collect');
+    expect(snapshot.diagnostics.danglingFlowEdgeIds).not.toContain('use-image-review');
+    expect(snapshot.diagnostics.invalidResourceRelationIds).not.toContain('keypoint-proof');
+    expect(snapshot.diagnostics.invalidLearningTargetIds).not.toContain('image-proof');
   });
 
   it('normalizes duplicate Canvas lesson orders after preserving their stable sequence', () => {

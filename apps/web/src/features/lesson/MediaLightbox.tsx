@@ -7,7 +7,7 @@ import { useMediaSource } from '../nodes/useMediaSource';
 import { ImageAnnotationPlayer } from './ImageAnnotationPlayer';
 
 export type MediaPreview =
-  | { kind: 'image'; node: CanvasNode<'image'>; initialAnnotationIndex?: number }
+  | { kind: 'image'; node: CanvasNode<'image'>; initialAnnotationIndex?: number; initialAnnotationId?: string }
   | { kind: 'annotation-supplement'; supplement: ImageAnnotationSupplement }
   | { kind: 'video'; node: CanvasNode<'video'> }
   | { kind: 'markdown'; node: CanvasNode<'markdown'> }
@@ -72,7 +72,7 @@ function ImagePreview({ preview, onOpenTarget, onOpenSupplement, isTargetValid }
   const source = useMediaSource(preview.node.data.url);
   if (!source) return <p className="error-message">图片载入失败</p>;
   if ((preview.node.data.annotations?.length ?? 0) === 0) return <figure className="plain-image-preview"><img src={source} alt={preview.node.data.alt} />{preview.node.data.caption ? <figcaption>{preview.node.data.caption}</figcaption> : null}</figure>;
-  return <ImageAnnotationPlayer source={source} data={preview.node.data} {...(preview.initialAnnotationIndex !== undefined ? { initialIndex: preview.initialAnnotationIndex } : {})} isTargetValid={isTargetValid} onOpenTarget={onOpenTarget} {...(onOpenSupplement ? { onOpenSupplement } : {})} />;
+  return <ImageAnnotationPlayer source={source} data={preview.node.data} {...(preview.initialAnnotationIndex !== undefined ? { initialIndex: preview.initialAnnotationIndex } : {})} {...(preview.initialAnnotationId !== undefined ? { initialAnnotationId: preview.initialAnnotationId } : {})} isTargetValid={isTargetValid} onOpenTarget={onOpenTarget} {...(onOpenSupplement ? { onOpenSupplement } : {})} />;
 }
 
 function AnnotationSupplementPreview({ supplement }: { supplement: ImageAnnotationSupplement }) {

@@ -242,8 +242,8 @@ describe('guide lifecycle', () => {
     });
     expect(history.statusCode).toBe(200);
     expect(history.json().items).toEqual([
-      expect.objectContaining({ revision: 2, summary: '第二版摘要', savedBy: { id: context.userIds.author, displayName: '王作者' } }),
-      expect.objectContaining({ revision: 1, summary: '第一版摘要', savedBy: { id: context.userIds.author, displayName: '王作者' } }),
+      expect.objectContaining({ revision: 2, summary: '第二版摘要', changeSummary: expect.stringContaining('更新了指南摘要'), savedBy: { id: context.userIds.author, displayName: '王作者' } }),
+      expect.objectContaining({ revision: 1, summary: '第一版摘要', changeSummary: '初始草稿', savedBy: { id: context.userIds.author, displayName: '王作者' } }),
     ]);
     expect(history.body).not.toContain('"nodes"');
 

@@ -1,0 +1,265 @@
+- main [ref=e33]:
+  - generic [ref=e34]:
+    - generic [ref=e35]:
+      - button "返回资料库" [ref=e36] [cursor=pointer]: ←
+      - generic [ref=e37]:
+        - textbox "指南标题" [disabled] [ref=e38]: 打样提案流程
+        - generic [ref=e39]: 已发布 v2 · 已保存
+      - region "指南信息" [ref=e40]:
+        - generic [ref=e41]: GUIDE DETAILS
+        - generic [ref=e42]:
+          - generic [ref=e43]: 摘要
+          - textbox "摘要" [disabled] [ref=e44]: 本流程从收到客人提案需求开始，进入确认原料，并提供 ERP 操作说明、界面截图及操作演示资料。
+        - generic [ref=e45]:
+          - generic [ref=e46]: 标签
+          - textbox "标签" [disabled] [ref=e47]: ERP，原料，打样
+        - button "生成指南总览" [disabled] [ref=e48]
+      - generic [ref=e49]:
+        - group "外观" [ref=e50]:
+          - button "切换到系统" [ref=e51] [cursor=pointer]: 系统
+          - button "切换到浅色" [ref=e52] [cursor=pointer]: 浅色
+          - button "当前为深色" [pressed] [ref=e53] [cursor=pointer]: 深色
+        - button "草稿历史" [disabled] [ref=e54]
+        - button "保存草稿" [disabled] [ref=e55]
+        - button "发布指南" [disabled] [ref=e56]
+    - generic "画布工具栏" [ref=e57]:
+      - button "添加开始节点" [disabled] [ref=e58]: 开始
+      - button "添加流程节点" [disabled] [ref=e59]: 流程
+      - button "添加判断节点" [disabled] [ref=e60]: 判断
+      - button "添加数据节点" [disabled] [ref=e61]: 数据
+      - button "添加 Markdown 节点" [disabled] [ref=e62]: Markdown
+      - button "添加图片节点" [disabled] [ref=e63]: 图片
+      - button "添加视频节点" [disabled] [ref=e64]: 视频
+      - button "撤销" [disabled] [ref=e66]: ↶
+      - button "重做" [disabled] [ref=e67]: ↷
+      - button "复制选中节点" [disabled] [ref=e68]: 复制
+      - button "粘贴节点" [disabled] [ref=e69]: 粘贴
+      - button "左对齐选中节点" [disabled] [ref=e70]: 左对齐
+      - button "预览自动整理" [disabled] [ref=e71]: 自动整理
+      - button "置于顶层" [disabled] [ref=e72]: 置顶
+      - button "置于底层" [disabled] [ref=e73]: 置底
+      - button "删除选中项" [disabled] [ref=e74]: 删除
+      - button "插入子指南" [disabled] [ref=e76]: ＋ 插入子指南
+      - status [ref=e219]:
+        - generic [ref=e220]:
+          - generic [ref=e221]: 阶段从上到下 · 阶段内从左到右
+          - generic [ref=e222]:
+            - generic [ref=e223]: 主流程 3
+            - generic [ref=e224]: 阶段 3
+            - generic [ref=e225]: 泳道 3
+            - generic [ref=e226]: 已挂靠资料 3
+            - generic [ref=e227]: 未挂靠资料 0
+            - generic [ref=e228]: 孤立节点 0
+            - generic [ref=e229]: 循环 0
+            - generic [ref=e230]: 回流 0
+            - generic [ref=e231]: 避障 1
+          - generic [ref=e232]: 入口 → 阶段 → 分支与回流 → 资料
+        - button "应用自动整理" [ref=e233] [cursor=pointer]
+        - button "取消自动整理" [ref=e234] [cursor=pointer]: 取消
+    - generic [ref=e77]:
+      - complementary:
+        - generic:
+          - generic:
+            - generic: FLOW STRUCTURE
+            - strong: 业务流程
+            - generic: 6 个教学步骤
+        - generic:
+          - generic:
+            - button:
+              - generic: 业务阶段
+              - strong: "3"
+              - generic: 管理 ›
+            - button:
+              - generic: 责任泳道
+              - strong: "3"
+              - generic: 管理 ›
+          - tree:
+            - treeitem [expanded]:
+              - button [expanded]:
+                - generic: 客人提案阶段
+                - generic: "3"
+                - generic: ⌄
+              - group:
+                - generic:
+                  - button:
+                    - generic: "1"
+                    - generic: 收到客人提案需求，可以是邮件或者微信
+                - generic:
+                  - button:
+                    - generic: "2"
+                    - generic: 操作步骤
+                - generic:
+                  - button:
+                    - generic: "3"
+                    - generic: 确认原料
+                  - generic:
+                    - button:
+                      - generic: ›
+                      - generic: 资料附录 · 3
+            - treeitem [expanded]:
+              - button [expanded]:
+                - generic: 供应商，原辅料采购
+                - generic: "0"
+                - generic: ⌄
+              - group:
+                - paragraph: 还没有流程节点
+            - treeitem [expanded]:
+              - button [expanded]:
+                - generic: 打样阶段
+                - generic: "0"
+                - generic: ⌄
+              - group:
+                - paragraph: 还没有流程节点
+            - treeitem [expanded]:
+              - button [expanded]:
+                - generic: 未分阶段
+                - generic: "0"
+                - generic: ⌄
+              - group:
+                - paragraph: 还没有流程节点
+            - treeitem:
+              - generic:
+                - text: 未挂靠资料
+                - generic: "0"
+              - group:
+                - paragraph: 所有资料都已挂靠
+      - region "无限画布编辑区" [ref=e78]:
+        - button "展开业务流程" [ref=e79] [cursor=pointer]
+        - application [ref=e82]:
+          - generic [ref=e84]:
+            - generic:
+              - generic:
+                - img:
+                  - img "Edge from start-c1439a96-00f6-45c5-9ff0-b70cf2feba52 to process-c7d5941d-d670-4993-82c2-6392d89028e9" [ref=e235]
+                - img:
+                  - img "Edge from process-c7d5941d-d670-4993-82c2-6392d89028e9 to process-05934e20-56e1-4702-84b7-6e71f7b90736" [ref=e238]
+                - img:
+                  - img "Edge from process-05934e20-56e1-4702-84b7-6e71f7b90736 to markdown-7ea2a63e-117b-48da-b8a7-52bcc07bb068":
+                    - generic [ref=e91]: 资料 ×3
+              - generic:
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=e95]
+                    - generic "终点连接面 TOP" [ref=e96]
+                    - generic "起点连接面 RIGHT" [ref=e97]
+                    - generic "终点连接面 RIGHT" [ref=e98]
+                    - generic "起点连接面 BOTTOM" [ref=e99]
+                    - generic "终点连接面 BOTTOM" [ref=e100]
+                    - generic "起点连接面 LEFT" [ref=e101]
+                    - generic "终点连接面 LEFT" [ref=e102]
+                    - generic: START · 1
+                    - strong: 收到客人提案需求，可以是邮件或者微信
+                    - button "编辑收到客人提案需求，可以是邮件或者微信 · 节点明细"
+                    - generic:
+                      - generic: 业务
+                      - emphasis: 角色
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=e111]
+                    - generic "终点连接面 TOP" [ref=e112]
+                    - generic "起点连接面 RIGHT" [ref=e113]
+                    - generic "终点连接面 RIGHT" [ref=e114]
+                    - generic "起点连接面 BOTTOM" [ref=e115]
+                    - generic "终点连接面 BOTTOM" [ref=e116]
+                    - generic "起点连接面 LEFT" [ref=e117]
+                    - generic "终点连接面 LEFT" [ref=e118]
+                    - generic: PROCESS · 3
+                    - strong: 确认原料
+                    - button "编辑确认原料 · 节点明细":
+                      - generic:
+                        - list:
+                          - listitem: 确认原料的供应商
+                    - button "详情"
+                    - generic:
+                      - generic: 业务
+                      - emphasis: 角色
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=e132]
+                    - generic "终点连接面 TOP" [ref=e133]
+                    - generic "起点连接面 RIGHT" [ref=e134]
+                    - generic "终点连接面 RIGHT" [ref=e135]
+                    - generic "起点连接面 BOTTOM" [ref=e136]
+                    - generic "终点连接面 BOTTOM" [ref=e137]
+                    - generic "起点连接面 LEFT" [ref=e138]
+                    - generic "终点连接面 LEFT" [ref=e139]
+                    - generic: MARKDOWN
+                    - generic:
+                      - heading "操作说明" [level=2]
+                      - paragraph: 在这里填写 ERP 操作步骤和字段规则。
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=e147]
+                    - generic "终点连接面 TOP" [ref=e148]
+                    - generic "起点连接面 RIGHT" [ref=e149]
+                    - generic "终点连接面 RIGHT" [ref=e150]
+                    - generic "起点连接面 BOTTOM" [ref=e151]
+                    - generic "终点连接面 BOTTOM" [ref=e152]
+                    - generic "起点连接面 LEFT" [ref=e153]
+                    - generic "终点连接面 LEFT" [ref=e154]
+                    - generic: IMAGE
+                    - img "ERP 操作界面截图"
+                    - paragraph: 进入ERP系统-> 打样系统-> 样板单界面
+                    - generic: 8 个标注 · 0 个关联资料
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=e162]
+                    - generic "终点连接面 TOP" [ref=e163]
+                    - generic "起点连接面 RIGHT" [ref=e164]
+                    - generic "终点连接面 RIGHT" [ref=e165]
+                    - generic "起点连接面 BOTTOM" [ref=e166]
+                    - generic "终点连接面 BOTTOM" [ref=e167]
+                    - generic "起点连接面 LEFT" [ref=e168]
+                    - generic "终点连接面 LEFT" [ref=e169]
+                    - generic: VIDEO
+                    - generic:
+                      - generic "ERP 操作演示"
+                      - paragraph: ERP 操作演示
+                      - generic:
+                        - button "跳转到 00:01": 00:01打开菜单
+                        - button "跳转到 00:10": 00:10新选择
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=e180]
+                    - generic "终点连接面 TOP" [ref=e181]
+                    - generic "起点连接面 RIGHT" [ref=e182]
+                    - generic "终点连接面 RIGHT" [ref=e183]
+                    - generic "起点连接面 BOTTOM" [ref=e184]
+                    - generic "终点连接面 BOTTOM" [ref=e185]
+                    - generic "起点连接面 LEFT" [ref=e186]
+                    - generic "终点连接面 LEFT" [ref=e187]
+                    - generic: PROCESS · 2
+                    - strong: 操作步骤
+                    - button "编辑操作步骤 · 节点明细"
+                    - generic:
+                      - generic: 工艺员
+                      - emphasis: 角色
+                    - generic "输出端口"
+              - generic:
+                - generic: 资料附录 · 3
+                - generic: 客人提案阶段
+                - generic: 供应商，原辅料采购
+                - generic: 打样阶段
+          - img "Mini Map" [ref=e195]
+          - generic "Control Panel" [ref=e202]:
+            - button "Zoom In" [ref=e203] [cursor=pointer]
+            - button "Zoom Out" [ref=e206] [cursor=pointer]
+            - button "Fit View" [ref=e209] [cursor=pointer]
+          - link "React Flow attribution" [ref=e213] [cursor=pointer]:
+            - /url: https://reactflow.dev/attribution
+            - text: React Flow
+      - complementary "节点属性" [ref=e215]:
+        - generic [ref=e216]:
+          - strong [ref=e217]: 选择一个节点
+          - paragraph [ref=e218]: 在这里编辑内容、媒体、步骤和子指南。

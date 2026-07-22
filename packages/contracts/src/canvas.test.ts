@@ -38,6 +38,37 @@ describe('CanvasDocumentSchema', () => {
     expect(CanvasDocumentSchema.safeParse(hierarchyDocument()).success).toBe(true);
   });
 
+  it('accepts hidden visibility on resources and rejects it on flow nodes', () => {
+    const hiddenResource = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      nodes: [
+        hierarchyDocument().nodes[0],
+        { ...hierarchyDocument().nodes[1], visibility: 'HIDDEN' },
+      ],
+    }));
+    const hiddenFlowNode = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      nodes: [
+        { ...hierarchyDocument().nodes[0], visibility: 'HIDDEN' },
+        hierarchyDocument().nodes[1],
+      ],
+    }));
+    const hiddenDerivedResource = CanvasDocumentSchema.safeParse(hierarchyDocument({
+      nodes: [
+        hierarchyDocument().nodes[0],
+        {
+          ...hierarchyDocument().nodes[1],
+          contentParentId: undefined,
+          source: sourceTrace('reference-1', 'source-note'),
+          visibility: 'HIDDEN',
+        },
+      ],
+    }));
+
+    expect(hiddenResource.success).toBe(true);
+    expect(hiddenResource.success && hiddenResource.data.nodes[1]).toMatchObject({ visibility: 'HIDDEN' });
+    expect(hiddenFlowNode.success).toBe(false);
+    expect(hiddenDerivedResource.success).toBe(false);
+  });
+
   it('accepts mixed role and system lanes on a source-free primary', () => {
     const result = CanvasDocumentSchema.safeParse(hierarchyDocument({
       lanes: [

@@ -230,6 +230,9 @@ export function replaceSubguideReference(
 }
 
 export function reconcileSubguideEdges(document: CanvasDocument): CanvasDocument {
+  const withoutOrphans = removeOrphanedSubguideArtifacts(document);
+  if (withoutOrphans !== document) return reconcileSubguideEdges(withoutOrphans);
+
   const edgesById = new Map(document.edges.map((edge) => [edge.id, edge]));
   const outgoingBySource = new Map<string, CanvasEdge[]>();
   for (const edge of document.edges) {
@@ -410,6 +413,58 @@ export function reconcileSubguideEdges(document: CanvasDocument): CanvasDocument
   });
 
   return changed ? { ...document, nodes: normalizedNodes, edges: normalizedEdges } : document;
+}
+
+function removeOrphanedSubguideArtifacts(document: CanvasDocument): CanvasDocument {
+  const referenceIds = new Set(document.nodes.filter((node) => node.type === 'subguide').map((node) => node.id));
+  const orphanReferenceIds = new Set<string>();
+  const removedNodeIds = new Set<string>();
+
+  document.edges.forEach((edge) => {
+    const referenceNodeId = edge.sourceTrace?.referenceNodeId;
+    if (referenceNodeId && !referenceIds.has(referenceNodeId)) orphanReferenceIds.add(referenceNodeId);
+  });
+  document.steps.forEach((step) => {
+    const referenceNodeId = step.source?.referenceNodeId;
+    if (referenceNodeId && !referenceIds.has(referenceNodeId)) orphanReferenceIds.add(referenceNodeId);
+  });
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    document.nodes.forEach((node) => {
+      const referenceNodeId = node.source?.referenceNodeId;
+      if (!referenceNodeId || (referenceIds.has(referenceNodeId) && !orphanReferenceIds.has(referenceNodeId))) return;
+      if (!removedNodeIds.has(node.id)) {
+        removedNodeIds.add(node.id);
+        changed = true;
+      }
+      if (node.type === 'subguide' && !orphanReferenceIds.has(node.id)) {
+        orphanReferenceIds.add(node.id);
+        changed = true;
+      }
+    });
+  }
+
+  if (removedNodeIds.size === 0 && orphanReferenceIds.size === 0) return document;
+  const nodes = document.nodes.filter((node) => !removedNodeIds.has(node.id));
+  const edges = document.edges.filter((edge) => (
+    !removedNodeIds.has(edge.source)
+    && !removedNodeIds.has(edge.target)
+    && !orphanReferenceIds.has(edge.sourceTrace?.referenceNodeId ?? '')
+  ));
+  const steps = document.steps.filter((step) => (
+    !removedNodeIds.has(step.nodeId)
+    && !orphanReferenceIds.has(step.source?.referenceNodeId ?? '')
+  ));
+  return {
+    ...document,
+    nodes,
+    edges,
+    steps,
+    entryNodeId: document.entryNodeId && !removedNodeIds.has(document.entryNodeId) ? document.entryNodeId : undefined,
+    exitNodeIds: document.exitNodeIds.filter((id) => !removedNodeIds.has(id)),
+  };
 }
 
 function findExitNodes(state: ReferenceState, internallyOutgoingNodeIds: Set<string>): CanvasNode[] {

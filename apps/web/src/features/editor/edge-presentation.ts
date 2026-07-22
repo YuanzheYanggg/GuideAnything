@@ -1,4 +1,4 @@
-import type { CanvasDocument, CanvasEdge, EdgeAnchor, EdgePresentation } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, EdgeAnchor, EdgePresentation, EdgeRouting } from '@guideanything/contracts';
 import { MarkerType } from '@xyflow/react';
 import type { CSSProperties } from 'react';
 
@@ -28,6 +28,24 @@ export function resolveEdgeVisuals(presentation: EdgePresentation | undefined): 
     ...(arrows === 'reverse' || arrows === 'both' ? { markerStart: { type: MarkerType.ArrowClosed } } : {}),
     ...(arrows === 'forward' || arrows === 'both' ? { markerEnd: { type: MarkerType.ArrowClosed } } : {}),
   };
+}
+
+/**
+ * A routing choice is an explicit request to leave manual geometry behind.
+ * Keeping old waypoints or endpoint anchors here makes the renderer continue
+ * drawing the previous route even though the toolbar says straight/smart.
+ */
+export function edgePresentationForRouting(presentation: EdgePresentation | undefined, routing: EdgeRouting): EdgePresentation {
+  const {
+    routeMode: _routeMode,
+    waypoints: _waypoints,
+    sourceAnchor: _sourceAnchor,
+    sourceAnchorMode: _sourceAnchorMode,
+    targetAnchor: _targetAnchor,
+    targetAnchorMode: _targetAnchorMode,
+    ...automaticPresentation
+  } = { ...presentation, routing };
+  return automaticPresentation;
 }
 
 function edgeStrokeColor(color: EdgePresentation['color']): string {

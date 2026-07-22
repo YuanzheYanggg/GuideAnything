@@ -1,4 +1,4 @@
-import type { CanvasNode } from '@guideanything/contracts';
+import type { CanvasNode, CanvasResourceVisibility } from '@guideanything/contracts';
 import type { NodeProps } from '@xyflow/react';
 import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -13,6 +13,6 @@ export function MarkdownNodeView({ data }: { data: CanvasNode<'markdown'>['data'
 }
 
 export const MarkdownNode = memo(function MarkdownNode({ id, data, selected, width, height }: NodeProps) {
-  const value = data as CanvasNode<'markdown'>['data'];
-  return <NodeChrome nodeId={id} selected={selected} tone="markdown" width={width} height={height}><span className="node-kicker">MARKDOWN</span><InlineNodeTextEditor nodeId={id} field="markdown" value={value.markdown} label="Markdown 内容" multiline><MarkdownNodeView data={value} /></InlineNodeTextEditor></NodeChrome>;
+  const value = data as CanvasNode<'markdown'>['data'] & { resourceVisibility?: CanvasResourceVisibility };
+  return <NodeChrome nodeId={id} selected={selected} tone="markdown" width={width} height={height} resourceVisibility={value.resourceVisibility}><span className="node-kicker">MARKDOWN</span><InlineNodeTextEditor nodeId={id} field="markdown" value={value.markdown} label="Markdown 内容" multiline><MarkdownNodeView data={value} /></InlineNodeTextEditor></NodeChrome>;
 });

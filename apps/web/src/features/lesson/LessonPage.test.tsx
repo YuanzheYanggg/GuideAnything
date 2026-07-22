@@ -64,6 +64,27 @@ describe('LessonPage', () => {
     expect(resourcesForStep(document, 'first').map((node) => node.id)).toEqual(['note']);
   });
 
+  it('omits hidden resources from lesson steps and attached resource content', () => {
+    const document: GuideVersionSnapshot['document'] = {
+      ...hierarchyVersion.document,
+      steps: [
+        ...hierarchyVersion.document.steps,
+        { id: 'step-hidden-note', order: 3, title: '隐藏资料', nodeId: 'hidden-resource' },
+      ],
+      nodes: [
+        ...hierarchyVersion.document.nodes,
+        { id: 'hidden-resource', type: 'markdown', contentParentId: 'intro', visibility: 'HIDDEN' as const, position: { x: 360, y: 360 }, zIndex: 5, data: { markdown: '# 不应出现' } },
+      ],
+    };
+
+    expect(lessonStepsForDocument(document).map((step) => step.nodeId)).not.toContain('hidden-resource');
+    expect(resourcesForStep(document, 'intro').map((node) => node.id)).not.toContain('hidden-resource');
+    expect(toLessonFlowEdges({
+      ...document,
+      edges: [...document.edges, { id: 'hidden-resource-edge', source: 'intro', target: 'hidden-resource' }],
+    })).not.toContainEqual(expect.objectContaining({ id: 'hidden-resource-edge' }));
+  });
+
   it('derives orthogonal route data for the published flow map', () => {
     const edges = toLessonFlowEdges(version.document);
 
@@ -209,6 +230,40 @@ describe('LessonPage', () => {
     await user.click(screen.getByRole('button', { name: '关闭媒体预览' }));
     expect(screen.queryByRole('dialog', { name: '图片预览' })).not.toBeInTheDocument();
     expect(screen.getByText('步骤 1 / 1')).toBeVisible();
+  });
+
+  it('opens a deep-linked image annotation directly at its requested marker', async () => {
+    const annotatedImageVersion: GuideVersionSnapshot = {
+      ...version,
+      id: 'annotated-image-version',
+      document: {
+        ...version.document,
+        nodes: [{
+          id: 'image',
+          type: 'image',
+          position: { x: 0, y: 0 },
+          zIndex: 0,
+          data: {
+            url: 'https://example.com/erp.png',
+            alt: 'ERP 打样页面',
+            annotations: [
+              { id: 'customer', order: 0, title: '客户要求', shape: 'POINT', region: { x: 0.2, y: 0.3 } },
+              { id: 'version-type', order: 1, title: '版类型', shape: 'POINT', region: { x: 0.7, y: 0.5 } },
+            ],
+          },
+        }],
+        edges: [],
+        steps: [{ id: 'step-image', order: 0, title: '查看打样页面', nodeId: 'image' }],
+        entryNodeId: 'image',
+        exitNodeIds: ['image'],
+      },
+    };
+
+    render(<LessonPage versionId={annotatedImageVersion.id} focusNodeId="image" focusAnnotationId="version-type" api={{ getVersion: vi.fn().mockResolvedValue(annotatedImageVersion) }} onBack={vi.fn()} />);
+
+    const dialog = await screen.findByRole('dialog', { name: '图片预览' });
+    expect(within(dialog).getByRole('heading', { name: '版类型' })).toBeVisible();
+    expect(within(dialog).getByText('讲解 2 / 2')).toBeVisible();
   });
 
   it('renders connection handles for published flow edges and decision branches', async () => {

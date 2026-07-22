@@ -5,10 +5,12 @@ import type {
   ConversationAttachmentSummaryV1,
   ConversationDetailV1,
   ConversationSummaryV1,
+  FlowRegressionReferenceEligibilityV1,
   SendConversationMessageRequestV1,
   SendGlobalConversationMessageRequestV1,
   SourceOptionsV1,
   SteerAgentRunRequestV1,
+  WorkspaceFlowRegressionCaseV1,
 } from '@guideanything/contracts';
 
 export type {
@@ -35,4 +37,6 @@ export interface AgentApi {
   streamRun: (eventsPath: string, options: { afterSequence?: number; signal: AbortSignal }) => AsyncIterable<AgentRunEventV1>;
   cancelRun: (runId: string, reason?: string) => Promise<AgentRunSnapshotV1>;
   steerRun: (runId: string, request: SteerAgentRunRequestV1) => Promise<AgentRunSnapshotV1>;
+  getFlowRegressionReferenceEligibility: (referenceId: string) => Promise<FlowRegressionReferenceEligibilityV1>;
+  createFlowRegressionCase: (referenceId: string) => Promise<WorkspaceFlowRegressionCaseV1>;
 }

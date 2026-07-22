@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
+import { EditorDialogSurface } from './EditorDialogSurface';
+
 export function NodeDetailDialog({
   nodeId,
   title,
@@ -28,8 +30,13 @@ export function NodeDetailDialog({
     openerRef.current?.focus();
   };
 
-  return <div className="modal-backdrop node-detail-backdrop" role="presentation">
-    <section className="node-detail-dialog" role="dialog" aria-modal="true" aria-labelledby={'node-detail-title-' + nodeId}>
+  return <EditorDialogSurface
+    className="node-detail-dialog"
+    backdropClassName="node-detail-backdrop"
+    ariaLabelledBy={'node-detail-title-' + nodeId}
+    closeLabel="关闭节点明细"
+    onClose={() => close(false)}
+  >
       <span className="eyebrow">FLOW DETAIL</span>
       <h2 id={'node-detail-title-' + nodeId}>编辑节点明细</h2>
       <label>{title} · 节点明细
@@ -57,6 +64,5 @@ export function NodeDetailDialog({
         <button className="secondary-button" type="button" onClick={() => close(false)}>取消</button>
         <button className="primary-button" type="button" onClick={() => close(true)}>保存</button>
       </div>
-    </section>
-  </div>;
+  </EditorDialogSurface>;
 }

@@ -1,14 +1,17 @@
 import {
   AgentCommittedAnswerV1Schema,
+  AgentRetrievalDiagnosticV1Schema,
   PublicReferenceV1Schema,
   ValidatedEvidenceV1Schema,
+  type AgentRetrievalDiagnosticV1,
 } from '@guideanything/contracts';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import type {
   AgentOutputCommitter,
   CommitAgentOutputInput,
+  AgentRetrievalTrace,
   ResolvedAgentReference,
 } from './orchestrator';
 import { recordWorkspaceQuestionGap } from './editorial-question-recorder';
@@ -26,6 +29,17 @@ interface CommitRunRow {
   workspace_id: string | null;
   conversation_status: 'ACTIVE' | 'ARCHIVED';
 }
+
+interface RegressionDiagnosticTarget {
+  case_id: string;
+  workspace_id: string;
+  guide_id: string;
+  resource_node_id: string;
+  annotation_id: string;
+  expected_agent_status: 'SUPPORTED' | 'PARTIAL';
+}
+
+const RETRIEVAL_DIAGNOSTIC_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export class DatabaseAgentOutputCommitter implements AgentOutputCommitter {
   readonly #createId: () => string;
@@ -77,6 +91,12 @@ export class DatabaseAgentOutputCommitter implements AgentOutputCommitter {
         ).run(messageId, run.conversation_id, expectedContent, now);
       }
       recordWorkspaceQuestionGap(this.database, { context: untrustedInput.context, answer });
+      const regression = this.findRegressionDiagnosticTarget(untrustedInput.context.runId);
+      if (regression && regression.workspace_id !== run.workspace_id) {
+        throw new Error('回归运行所属工作区与当前 Agent 运行不匹配');
+      }
+      this.recordRegressionAgentVerification(regression, answer, references, now);
+      this.persistRetrievalDiagnostic(untrustedInput, answer, run, now, regression);
       this.database.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?')
         .run(now, run.conversation_id);
       this.database.exec('COMMIT');
@@ -210,6 +230,89 @@ export class DatabaseAgentOutputCommitter implements AgentOutputCommitter {
       artifact.createdAt,
     );
   }
+
+  private persistRetrievalDiagnostic(
+    input: CommitAgentOutputInput,
+    answer: CommitAgentOutputInput['answer'],
+    run: CommitRunRow,
+    now: string,
+    regression: RegressionDiagnosticTarget | null,
+  ): void {
+    if (answer.evidenceStatus === 'SUPPORTED' && !regression) return;
+    if (!input.retrievalTrace) return;
+
+    const expiresAt = new Date(Date.parse(now) + RETRIEVAL_DIAGNOSTIC_TTL_MS).toISOString();
+    const diagnostic = AgentRetrievalDiagnosticV1Schema.parse({
+      id: randomUUID(),
+      runId: input.context.runId,
+      guideId: regression?.guide_id ?? null,
+      targetResourceNodeId: regression?.resource_node_id ?? null,
+      targetAnnotationId: regression?.annotation_id ?? null,
+      queryFingerprint: fingerprintQuestion(input.context.text),
+      reasonCode: diagnosticReason(this.database, answer, input.retrievalTrace, regression),
+      candidates: input.retrievalTrace.candidates,
+      closure: input.retrievalTrace.closure,
+      createdAt: now,
+      expiresAt,
+    });
+
+    this.database.prepare('DELETE FROM agent_retrieval_diagnostics WHERE expires_at <= ?').run(now);
+    this.database.prepare(
+      `INSERT INTO agent_retrieval_diagnostics (
+        id, run_id, workspace_id, guide_id, target_resource_node_id, target_annotation_id,
+        query_fingerprint, reason_code, candidates_json, closure_json, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (run_id) DO NOTHING`,
+    ).run(
+      diagnostic.id,
+      diagnostic.runId,
+      run.workspace_id,
+      diagnostic.guideId,
+      diagnostic.targetResourceNodeId ?? null,
+      diagnostic.targetAnnotationId ?? null,
+      diagnostic.queryFingerprint,
+      diagnostic.reasonCode,
+      JSON.stringify(diagnostic.candidates),
+      JSON.stringify(diagnostic.closure),
+      diagnostic.createdAt,
+      diagnostic.expiresAt,
+    );
+  }
+
+  private recordRegressionAgentVerification(
+    regression: RegressionDiagnosticTarget | null,
+    answer: CommitAgentOutputInput['answer'],
+    references: readonly ResolvedAgentReference[],
+    now: string,
+  ): void {
+    if (!regression) return;
+    const citesTarget = references.some(({ evidence }) => {
+      const locator = evidence.locator;
+      return locator.kind === 'WORKSPACE_FLOW'
+        && locator.guideId === regression.guide_id
+        && locator.nodeId === regression.resource_node_id
+        && locator.annotationId === regression.annotation_id;
+    });
+    const verification = answer.evidenceStatus === regression.expected_agent_status && citesTarget
+      ? 'PASS'
+      : 'FAIL';
+    this.database.prepare(
+      `UPDATE workspace_flow_regression_cases
+       SET last_agent_verification = ?, updated_at = ?
+       WHERE id = ? AND workspace_id = ?`,
+    ).run(verification, now, regression.case_id, regression.workspace_id);
+  }
+
+  private findRegressionDiagnosticTarget(runId: string): RegressionDiagnosticTarget | null {
+    const row = this.database.prepare(
+      `SELECT regression.case_id, item.workspace_id, item.guide_id,
+              item.resource_node_id, item.annotation_id, item.expected_agent_status
+       FROM workspace_flow_regression_runs AS regression
+       JOIN workspace_flow_regression_cases AS item ON item.id = regression.case_id
+       WHERE regression.run_id = ?`,
+    ).get(runId) as RegressionDiagnosticTarget | undefined;
+    return row ?? null;
+  }
 }
 
 function validateResolvedReference(value: ResolvedAgentReference): ResolvedAgentReference {
@@ -267,4 +370,70 @@ function validId(value: string): string {
   const result = value.trim();
   if (!result || result.length > 200) throw new Error('生成的助手消息 ID 无效');
   return result;
+}
+
+function fingerprintQuestion(value: string): string {
+  const normalized = value
+    .normalize('NFKC')
+    .toLocaleLowerCase('zh-CN')
+    .replace(/\s+/gu, ' ')
+    .replace(/[？?！!。；;，,、:：()（）「」『』“”"']/gu, '')
+    .trim()
+    .slice(0, 2_000);
+  return createHash('sha256').update(normalized, 'utf8').digest('hex');
+}
+
+function diagnosticReason(
+  database: DatabaseSync,
+  answer: CommitAgentOutputInput['answer'],
+  trace: AgentRetrievalTrace,
+  regression: RegressionDiagnosticTarget | null,
+): AgentRetrievalDiagnosticV1['reasonCode'] {
+  if (!regression) return 'BUDGET_EXHAUSTED';
+  if (!hasIndexedRegressionTarget(database, regression)) return 'NO_TARGET_LEAF';
+  if (!traceContainsRegressionTarget(database, trace, regression)) return 'TARGET_NOT_RANKED';
+  if (!hasMinimalFlowClosure(trace)) return 'CONTEXT_NOT_CLOSED';
+  if (answer.evidenceStatus !== regression.expected_agent_status) return 'MODEL_STATUS_MISMATCH';
+  return 'BUDGET_EXHAUSTED';
+}
+
+function hasIndexedRegressionTarget(
+  database: DatabaseSync,
+  target: RegressionDiagnosticTarget,
+): boolean {
+  return Boolean(database.prepare(
+    `SELECT 1
+     FROM knowledge_fragments AS fragment
+     JOIN knowledge_documents AS document ON document.id = fragment.document_id
+     JOIN flow_knowledge_snapshots AS snapshot ON snapshot.id = document.flow_snapshot_id
+     WHERE snapshot.guide_id = ?
+       AND json_extract(fragment.internal_locator_json, '$.projection') = 'IMAGE_ANNOTATION'
+       AND json_extract(fragment.internal_locator_json, '$.nodeId') = ?
+       AND json_extract(fragment.internal_locator_json, '$.annotationId') = ?
+     LIMIT 1`,
+  ).get(target.guide_id, target.resource_node_id, target.annotation_id));
+}
+
+function traceContainsRegressionTarget(
+  database: DatabaseSync,
+  trace: AgentRetrievalTrace,
+  target: RegressionDiagnosticTarget,
+): boolean {
+  const statement = database.prepare(
+    `SELECT 1 FROM knowledge_fragments
+     WHERE id = ?
+       AND json_extract(internal_locator_json, '$.projection') = 'IMAGE_ANNOTATION'
+       AND json_extract(internal_locator_json, '$.nodeId') = ?
+       AND json_extract(internal_locator_json, '$.annotationId') = ?`,
+  );
+  return trace.candidates.some((candidate) => Boolean(statement.get(
+    candidate.fragmentId,
+    target.resource_node_id,
+    target.annotation_id,
+  )));
+}
+
+function hasMinimalFlowClosure(trace: AgentRetrievalTrace): boolean {
+  return trace.closure.some((item) => item.kind === 'OVERVIEW')
+    && trace.closure.some((item) => item.kind === 'NODE');
 }

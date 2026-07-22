@@ -38,13 +38,29 @@ type LessonNodeData = Record<string, unknown> & {
 const positionBySide = { TOP: Position.Top, RIGHT: Position.Right, BOTTOM: Position.Bottom, LEFT: Position.Left } as const;
 const edgeTypes: EdgeTypes = { orthogonal: OrthogonalEdge };
 const edgeOptions = { type: 'orthogonal', markerEnd: { type: MarkerType.ArrowClosed }, style: { stroke: 'var(--ga-accent)', strokeWidth: 2 } };
+const resourceTypes = new Set<CanvasNode['type']>(['markdown', 'image', 'video']);
 
 export function physicalLessonHandleId(edgeId: string, end: 'source' | 'target'): string {
   return `edge:${edgeId}:${end}`;
 }
 
+export function isHiddenResourceNode(node: CanvasNode): boolean {
+  return !node.source && resourceTypes.has(node.type) && node.visibility === 'HIDDEN';
+}
+
+export function lessonDocumentForDisplay(document: CanvasDocument): CanvasDocument {
+  const hiddenResourceIds = new Set(document.nodes.filter(isHiddenResourceNode).map((node) => node.id));
+  if (hiddenResourceIds.size === 0) return document;
+  return {
+    ...document,
+    nodes: document.nodes.map((node) => hiddenResourceIds.has(node.id) ? { ...node, hidden: true } : node),
+    edges: document.edges.filter((edge) => !hiddenResourceIds.has(edge.source) && !hiddenResourceIds.has(edge.target)),
+  };
+}
+
 export function toLessonFlowEdges(document: CanvasDocument): Edge[] {
-  return lessonFlowEdges(document, routeCanvasEdges(document));
+  const displayDocument = lessonDocumentForDisplay(document);
+  return lessonFlowEdges(displayDocument, routeCanvasEdges(displayDocument));
 }
 
 export function LessonMap({
@@ -60,23 +76,24 @@ export function LessonMap({
   onOpenSubguide?: (guideVersionId: string) => void;
   onInit?: (instance: ReactFlowInstance<Node, Edge>) => void;
 }) {
-  const routing = useMemo(() => routeCanvasEdges(document), [document]);
-  const anchorHandles = useMemo(() => anchorHandlesByNodeId(document, routing.routesByEdgeId), [document, routing]);
-  const flowNodes = useMemo<Node[]>(() => document.nodes.map((node) => lessonFlowNode(node, {
+  const displayDocument = useMemo(() => lessonDocumentForDisplay(document), [document]);
+  const routing = useMemo(() => routeCanvasEdges(displayDocument), [displayDocument]);
+  const anchorHandles = useMemo(() => anchorHandlesByNodeId(displayDocument, routing.routesByEdgeId), [displayDocument, routing]);
+  const flowNodes = useMemo<Node[]>(() => displayDocument.nodes.map((node) => lessonFlowNode(node, {
     selected: node.id === selectedNodeId,
     anchorHandles: anchorHandles.get(node.id) ?? [],
     onOpenSubguide,
-  })), [anchorHandles, document.nodes, onOpenSubguide, selectedNodeId]);
-  const flowEdges = useMemo(() => lessonFlowEdges(document, routing), [document, routing]);
-  const configuredStageIds = useMemo(() => new Set((document.stages ?? []).map((stage) => stage.id)), [document.stages]);
-  const configuredLaneIds = useMemo(() => new Set((document.lanes ?? []).map((lane) => lane.id)), [document.lanes]);
+  })), [anchorHandles, displayDocument.nodes, onOpenSubguide, selectedNodeId]);
+  const flowEdges = useMemo(() => lessonFlowEdges(displayDocument, routing), [displayDocument, routing]);
+  const configuredStageIds = useMemo(() => new Set((displayDocument.stages ?? []).map((stage) => stage.id)), [displayDocument.stages]);
+  const configuredLaneIds = useMemo(() => new Set((displayDocument.lanes ?? []).map((lane) => lane.id)), [displayDocument.lanes]);
   const stageBounds = useMemo(
-    () => configuredStageIds.size > 0 ? getStageBounds(document).filter((bound) => bound.stageId && configuredStageIds.has(bound.stageId)) : [],
-    [configuredStageIds, document],
+    () => configuredStageIds.size > 0 ? getStageBounds(displayDocument).filter((bound) => bound.stageId && configuredStageIds.has(bound.stageId)) : [],
+    [configuredStageIds, displayDocument],
   );
   const swimlaneBounds = useMemo(
-    () => configuredLaneIds.size > 0 ? getSwimlaneBounds(document).filter((bound) => bound.laneId && configuredLaneIds.has(bound.laneId)) : [],
-    [configuredLaneIds, document],
+    () => configuredLaneIds.size > 0 ? getSwimlaneBounds(displayDocument).filter((bound) => bound.laneId && configuredLaneIds.has(bound.laneId)) : [],
+    [configuredLaneIds, displayDocument],
   );
 
   return <ReactFlow

@@ -2,6 +2,8 @@ import { ArrowRight, LineSegments, Palette, X } from '@phosphor-icons/react';
 import type { EdgePresentation } from '@guideanything/contracts';
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 
+import { AnimatedList } from '../../components/reactbits/AnimatedList';
+
 const colorInputValueByName = {
   default: '#0a84ff',
   blue: '#4aa6ff',
@@ -182,7 +184,9 @@ function ToolbarTrigger({ menu, layoutClassName, openMenu, onToggle, preview, ch
 
 function ToolbarMenu({ menu, children }: { menu: Exclude<EdgeToolbarMenu, null>; children: ReactNode }) {
   return <div id={`edge-toolbar-menu-${menu}`} className={`edge-toolbar-menu is-${menu}`} role="menu" aria-label={menuMeta[menu].label}>
-    {children}
+    <AnimatedList className={`edge-toolbar-menu-list is-${menu}`}>
+      {children}
+    </AnimatedList>
   </div>;
 }
 

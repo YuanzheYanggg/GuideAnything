@@ -1,22 +1,29 @@
 import {
   editableRouteSegments,
+  snapRouteCoordinate,
   type Point,
   type RouteSegmentOrientation,
 } from "@guideanything/canvas-core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { BorderGlow } from '../../components/reactbits/BorderGlow';
 
 type ManualRouteEditorProps = {
   points: Point[];
   conflict: boolean;
   onMoveSegment: (segmentIndex: number, coordinate: number) => void;
+  onFinishSegment?: (segmentIndex: number, coordinate: number) => void;
   screenToFlowPosition: (point: { x: number; y: number }) => Point;
+  flowToScreenPosition?: (point: Point) => Point;
 };
 
 export function ManualRouteEditor({
   points,
   conflict,
   onMoveSegment,
+  onFinishSegment,
   screenToFlowPosition,
+  flowToScreenPosition,
 }: ManualRouteEditorProps) {
   const segments = useMemo(() => {
     const editableSegments = editableRouteSegments(points);
@@ -32,6 +39,7 @@ export function ManualRouteEditor({
     return editableSegments;
   }, [points]);
   const [draggingSegment, setDraggingSegment] = useState<{ index: number; orientation: RouteSegmentOrientation } | null>(null);
+  const latestMoveRef = useRef<{ segmentIndex: number; coordinate: number } | null>(null);
 
   useEffect(() => {
     if (draggingSegment === null) {
@@ -54,42 +62,53 @@ export function ManualRouteEditor({
         return;
       }
 
-      onMoveSegment(segment.index, Math.round(rawCoordinate / 20) * 20);
+      const coordinate = snapRouteCoordinate(points, segment.orientation, rawCoordinate);
+      latestMoveRef.current = { segmentIndex: segment.index, coordinate };
+      onMoveSegment(segment.index, coordinate);
       if (draggingSegment.index === 0 && points.length === 2) {
         setDraggingSegment({ index: 2, orientation: draggingSegment.orientation });
       }
     };
-    const handlePointerUp = () => setDraggingSegment(null);
+    const handlePointerUp = () => {
+      const latestMove = latestMoveRef.current;
+      if (latestMove) onFinishSegment?.(latestMove.segmentIndex, latestMove.coordinate);
+      latestMoveRef.current = null;
+      setDraggingSegment(null);
+    };
 
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, [draggingSegment, onMoveSegment, points.length, screenToFlowPosition, segments]);
+  }, [draggingSegment, onFinishSegment, onMoveSegment, points, screenToFlowPosition, segments]);
 
   return (
     <div className="manual-route-editor" aria-label="编辑连线走向">
       {conflict ? (
-        <div className="manual-route-editor__status" role="status">
-          手动路线被节点阻挡
-        </div>
+        <BorderGlow className="manual-route-editor__status-shell" active tone="warning">
+          <div className="manual-route-editor__status" role="status">手动路线被节点阻挡</div>
+        </BorderGlow>
       ) : null}
-      {segments.map((segment, displayIndex) => (
-        <button
+      {segments.map((segment, displayIndex) => {
+        const position = flowToScreenPosition?.(segment.midpoint) ?? segment.midpoint;
+        return <button
           key={`${segment.index}-${segment.orientation}`}
           type="button"
-          className={`manual-route-segment is-${segment.orientation} nodrag nopan nowheel`}
-          aria-label={`拖动连线段 ${displayIndex + 1}`}
-          style={{ left: segment.midpoint.x, top: segment.midpoint.y }}
+          className={`manual-route-node is-${segment.orientation} nodrag nopan nowheel`}
+          aria-label={`拖动连线节点 ${displayIndex + 1}`}
+          style={{ left: position.x, top: position.y }}
           onPointerDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
+            latestMoveRef.current = null;
             setDraggingSegment({ index: segment.index, orientation: segment.orientation });
           }}
-        />
-      ))}
+        />;
+      })}
     </div>
   );
 }

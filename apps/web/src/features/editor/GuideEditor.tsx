@@ -25,7 +25,7 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { CaretLeft, CaretRight } from '@phosphor-icons/react';
+import { ArrowLeft, ChartLineUp, ClockCounterClockwise, CaretLeft, CaretRight, Eye, EyeSlash, FloppyDisk, UploadSimple } from '@phosphor-icons/react';
 
 import type { SearchItem } from '../library/LibraryPage';
 import { FlowNode } from '../nodes/FlowNode';
@@ -43,16 +43,27 @@ import { HierarchyDeletionDialog } from './HierarchyDeletionDialog';
 import { AnnotatedImageDeletionDialog } from './AnnotatedImageDeletionDialog';
 import { DraftHistoryDialog } from './DraftHistoryDialog';
 import { GuideDigestDialog, type GuideDigestProposal, type GuideFlowSnapshotStatus } from './GuideDigestDialog';
+import { GuideSummaryDialog } from './GuideSummaryDialog';
+import { FlowRegressionPanel, type FlowRegressionEditorApi } from './FlowRegressionPanel';
 import { ImageAnnotationEditor } from './ImageAnnotationEditor';
+import { ImageReplacementDialog } from './ImageReplacementDialog';
 import { OrthogonalEdge } from './OrthogonalEdge';
+import { reorderHierarchyItems, type HierarchyDropPlacement } from './hierarchy-order';
 import { CanvasCreationMenu, type CanvasCreationKind } from './CanvasCreationMenu';
-import { EdgeLabelEditor } from './EdgeLabelEditor';
+import { EdgeLabelEditor, type EdgeLabelValue } from './EdgeLabelEditor';
 import { NodeDetailDialog } from './NodeDetailDialog';
 import { EdgeToolbar } from './EdgeToolbar';
+import { CanvasLayoutPreviewDialog } from './CanvasLayoutPreviewDialog';
+import { EditorToolbar } from './EditorToolbar';
 import { ManualRouteEditor } from './ManualRouteEditor';
-import { edgeAnchorFromClientPoint, isEditableBusinessEdge, resolveEdgeVisuals } from './edge-presentation';
+import { edgeAnchorFromClientPoint, edgePresentationForRouting, isEditableBusinessEdge, resolveEdgeVisuals } from './edge-presentation';
+import { findNearestEndpointSnap, pointForEndpointAnchor } from './edge-anchor-snap';
 import { routeLabelPoint } from './OrthogonalEdge';
 import { connectSemanticNodes, insertSemanticNode, moveSemanticOutlineNode } from './semantic-node-actions';
+import { GuideDetailsHeader } from './GuideDetailsHeader';
+import { CanvasSwimlanes, getCanvasSwimlaneBounds } from './CanvasSwimlanes';
+import { ResourceAppendixAnchorNode, resourceAppendixAnchorHandles, resourceAppendixTargetHandleId, type ResourceAppendixAnchorSide } from './ResourceAppendixAnchorNode';
+import { EditorDialogSurface } from './EditorDialogSurface';
 
 export interface GuideDraftDetail {
   id: string;
@@ -76,7 +87,7 @@ export interface SearchPage {
   nextOffset: number | null;
 }
 
-export interface EditorApi {
+export interface EditorApi extends FlowRegressionEditorApi {
   getGuide: (guideId: string) => Promise<GuideDraftDetail>;
   saveGuide: (guideId: string, revision: number, changes: { title: string; summary: string; tags: string[]; document: CanvasDocument }) => Promise<GuideDraftDetail>;
   getFlowSnapshotStatus: (guideId: string) => Promise<GuideFlowSnapshotStatus>;
@@ -105,6 +116,7 @@ const nodeTypes: NodeTypes = {
   image: ImageNode,
   video: VideoNode,
   subguide: SubguideNode,
+  'resource-appendix-anchor': ResourceAppendixAnchorNode,
 };
 
 const edgeTypes: EdgeTypes = { orthogonal: OrthogonalEdge };
@@ -139,7 +151,13 @@ type StageDrag = {
   start: Point;
 };
 
-export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: { guideId: string; api: EditorApi; personalApi?: PersonalApi; focusNodeId?: string; onBack: () => void }) {
+type PendingImageReplacement = {
+  nodeId: string;
+  file: File;
+  annotationCount: number;
+};
+
+export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnotationId, onBack }: { guideId: string; api: EditorApi; personalApi?: PersonalApi; focusNodeId?: string; focusAnnotationId?: string; onBack: () => void }) {
   const [guide, setGuide] = useState<GuideDraftDetail | null>(null);
   const [document, setDocument] = useState<CanvasDocument | null>(null);
   const [flowNodes, setFlowNodes] = useState<Node[]>([]);
@@ -158,13 +176,16 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const [layoutPreview, setLayoutPreview] = useState<HierarchyLayoutResult | null>(null);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
   const [creationMenu, setCreationMenu] = useState<{ sourceId: string; sourceHandle?: string; position: { x: number; y: number } } | null>(null);
-  const [edgeLabelEditor, setEdgeLabelEditor] = useState<{ edgeId: string; label?: string; position: { x: number; y: number } } | null>(null);
+  const [edgeLabelEditor, setEdgeLabelEditor] = useState<{ edgeId: string; label?: string; labelFontSize?: number; position: { x: number; y: number } } | null>(null);
   const [hierarchyDeletion, setHierarchyDeletion] = useState<{ kind: 'stage' | 'lane'; id: string } | null>(null);
   const [annotatedImageDeletion, setAnnotatedImageDeletion] = useState<{ nodeIds: string[]; imageCount: number; annotationCount: number } | null>(null);
+  const [imageReplacement, setImageReplacement] = useState<PendingImageReplacement | null>(null);
+  const [imageReplacementUploading, setImageReplacementUploading] = useState(false);
   const [draftHistoryOpen, setDraftHistoryOpen] = useState(false);
   const [draftHistory, setDraftHistory] = useState<GuideDraftHistorySnapshot[]>([]);
   const [draftHistoryLoading, setDraftHistoryLoading] = useState(false);
   const [draftHistoryError, setDraftHistoryError] = useState('');
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const [digestOpen, setDigestOpen] = useState(false);
   const [digestStatus, setDigestStatus] = useState<GuideFlowSnapshotStatus | null>(null);
   const [digestProposal, setDigestProposal] = useState<GuideDigestProposal | null>(null);
@@ -194,8 +215,10 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const stageDragRef = useRef<StageDrag | null>(null);
   const latestEditorStateRef = useRef<{ document: CanvasDocument | null; title: string; summary: string; tags: string[] }>({ document: null, title: '', summary: '', tags: [] });
   const saveRef = useRef<() => Promise<GuideDraftDetail | undefined>>(async () => undefined);
+  const summaryTriggerRef = useRef<HTMLButtonElement>(null);
   const digestTriggerRef = useRef<HTMLButtonElement>(null);
   const digestWasOpenRef = useRef(false);
+  const appliedAnnotationFocusRef = useRef<string | null>(null);
   guideRef.current = guide;
   saveStateRef.current = saveState;
   latestEditorStateRef.current = { document, title, summary, tags };
@@ -209,6 +232,10 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     digestWasOpenRef.current = false;
     digestTriggerRef.current?.focus();
   }, [digestOpen]);
+
+  useEffect(() => {
+    if (layoutPreview) setSummaryOpen(false);
+  }, [layoutPreview]);
 
   useEffect(() => {
     if (!layoutPreview || !flowInstance) return;
@@ -229,19 +256,31 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   }, [document, flowInstance, focusNodeId, guideId]);
 
   useEffect(() => {
+    if (!document || !focusNodeId || !focusAnnotationId) return;
+    const node = document.nodes.find((item): item is CanvasNode<'image'> => item.id === focusNodeId && item.type === 'image');
+    if (!node || !node.data.annotations?.some((annotation) => annotation.id === focusAnnotationId)) return;
+    const focusKey = `${guideId}:${focusNodeId}:${focusAnnotationId}`;
+    if (appliedAnnotationFocusRef.current === focusKey) return;
+    appliedAnnotationFocusRef.current = focusKey;
+    setSelectedIds([focusNodeId]);
+    setAnnotationEditorNodeId(focusNodeId);
+  }, [document, focusAnnotationId, focusNodeId, guideId]);
+
+  useEffect(() => {
     let active = true;
     api.getGuide(guideId).then((loaded) => {
       if (!active) return;
       const validated = CanvasDocumentSchema.parse(loaded.document);
       const normalized = reconcileSubguideEdges(validated);
+      const needsPersistenceRepair = normalized !== validated;
       setGuide(loaded);
       setDocument(normalized);
       setFlowNodes(toFlowNodes(normalized.nodes, [], normalized.lanes, noExpandedDetails, semanticCodeByNodeId(normalized)));
       setTitle(loaded.title);
       setSummary(loaded.summary);
       setTags(loaded.tags);
-      setSaveState('已保存');
-      savedEditorStateRef.current = { document: normalized, title: loaded.title, summary: loaded.summary, tags: loaded.tags };
+      setSaveState(needsPersistenceRepair ? '未保存' : '已保存');
+      savedEditorStateRef.current = { document: needsPersistenceRepair ? validated : normalized, title: loaded.title, summary: loaded.summary, tags: loaded.tags };
       historyRef.current = new HistoryStack(normalized, 80);
       if (personalApi) void personalApi.recordRecent(loaded.workspaceItemId, { mode: 'edit', guideId: loaded.id });
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '指南载入失败'));
@@ -269,35 +308,123 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     setSaveState('未保存');
   }, [expandedDetailNodeIds, selectedIds]);
 
-  const renderedDocument = layoutPreview?.document ?? dragPreviewDocument ?? document;
+  const replaceImage = useCallback(async (nodeId: string, file: File): Promise<boolean> => {
+    setError('');
+    try {
+      const asset = await api.uploadMedia(file);
+      if (asset.kind !== 'IMAGE') throw new Error('仅支持图片文件。');
+      const currentDocument = latestEditorStateRef.current.document;
+      const currentNode = currentDocument?.nodes.find((node) => node.id === nodeId);
+      if (!currentDocument || !currentNode || currentNode.type !== 'image') throw new Error('图片节点已不存在，无法替换图片。');
+      commit({
+        ...currentDocument,
+        nodes: currentDocument.nodes.map((node) => node.id === nodeId && node.type === 'image'
+          ? { ...node, data: { ...node.data, assetId: asset.id, url: asset.url, annotations: [] } }
+          : node),
+      });
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '图片上传失败');
+      return false;
+    }
+  }, [api, commit]);
+
+  const requestImageUpload = useCallback((nodeId: string, file: File) => {
+    if (!document || layoutPreview) return;
+    const node = document.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node || node.type !== 'image') return;
+    const annotationCount = node.data.annotations?.length ?? 0;
+    if (annotationCount > 0) {
+      setImageReplacement({ nodeId, file, annotationCount });
+      return;
+    }
+    void replaceImage(nodeId, file);
+  }, [document, layoutPreview, replaceImage]);
+
+  const confirmImageReplacement = useCallback(async () => {
+    if (!imageReplacement || imageReplacementUploading) return;
+    setImageReplacementUploading(true);
+    try {
+      if (hasUnsavedEditorChanges(latestEditorStateRef.current, savedEditorStateRef.current)) {
+        const saved = await saveRef.current();
+        if (!saved) throw new Error('旧图片及标注尚未保存，无法替换图片。');
+      }
+      const replaced = await replaceImage(imageReplacement.nodeId, imageReplacement.file);
+      if (replaced) setImageReplacement(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '图片替换前的草稿保存失败');
+    } finally {
+      setImageReplacementUploading(false);
+    }
+  }, [imageReplacement, imageReplacementUploading, replaceImage]);
+
+  const updateEdgeLabelOffset = useCallback((edgeId: string, labelOffset: number) => {
+    if (!document || layoutPreview) return;
+    const edge = document.edges.find((candidate) => candidate.id === edgeId);
+    if (!edge || !edge.label) return;
+    commit({
+      ...document,
+      edges: document.edges.map((candidate) => candidate.id === edgeId
+        ? { ...candidate, presentation: { ...candidate.presentation, labelOffset } }
+        : candidate),
+    });
+  }, [commit, document, layoutPreview]);
+
+  const openEdgeLabelEditor = useCallback((edgeId: string, event: { clientX: number; clientY: number }) => {
+    if (layoutPreview || !document || edgeId.startsWith('hierarchy:')) return;
+    const persisted = document.edges.find((candidate) => candidate.id === edgeId);
+    if (!persisted || persisted.sourceTrace) return;
+    setEdgeLabelEditor({
+      edgeId: persisted.id,
+      ...(persisted.label ? { label: persisted.label } : {}),
+      ...(persisted.presentation?.labelFontSize ? { labelFontSize: persisted.presentation.labelFontSize } : {}),
+      position: flowInstance?.screenToFlowPosition({ x: event.clientX, y: event.clientY }) ?? { x: event.clientX, y: event.clientY },
+    });
+  }, [document, flowInstance, layoutPreview]);
+
+  const renderedDocument = useMemo(() => {
+    const baseDocument = layoutPreview?.document ?? dragPreviewDocument ?? document;
+    return baseDocument ? documentWithMeasuredNodeSizes(baseDocument, flowNodes) : null;
+  }, [document, dragPreviewDocument, flowNodes, layoutPreview]);
   const routing = useMemo(() => renderedDocument ? routeCanvasEdges(renderedDocument) : null, [renderedDocument]);
   const manualRouteDocument = useMemo(() => {
-    if (!document || !manualRouteDraft) return null;
+    if (!renderedDocument || !manualRouteDraft) return null;
     return {
-      ...document,
-      edges: document.edges.map((edge) => edge.id === manualRouteDraft.edgeId
-        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual' as const, waypoints: manualRouteDraft.points.slice(1, -1) } }
+      ...renderedDocument,
+      edges: renderedDocument.edges.map((edge) => edge.id === manualRouteDraft.edgeId
+        ? { ...edge, presentation: { ...edge.presentation, routing: 'elbow' as const, routeMode: 'manual' as const, waypoints: manualRouteDraft.points.slice(1, -1) } }
         : edge),
     };
-  }, [document, manualRouteDraft]);
+  }, [manualRouteDraft, renderedDocument]);
   const manualDraftRouting = useMemo(() => manualRouteDocument ? routeCanvasEdges(manualRouteDocument) : null, [manualRouteDocument]);
   const manualDraftConflict = Boolean(manualRouteDraft && manualDraftRouting?.report.manualConflictEdgeIds.includes(manualRouteDraft.edgeId));
   const flowEdges = useMemo(() => renderedDocument ? [
     ...renderedDocument.edges.filter((edge) => edge.semantic?.kind !== 'RESOURCE_REFERENCE').map((edge) => {
       const route = routing?.routesByEdgeId.get(edge.id);
       const displayRoute = route && manualRouteDraft?.edgeId === edge.id
-        ? { ...route, points: manualRouteDraft.points, collision: manualDraftConflict }
+        ? { ...route, points: manualRouteDraft.points, collision: manualDraftConflict, bridges: [] }
         : route;
-      return renderEdge(renderedDocument, edge, displayRoute);
+      return renderEdge(
+        renderedDocument,
+        edge,
+        displayRoute,
+        flowInstance?.screenToFlowPosition,
+        (labelOffset) => updateEdgeLabelOffset(edge.id, labelOffset),
+        (event) => openEdgeLabelEditor(edge.id, event),
+        !layoutPreview && selectedEdgeId === edge.id,
+        !layoutPreview && manualRouteDraft?.edgeId === edge.id,
+      );
     }),
     ...hierarchyPresentationEdges(renderedDocument),
-  ] : [], [manualDraftConflict, manualRouteDraft, renderedDocument, routing]);
+  ] : [], [flowInstance, layoutPreview, manualDraftConflict, manualRouteDraft, openEdgeLabelEditor, renderedDocument, routing, selectedEdgeId, updateEdgeLabelOffset]);
   const nodeAnchorHandles = useMemo(() => renderedDocument && routing ? anchorHandlesByNodeId(renderedDocument, routing) : new Map<string, NodeAnchorHandle[]>(), [renderedDocument, routing]);
   const renderedFlowNodes = useMemo(() => {
     const preview = layoutPreview?.document ?? (draggedStageId ? dragPreviewDocument : null);
-    return preview ? toFlowNodes(preview.nodes, selectedIds, preview.lanes, expandedDetailNodeIds, semanticCodeByNodeId(preview)) : flowNodes;
-  }, [dragPreviewDocument, draggedStageId, expandedDetailNodeIds, flowNodes, layoutPreview, selectedIds]);
+    const baseNodes = preview ? toFlowNodes(preview.nodes, selectedIds, preview.lanes, expandedDetailNodeIds, semanticCodeByNodeId(preview)) : flowNodes;
+    return renderedDocument ? [...baseNodes, ...resourceAppendixAnchorNodes(renderedDocument)] : baseNodes;
+  }, [dragPreviewDocument, draggedStageId, expandedDetailNodeIds, flowNodes, layoutPreview, renderedDocument, selectedIds]);
   const stageBounds = useMemo(() => renderedDocument ? getStageBounds(renderedDocument) : [], [renderedDocument]);
+  const swimlaneBounds = useMemo(() => renderedDocument ? getCanvasSwimlaneBounds(renderedDocument, stageBounds) : [], [renderedDocument, stageBounds]);
   const appendixGroups = useMemo(() => renderedDocument ? resourceAppendixGroups(renderedDocument) : [], [renderedDocument]);
   const selectedBusinessEdge = selectedEdgeId && document ? document.edges.find((edge) => edge.id === selectedEdgeId) ?? null : null;
   const selectedEdgeRoute = selectedBusinessEdge ? routing?.routesByEdgeId.get(selectedBusinessEdge.id) : undefined;
@@ -348,14 +475,23 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
 
   const onNodesChange = useCallback((changes: NodeChange<Node>[]) => {
     if (layoutPreview) return;
-    const snappedChanges = document ? changes.map((change) => {
+    const authoredChanges = changes.filter((change) => !('id' in change) || !isResourceAppendixAnchorId(change.id));
+    // Snap against the same measured node geometry used by the renderer. A
+    // saved node size can lag behind text wrapping, which otherwise makes a
+    // visually aligned drag miss the snap target.
+    const dimensionChanges = authoredChanges.filter((change) => change.type === 'dimensions');
+    const measuredFlowNodes = dimensionChanges.length > 0
+      ? applyNodeChanges(dimensionChanges, flowNodes)
+      : flowNodes;
+    const snapDocument = document ? documentWithMeasuredNodeSizes(document, measuredFlowNodes) : null;
+    const snappedChanges = snapDocument ? authoredChanges.map((change) => {
       if (change.type !== 'position' || !change.position) return change;
-      const snap = snapNodeForStraightRoute(document, change.id, change.position);
+      const snap = snapNodeForStraightRoute(snapDocument, change.id, change.position);
       return snap ? { ...change, position: snap.position } : change;
-    }) : changes;
-    const snapping = document ? snappedChanges.flatMap((change) => {
+    }) : authoredChanges;
+    const snapping = snapDocument ? snappedChanges.flatMap((change) => {
       if (change.type !== 'position' || !change.position) return [];
-      const snap = snapNodeForStraightRoute(document, change.id, change.position);
+      const snap = snapNodeForStraightRoute(snapDocument, change.id, change.position);
       return snap ? [snap] : [];
     })[0] ?? null : null;
     const displayChanges = snappedChanges.filter((change) => change.type !== 'dimensions' || !expandedDetailNodeIds.has(change.id));
@@ -379,7 +515,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       historyRef.current?.push(next);
       return next;
     });
-  }, [document, expandedDetailNodeIds, layoutPreview, selectedIds]);
+  }, [document, expandedDetailNodeIds, flowNodes, layoutPreview, selectedIds]);
 
   const onEdgesChange = useCallback((changes: EdgeChange<Edge>[]) => {
     if (layoutPreview) return;
@@ -410,8 +546,9 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       connectSourceRef.current = null;
       return;
     }
-    const point = clientPoint(event);
-    const sourceAnchor = anchorForNodeClientPoint(nodeId, point) ?? anchorFromPhysicalHandle(handleId);
+    const sourceAnchor = isManualAnchorHandle(handleId)
+      ? anchorForNodeClientPoint(nodeId, clientPoint(event)) ?? anchorFromPhysicalHandle(handleId)
+      : undefined;
     connectSourceRef.current = {
       sourceId: nodeId,
       ...(handleId ? { sourceHandle: handleId } : {}),
@@ -431,9 +568,15 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       if (!connection || connection.target !== targetId) return;
       const targetNode = document.nodes.find((node) => node.id === targetId);
       if (!targetNode || targetNode.source) return;
-      const sourceAnchor = source.sourceAnchor ?? anchorFromPhysicalHandle(connection.sourceHandle);
-      const targetAnchor = anchorForNodeClientPoint(targetNode.id, clientPoint(event)) ?? anchorFromPhysicalHandle(connection.targetHandle);
-      const presentation = edgePresentationWithAnchors(undefined, sourceAnchor, targetAnchor);
+      const sourceAnchor = source.sourceAnchor ?? (isManualAnchorHandle(connection.sourceHandle) ? anchorFromPhysicalHandle(connection.sourceHandle) : undefined);
+      const targetAnchor = isManualAnchorHandle(connection.targetHandle)
+        ? anchorForNodeClientPoint(targetNode.id, clientPoint(event)) ?? anchorFromPhysicalHandle(connection.targetHandle)
+        : undefined;
+      const presentation = edgePresentationWithAnchorUpdates(
+        undefined,
+        sourceAnchor ? { anchor: sourceAnchor } : undefined,
+        targetAnchor ? { anchor: targetAnchor } : undefined,
+      );
       const edge: CanvasEdge = {
         id: uniqueId('edge'),
         source: sourceNode.id,
@@ -456,21 +599,23 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     const sourceNode = document.nodes.find((node) => node.id === connection.source);
     const targetNode = document.nodes.find((node) => node.id === connection.target);
     if (!sourceNode || !targetNode || sourceNode.source || targetNode.source) return;
-    const sourceChanged = connection.source !== persisted.source || isPhysicalAnchorHandle(connection.sourceHandle);
-    const targetChanged = connection.target !== persisted.target || isPhysicalAnchorHandle(connection.targetHandle);
-    const sourceAnchor = sourceChanged ? anchorFromPhysicalHandle(connection.sourceHandle) ?? persisted.presentation?.sourceAnchor : persisted.presentation?.sourceAnchor;
-    const targetAnchor = targetChanged ? anchorFromPhysicalHandle(connection.targetHandle) ?? persisted.presentation?.targetAnchor : persisted.presentation?.targetAnchor;
-    const presentation = edgePresentationWithAnchors(persisted.presentation, sourceAnchor, targetAnchor);
+    const sourceChanged = connection.source !== persisted.source || isManualAnchorHandle(connection.sourceHandle);
+    const targetChanged = connection.target !== persisted.target || isManualAnchorHandle(connection.targetHandle);
+    const sourceUpdate = sourceChanged ? manualAnchorUpdate(connection.sourceHandle) : undefined;
+    const targetUpdate = targetChanged ? manualAnchorUpdate(connection.targetHandle) : undefined;
+    const presentation = edgePresentationWithAnchorUpdates(persisted.presentation, sourceUpdate, targetUpdate);
     commit({
       ...document,
-      edges: document.edges.map((edge) => edge.id === persisted.id ? {
-        ...edge,
-        source: sourceNode.id,
-        target: targetNode.id,
-        sourceHandle: sourceChanged ? semanticSourceHandle(sourceNode, connection.sourceHandle) : edge.sourceHandle ?? semanticSourceHandle(sourceNode),
-        targetHandle: targetChanged ? semanticTargetHandle(connection.targetHandle) : edge.targetHandle ?? semanticTargetHandle(),
-        ...(presentation ? { presentation } : {}),
-      } : edge),
+      edges: document.edges.map((edge) => {
+        if (edge.id !== persisted.id) return edge;
+        return edgeWithPresentation({
+          ...edge,
+          source: sourceNode.id,
+          target: targetNode.id,
+          sourceHandle: sourceChanged ? semanticSourceHandle(sourceNode, connection.sourceHandle) : edge.sourceHandle ?? semanticSourceHandle(sourceNode),
+          targetHandle: targetChanged ? semanticTargetHandle(connection.targetHandle) : edge.targetHandle ?? semanticTargetHandle(),
+        }, presentation);
+      }),
     });
     setSelectedEdgeId(persisted.id);
   }, [commit, document, layoutPreview]);
@@ -484,19 +629,49 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     reconnectRef.current = null;
     const handleType = oppositeHandleType === 'source' ? 'target' : 'source';
     if (layoutPreview || !pending || pending.edgeId !== edge.id || pending.handleType !== handleType || !connectionState.toNode) return;
-    const anchor = anchorForNodeClientPoint(connectionState.toNode.id, clientPoint(event));
+    const pointer = clientPoint(event);
+    const flowPoint = flowInstance?.screenToFlowPosition(pointer);
+    const snap = flowPoint && document && routing
+      ? findNearestEndpointSnap(document, routing.routesByEdgeId, edge.id, handleType, connectionState.toNode.id, flowPoint)
+      : undefined;
+    const anchor = snap?.anchor ?? anchorForNodeClientPoint(connectionState.toNode.id, pointer);
     if (!anchor) return;
+    const endpointNode = document?.nodes.find((node) => node.id === connectionState.toNode?.id);
+    const anchorPoint = endpointNode ? pointForEndpointAnchor(endpointNode, anchor) : undefined;
     setDocument((current) => {
       if (!current) return current;
       const persisted = current.edges.find((candidate) => candidate.id === pending.edgeId);
       if (!persisted || !isEditableBusinessEdge(current, persisted)) return current;
-      const presentation = edgePresentationWithAnchors(persisted.presentation, handleType === 'source' ? anchor : persisted.presentation?.sourceAnchor, handleType === 'target' ? anchor : persisted.presentation?.targetAnchor);
-      const next = reconcileSubguideEdges(CanvasDocumentSchema.parse({ ...current, edges: current.edges.map((candidate) => candidate.id === persisted.id ? { ...candidate, ...(presentation ? { presentation } : {}) } : candidate) }));
+      const peerIds = new Set([persisted.id, ...(snap?.peerEdgeIds ?? [])]);
+      const next = reconcileSubguideEdges(CanvasDocumentSchema.parse({
+        ...current,
+        edges: current.edges.map((candidate) => {
+          const attachedNodeId = handleType === 'source' ? candidate.source : candidate.target;
+          if (!peerIds.has(candidate.id) || attachedNodeId !== connectionState.toNode?.id) return candidate;
+          const presentation = edgePresentationWithAnchorUpdates(
+            candidate.presentation,
+            handleType === 'source' ? { anchor } : undefined,
+            handleType === 'target' ? { anchor } : undefined,
+          );
+          return edgeWithPresentation(candidate, presentation);
+        }),
+      }));
       historyRef.current?.push(next);
       setSaveState('未保存');
       return next;
     });
-  }, [layoutPreview]);
+    if (anchorPoint) {
+      setManualRouteDraft((current) => {
+        if (!current || current.edgeId !== edge.id) return current;
+        return {
+          ...current,
+          points: handleType === 'source'
+            ? [anchorPoint, ...current.points.slice(1)]
+            : [...current.points.slice(0, -1), anchorPoint],
+        };
+      });
+    }
+  }, [document, flowInstance, layoutPreview, routing]);
 
   const createFromConnection = useCallback((kind: CanvasCreationKind) => {
     if (!document || layoutPreview || !creationMenu) return;
@@ -518,21 +693,22 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   }, [commit, creationMenu, document, layoutPreview]);
 
   const onEdgeDoubleClick = useCallback((event: ReactMouseEvent, edge: Edge) => {
-    if (layoutPreview || !document || edge.id.startsWith('hierarchy:') || (edge as Edge & Pick<CanvasEdge, 'sourceTrace'>).sourceTrace) return;
-    const persisted = document.edges.find((candidate) => candidate.id === edge.id);
-    if (!persisted || persisted.sourceTrace) return;
     const nativeEvent = (event as ReactMouseEvent & { nativeEvent?: MouseEvent }).nativeEvent ?? event as unknown as MouseEvent;
-    setEdgeLabelEditor({ edgeId: persisted.id, ...(persisted.label ? { label: persisted.label } : {}), position: flowInstance?.screenToFlowPosition(clientPoint(nativeEvent)) ?? clientPoint(nativeEvent) });
-  }, [document, flowInstance, layoutPreview]);
+    openEdgeLabelEditor(edge.id, nativeEvent);
+  }, [openEdgeLabelEditor]);
 
-  const saveEdgeLabel = useCallback((label: string) => {
+  const saveEdgeLabel = useCallback(({ label, fontSize }: EdgeLabelValue) => {
     if (!document || layoutPreview || !edgeLabelEditor) return;
     const edgeId = edgeLabelEditor.edgeId;
     commit({ ...document, edges: document.edges.map((edge) => {
       if (edge.id !== edgeId) return edge;
-      if (label) return { ...edge, label };
+      if (label) return { ...edge, label, presentation: { ...edge.presentation, labelFontSize: fontSize } };
       const { label: _label, ...unlabeled } = edge;
-      return unlabeled;
+      if (!unlabeled.presentation) return unlabeled;
+      const { labelFontSize: _labelFontSize, labelOffset: _labelOffset, ...presentation } = unlabeled.presentation;
+      if (Object.keys(presentation).length > 0) return { ...unlabeled, presentation };
+      const { presentation: _presentation, ...withoutPresentation } = unlabeled;
+      return withoutPresentation;
     }) });
     setEdgeLabelEditor(null);
   }, [commit, document, edgeLabelEditor, layoutPreview]);
@@ -550,7 +726,11 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     if (layoutPreview || !document || !selectedEdgeId) return;
     const selected = document.edges.find((edge) => edge.id === selectedEdgeId);
     if (!selected || !isEditableBusinessEdge(document, selected)) return;
-    commit({ ...document, edges: document.edges.map((edge) => edge.id === selected.id ? { ...edge, presentation: { ...edge.presentation, ...partial } } : edge) });
+    const nextPresentation = partial.routing !== undefined
+      ? edgePresentationForRouting({ ...selected.presentation, ...partial }, partial.routing)
+      : { ...selected.presentation, ...partial };
+    commit({ ...document, edges: document.edges.map((edge) => edge.id === selected.id ? { ...edge, presentation: nextPresentation } : edge) });
+    if (partial.routing !== undefined) setManualRouteDraft(null);
   }, [commit, document, layoutPreview, selectedEdgeId]);
 
   const startManualRouteEdit = useCallback(() => {
@@ -568,6 +748,24 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
       : current);
   }, []);
 
+  const finishManualRouteSegment = useCallback((segmentIndex: number, coordinate: number) => {
+    if (layoutPreview || !document || !manualRouteDraft || manualDraftConflict) return;
+    const selected = document.edges.find((edge) => edge.id === manualRouteDraft.edgeId);
+    if (!selected || !isEditableBusinessEdge(document, selected)) return;
+    const nextPoints = moveRouteSegment(manualRouteDraft.points, segmentIndex, coordinate);
+    const persistedRoute = routing?.routesByEdgeId.get(selected.id);
+    const unchanged = persistedRoute?.points.length === nextPoints.length
+      && persistedRoute.points.every((point, index) => point.x === nextPoints[index]?.x && point.y === nextPoints[index]?.y);
+    if (unchanged) return;
+    commit({
+      ...document,
+      edges: document.edges.map((edge) => edge.id === selected.id
+        ? { ...edge, presentation: { ...edge.presentation, routing: 'elbow', routeMode: 'manual', waypoints: nextPoints.slice(1, -1) } }
+        : edge),
+    });
+    setManualRouteDraft({ edgeId: selected.id, points: nextPoints });
+  }, [commit, document, layoutPreview, manualDraftConflict, manualRouteDraft, routing]);
+
   const cancelManualRouteEdit = useCallback(() => {
     setManualRouteDraft(null);
   }, []);
@@ -579,7 +777,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     commit({
       ...document,
       edges: document.edges.map((edge) => edge.id === selected.id
-        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual', waypoints: manualRouteDraft.points.slice(1, -1) } }
+        ? { ...edge, presentation: { ...edge.presentation, routing: 'elbow', routeMode: 'manual', waypoints: manualRouteDraft.points.slice(1, -1) } }
         : edge),
     });
     setManualRouteDraft(null);
@@ -590,11 +788,8 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     const selected = document.edges.find((edge) => edge.id === selectedEdgeId);
     if (!selected || !isEditableBusinessEdge(document, selected)) return;
     const edges = document.edges.map((edge) => {
-      if (edge.id !== selected.id || !edge.presentation) return edge;
-      const { routeMode: _routeMode, waypoints: _waypoints, ...autoPresentation } = edge.presentation;
-      if (Object.keys(autoPresentation).length > 0) return { ...edge, presentation: autoPresentation };
-      const { presentation: _presentation, ...withoutPresentation } = edge;
-      return withoutPresentation;
+      if (edge.id !== selected.id) return edge;
+      return { ...edge, presentation: edgePresentationForRouting(edge.presentation, 'smart') };
     });
     commit({ ...document, edges });
     setManualRouteDraft(null);
@@ -718,6 +913,12 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     if (stages) commit({ ...document, stages });
   };
 
+  const reorderStage = (stageId: string, targetId: string, placement: HierarchyDropPlacement) => {
+    if (!document || layoutPreview) return;
+    const stages = reorderHierarchyItems(document.stages ?? [], stageId, targetId, placement);
+    if (stages) commit({ ...document, stages });
+  };
+
   const addLane = (kind: FlowLane['kind']) => {
     if (!document || layoutPreview) return;
     const lanes = document.lanes ?? [];
@@ -732,6 +933,12 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const moveLane = (laneId: string, direction: -1 | 1) => {
     if (!document || layoutPreview) return;
     const lanes = moveOrderedItem(document.lanes ?? [], laneId, direction);
+    if (lanes) commit({ ...document, lanes });
+  };
+
+  const reorderLane = (laneId: string, targetId: string, placement: HierarchyDropPlacement) => {
+    if (!document || layoutPreview) return;
+    const lanes = reorderHierarchyItems(document.lanes ?? [], laneId, targetId, placement);
     if (lanes) commit({ ...document, lanes });
   };
 
@@ -751,7 +958,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     setCreationMenu(null);
     setEdgeLabelEditor(null);
     setSelectedEdgeId(null);
-    setLayoutPreview(layoutFlowHierarchy(renumberSemanticFlow(document)));
+    setLayoutPreview(layoutFlowHierarchy(renumberSemanticFlow(documentWithMeasuredNodeSizes(document, flowNodes))));
   };
 
   const applyLayoutPreview = () => {
@@ -821,6 +1028,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
 
   const openDigest = useCallback(async () => {
     if (!guide || layoutPreview) return;
+    setSummaryOpen(false);
     setDigestOpen(true);
     setDigestError('');
     setDigestProposal(null);
@@ -973,6 +1181,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const undo = useCallback(() => {
     if (layoutPreview || !historyRef.current?.canUndo) return;
     const previous = reconcileSubguideEdges(historyRef.current.undo());
+    setManualRouteDraft(null);
     setDocument(previous);
     setFlowNodes(toFlowNodes(previous.nodes, selectedIds, previous.lanes, expandedDetailNodeIds, semanticCodeByNodeId(previous)));
     setSaveState('未保存');
@@ -980,6 +1189,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   const redo = useCallback(() => {
     if (layoutPreview || !historyRef.current?.canRedo) return;
     const next = reconcileSubguideEdges(historyRef.current.redo());
+    setManualRouteDraft(null);
     setDocument(next);
     setFlowNodes(toFlowNodes(next.nodes, selectedIds, next.lanes, expandedDetailNodeIds, semanticCodeByNodeId(next)));
     setSaveState('未保存');
@@ -1032,6 +1242,20 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     requestNodeDeletion(selectedIds);
   }, [removeEdges, requestNodeDeletion, selectedEdgeId, selectedIds]);
   const removeNodeById = useCallback((nodeId: string) => requestNodeDeletion([nodeId]), [requestNodeDeletion]);
+  const toggleResourceVisibility = useCallback((nodeId: string) => {
+    if (!document || layoutPreview) return;
+    const node = document.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node || !isAuthorResourceNode(node)) return;
+    commit(toggleResourceVisibilityInDocument(document, nodeId));
+  }, [commit, document, layoutPreview]);
+  const toggleResourceVisibilityGroup = useCallback((resourceIds: string[]) => {
+    if (!document || layoutPreview || resourceIds.length === 0) return;
+    const resourceIdSet = new Set(resourceIds);
+    const resources = document.nodes.filter((node) => resourceIdSet.has(node.id) && isAuthorResourceNode(node));
+    if (resources.length === 0) return;
+    const allHidden = resources.every((node) => node.visibility === 'HIDDEN');
+    commit(setResourceVisibilityInDocument(document, resources.map((node) => node.id), !allHidden));
+  }, [commit, document, layoutPreview]);
 
   const confirmAnnotatedImageDeletion = useCallback(() => {
     if (!annotatedImageDeletion) return;
@@ -1168,12 +1392,6 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     commit({ ...document, nodes: document.nodes.map((node) => selected.has(node.id) ? { ...node, position: { ...node.position, x } } : node) });
   };
 
-  const moveLayer = (front: boolean) => {
-    if (!document || layoutPreview || !selectedIds[0]) return;
-    const target = front ? maxZIndex(document) + 1 : Math.min(...document.nodes.map((node) => node.zIndex)) - 1;
-    commit({ ...document, nodes: document.nodes.map((node) => selectedIds.includes(node.id) ? { ...node, zIndex: target } : node) });
-  };
-
   if (!guide || !document) return <main className="center-state">{error ? <p className="error-message" role="alert">{error}</p> : <><span className="spinner" /><p>正在载入画布…</p></>}</main>;
   const selectedNode = document.nodes.find((node) => node.id === selectedIds[0]);
   const selectedReferenceUpdate = selectedNode?.type === 'subguide'
@@ -1199,35 +1417,62 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
   return <main className="editor-page">
     <div className="editor-page-content" inert={digestOpen || undefined} aria-hidden={digestOpen || undefined}>
     <header className="editor-header">
-      <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库">←</button>
+      <button className="icon-button" type="button" onClick={onBack} aria-label="返回资料库"><ArrowLeft size={21} weight="bold" aria-hidden="true" /></button>
       <div className="editor-title"><input aria-label="指南标题" value={title} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTitle(event.target.value); setSaveState('未保存'); }} /><span aria-live="polite">{guide.status === 'PUBLISHED' ? `已发布 v${guide.publishedVersion ?? 1}` : '草稿'} · {saveState}</span></div>
-      <div className="editor-actions"><AppearanceToggle /><button className="secondary-button" type="button" onClick={() => void openDraftHistory()} disabled={Boolean(layoutPreview)} aria-label="草稿历史">草稿历史</button><button className="secondary-button" type="button" onClick={() => void save()} disabled={Boolean(layoutPreview)} aria-label="保存草稿">保存草稿</button><button className="primary-button" type="button" onClick={() => void publish()} disabled={Boolean(layoutPreview)} aria-label="发布指南">发布指南</button></div>
+      <section className="guide-details-header" aria-label="指南信息">
+        <GuideDetailsHeader
+          tags={tags}
+          disabled={Boolean(layoutPreview)}
+          summaryTriggerRef={summaryTriggerRef}
+          digestTriggerRef={digestTriggerRef}
+          onTagsChange={(value) => { if (layoutPreview) return; setTags(value); setSaveState('未保存'); }}
+          onOpenSummary={() => setSummaryOpen(true)}
+          onOpenDigest={() => void openDigest()}
+        />
+      </section>
+      <div className="editor-actions" aria-label="指南操作">
+        <div className="editor-action-group editor-action-group--diagnostics" role="group" aria-label="状态与诊断">
+          <span className="editor-action-group-label"><ChartLineUp size={14} weight="bold" aria-hidden="true" />状态</span>
+          <FlowRegressionPanel guideId={guide.id} api={api} annotationTitle={(target) => annotationTitleForTarget(document, target)} />
+        </div>
+        <div className="editor-action-group editor-action-group--appearance" role="group" aria-label="外观设置">
+          <span className="editor-action-group-label">外观</span>
+          <AppearanceToggle />
+        </div>
+        <div className="editor-action-group editor-action-group--versions" role="group" aria-label="版本操作">
+          <span className="editor-action-group-label"><ClockCounterClockwise size={14} weight="bold" aria-hidden="true" />版本</span>
+          <div className="editor-action-segment">
+            <button className="editor-action-button" type="button" onClick={() => void openDraftHistory()} disabled={Boolean(layoutPreview)} aria-label="草稿历史"><ClockCounterClockwise size={17} aria-hidden="true" />草稿历史</button>
+            <button className="editor-action-button" type="button" onClick={() => void save()} disabled={Boolean(layoutPreview)} aria-label="保存草稿"><FloppyDisk size={17} aria-hidden="true" />保存草稿</button>
+          </div>
+        </div>
+        <div className="editor-action-group editor-action-group--primary" role="group" aria-label="主操作">
+          <button className="primary-button editor-publish-button" type="button" onClick={() => void publish()} disabled={Boolean(layoutPreview)} aria-label="发布指南"><UploadSimple size={18} weight="bold" aria-hidden="true" />发布指南</button>
+        </div>
+      </div>
     </header>
-    <div className="editor-toolbar" aria-label="画布工具栏">
-      <button type="button" onClick={() => addNode('start')} disabled={Boolean(layoutPreview)} aria-label="添加开始节点">开始</button>
-      <button type="button" onClick={() => addNode('process')} disabled={Boolean(layoutPreview)} aria-label="添加流程节点">流程</button>
-      <button type="button" onClick={() => addNode('decision')} disabled={Boolean(layoutPreview)} aria-label="添加判断节点">判断</button>
-      <button type="button" onClick={() => addNode('data')} disabled={Boolean(layoutPreview)} aria-label="添加数据节点">数据</button>
-      <button type="button" onClick={() => addNode('markdown')} disabled={Boolean(layoutPreview)} aria-label="添加 Markdown 节点">Markdown</button>
-      <button type="button" onClick={() => addNode('image')} disabled={Boolean(layoutPreview)} aria-label="添加图片节点">图片</button>
-      <button type="button" onClick={() => addNode('video')} disabled={Boolean(layoutPreview)} aria-label="添加视频节点">视频</button>
-      <span className="toolbar-divider" />
-      <button type="button" onClick={undo} disabled={Boolean(layoutPreview) || !historyRef.current?.canUndo} aria-label="撤销">↶</button>
-      <button type="button" onClick={redo} disabled={Boolean(layoutPreview) || !historyRef.current?.canRedo} aria-label="重做">↷</button>
-      <button type="button" onClick={copy} disabled={selectedIds.length === 0} aria-label="复制选中节点">复制</button>
-      <button type="button" onClick={paste} disabled={Boolean(layoutPreview) || clipboardRef.current.length === 0} aria-label="粘贴节点">粘贴</button>
-      <button type="button" onClick={alignLeft} disabled={Boolean(layoutPreview) || selectedIds.length < 2} aria-label="左对齐选中节点">左对齐</button>
-      <button type="button" onClick={previewLayout} disabled={Boolean(layoutPreview) || document.nodes.length < 2} aria-label="预览自动整理">自动整理</button>
-      <button type="button" onClick={() => moveLayer(true)} disabled={Boolean(layoutPreview) || selectedIds.length === 0} aria-label="置于顶层">置顶</button>
-      <button type="button" onClick={() => moveLayer(false)} disabled={Boolean(layoutPreview) || selectedIds.length === 0} aria-label="置于底层">置底</button>
-      <button type="button" onClick={removeSelected} disabled={Boolean(layoutPreview) || (selectedIds.length === 0 && !selectedEdgeId)} aria-label="删除选中项">删除</button>
-      <span className="toolbar-divider" />
-      <button type="button" className="reference-button" onClick={() => { setReferenceQuery(''); setReferenceResults([]); setReferenceError(''); setReferenceSearching(true); setReferenceOpen(true); }} disabled={Boolean(layoutPreview)} aria-label="插入子指南">＋ 插入子指南</button>
-      {layoutPreview ? <div className="layout-preview" role="status"><div className="layout-preview-copy"><span>阶段从上到下 · 子节点向右展开</span><div className="layout-preview-summary"><span>主流程 {layoutPreview.report.primaryNodeIds.length}</span><span>阶段 {layoutPreview.report.stageCount}</span><span>泳道 {layoutPreview.report.laneCount}</span><span>已挂靠资料 {layoutPreview.report.attachedContentIds.length}</span><span>未挂靠资料 {layoutPreview.report.unassignedContentIds.length}</span><span>孤立节点 {layoutPreview.report.unconnectedPrimaryIds.length}</span><span>循环 {layoutPreview.report.cycleNodeIds.length}</span><span>回流 {layoutPreview.report.backEdgeIds.length}</span><span>避障 {routing?.report.avoidedEdgeIds.length ?? 0}</span></div><span className="layout-preview-rule">入口 → 阶段 → 分支与回流 → 资料</span></div><button type="button" onClick={applyLayoutPreview} aria-label="应用自动整理">应用自动整理</button><button type="button" onClick={() => setLayoutPreview(null)} aria-label="取消自动整理">取消</button></div> : null}
-    </div>
+    <EditorToolbar
+      layoutPreview={Boolean(layoutPreview)}
+      canUndo={Boolean(historyRef.current?.canUndo)}
+      canRedo={Boolean(historyRef.current?.canRedo)}
+      canCopy={selectedIds.length > 0}
+      canPaste={clipboardRef.current.length > 0}
+      canAlign={selectedIds.length >= 2}
+      canPreviewLayout={document.nodes.length >= 2}
+      canDelete={selectedIds.length > 0 || Boolean(selectedEdgeId)}
+      onAddNode={addNode}
+      onInsertSubguide={() => { setReferenceQuery(''); setReferenceResults([]); setReferenceError(''); setReferenceSearching(true); setReferenceOpen(true); }}
+      onUndo={undo}
+      onRedo={redo}
+      onCopy={copy}
+      onPaste={paste}
+      onAlign={alignLeft}
+      onPreviewLayout={previewLayout}
+      onRemoveSelected={removeSelected}
+    />
     <div className={`editor-workspace${hierarchyOpen ? '' : ' is-hierarchy-collapsed'}`}>
       <div className="hierarchy-panel-shell" aria-hidden={!hierarchyOpen}>
-        <HierarchyPanel document={document} selectedIds={selectedIds} onSelect={selectAndFocus} onAddStage={addStage} onUpdateStage={updateStage} onMoveStage={moveStage} onRequestDeleteStage={(id) => requestHierarchyDeletion('stage', id)} onAddLane={addLane} onUpdateLane={updateLane} onMoveLane={moveLane} onRequestDeleteLane={(id) => requestHierarchyDeletion('lane', id)} editingLocked={Boolean(layoutPreview)} />
+        <HierarchyPanel document={document} selectedIds={selectedIds} onSelect={selectAndFocus} onAddStage={addStage} onUpdateStage={updateStage} onMoveStage={moveStage} onReorderStage={reorderStage} onRequestDeleteStage={(id) => requestHierarchyDeletion('stage', id)} onAddLane={addLane} onUpdateLane={updateLane} onMoveLane={moveLane} onReorderLane={reorderLane} onRequestDeleteLane={(id) => requestHierarchyDeletion('lane', id)} editingLocked={Boolean(layoutPreview)} />
       </div>
       <section className="canvas-shell" aria-label="无限画布编辑区">
         <button className="hierarchy-panel-toggle" type="button" aria-label={hierarchyOpen ? '收起业务流程' : '展开业务流程'} aria-pressed={hierarchyOpen} onClick={() => setHierarchyOpen((current) => !current)}>
@@ -1235,7 +1480,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
         </button>
         <NodeAnchorPresentationProvider handlesByNodeId={nodeAnchorHandles}>
         <NodeDetailPresentationProvider value={{ expandedNodeIds: expandedDetailNodeIds, onOpenEditor: openNodeDetail, onToggleExpanded: toggleNodeDetail }}>
-        <NodeActionProvider enabled={!layoutPreview} onDeleteNode={removeNodeById}>
+        <NodeActionProvider enabled={!layoutPreview} onDeleteNode={removeNodeById} onToggleResourceVisibility={toggleResourceVisibility}>
         <InlineNodeEditingProvider value={{ enabled: !layoutPreview, updateText: updateInlineText }}>
         <ReactFlow
           nodes={renderedFlowNodes}
@@ -1272,28 +1517,52 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
           maxZoom={2.5}
           nodesDraggable={!layoutPreview && !manualRouteDraft}
           nodesConnectable={!layoutPreview}
-          edgesReconnectable={!layoutPreview}
+          edgesReconnectable={!layoutPreview && Boolean(manualRouteDraft)}
           edgesFocusable={!layoutPreview}
           elementsSelectable={!layoutPreview}
         >
           <ViewportPortal>
+            <CanvasSwimlanes bounds={swimlaneBounds} />
             {appendixGroups.map((group) => <div
               key={group.ownerId}
-              className="resource-appendix"
+              className={`resource-appendix${group.allHidden ? ' is-all-hidden' : ''}`}
               style={{ left: group.x, top: group.y, width: group.width, height: group.height }}
-            ><span>资料附录 · {group.resourceIds.length}</span></div>)}
+            >
+              {group.allHidden ? <button
+                className="resource-appendix-collapsed-toggle nodrag nopan nowheel"
+                type="button"
+                aria-label={`展开${group.ownerTitle}节点资料`}
+                aria-pressed={true}
+                title={`展开${group.ownerTitle}节点资料`}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  toggleResourceVisibilityGroup(group.resourceIds);
+                }}
+              ><EyeSlash size={15} weight="bold" aria-hidden="true" /><span>{group.ownerTitle} · 节点资料 ×{group.resourceIds.length}</span></button> : <>
+                <span>资料附录 · {group.resourceIds.length}</span>
+                <button
+                  className="resource-appendix-visibility nodrag nopan nowheel"
+                  type="button"
+                  aria-label="隐藏全部资料"
+                  aria-pressed={false}
+                  title="隐藏全部资料"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    toggleResourceVisibilityGroup(group.resourceIds);
+                  }}
+                ><Eye size={14} weight="bold" aria-hidden="true" /></button>
+              </>}
+            </div>)}
             {stageBounds.map((bound) => <div
               key={bound.stageId ?? 'none'}
               className={`stage-lane${draggedStageId === bound.stageId ? ' is-dragging' : ''}`}
               data-stage-id={bound.stageId ?? 'none'}
               style={{ left: bound.x, top: bound.y, width: bound.width, height: bound.height }}
             ><span className="stage-lane-label">{bound.title}</span></div>)}
-            {!layoutPreview && manualRouteDraft && flowInstance ? <ManualRouteEditor
-              points={manualRouteDraft.points}
-              conflict={manualDraftConflict}
-              onMoveSegment={moveManualRouteSegment}
-              screenToFlowPosition={(point) => flowInstance.screenToFlowPosition(point)}
-            /> : null}
           </ViewportPortal>
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} color="var(--ga-border-strong)" />
           <MiniMap pannable zoomable nodeStrokeWidth={3} />
@@ -1306,15 +1575,23 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
         <div className="canvas-screen-overlay">
           {alignmentGuide ? <AlignmentGuide guide={alignmentGuide} viewport={overlayViewport} /> : null}
           {creationMenu ? <CanvasCreationMenu position={canvasPointToScreen(creationMenu.position, overlayViewport)} allowResources onCreate={createFromConnection} onCancel={() => setCreationMenu(null)} /> : null}
-          {edgeLabelEditor ? <EdgeLabelEditor position={canvasPointToScreen(edgeLabelEditor.position, overlayViewport)} {...(edgeLabelEditor.label !== undefined ? { label: edgeLabelEditor.label } : {})} onSave={saveEdgeLabel} onCancel={() => setEdgeLabelEditor(null)} /> : null}
-          {!layoutPreview && selectedBusinessEdge && selectedEdgeRoute ? <EdgeToolbarAtRoute
+          {edgeLabelEditor ? <EdgeLabelEditor position={canvasPointToScreen(edgeLabelEditor.position, overlayViewport)} {...(edgeLabelEditor.label !== undefined ? { label: edgeLabelEditor.label } : {})} {...(edgeLabelEditor.labelFontSize !== undefined ? { labelFontSize: edgeLabelEditor.labelFontSize } : {})} onSave={saveEdgeLabel} onCancel={() => setEdgeLabelEditor(null)} /> : null}
+          {!layoutPreview && manualRouteDraft && flowInstance ? <ManualRouteEditor
+            points={manualRouteDraft.points}
+            conflict={manualDraftConflict}
+            onMoveSegment={moveManualRouteSegment}
+            onFinishSegment={finishManualRouteSegment}
+            screenToFlowPosition={(point) => flowInstance.screenToFlowPosition(point)}
+            flowToScreenPosition={(point) => canvasPointToScreen(point, overlayViewport)}
+          /> : null}
+          {!layoutPreview && !manualRouteDraft && selectedBusinessEdge && selectedEdgeRoute ? <EdgeToolbarAtRoute
             route={selectedEdgeRoute}
             viewport={overlayViewport}
             presentation={selectedBusinessEdge.presentation}
             onChange={updateSelectedEdgePresentation}
             onClose={() => { setSelectedEdgeId(null); setManualRouteDraft(null); }}
-            routeEditing={manualRouteDraft?.edgeId === selectedBusinessEdge.id}
-            manualRouteConflict={manualDraftConflict}
+            routeEditing={false}
+            manualRouteConflict={false}
             onStartRouteEdit={startManualRouteEdit}
             onSaveRouteEdit={saveManualRouteEdit}
             onCancelRouteEdit={cancelManualRouteEdit}
@@ -1322,18 +1599,20 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
           /> : null}
         </div>
       </section>
-      <aside className="inspector" aria-label="属性与教学步骤">
-        <div><span className="eyebrow">GUIDE DETAILS</span><label>摘要<textarea value={summary} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setSummary(event.target.value); setSaveState('未保存'); }} /></label><label>标签<input value={tags.join('，')} disabled={Boolean(layoutPreview)} onChange={(event) => { if (layoutPreview) return; setTags(event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean)); setSaveState('未保存'); }} /></label><button ref={digestTriggerRef} className="secondary-button guide-digest-open" type="button" onClick={() => void openDigest()} disabled={Boolean(layoutPreview)} aria-label="生成指南总览">生成指南总览</button></div>
-        <hr />
-        {selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} lanes={lanes} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} {...(selectedReferenceUpdate ? { referenceUpdate: selectedReferenceUpdate } : {})} onUpgradeReference={() => void upgradeReference()} onAddChildStep={addChildStep} onMoveStep={moveSelectedStep} resourceReferences={selectedResourceReferences} onFocusReference={(nodeId) => selectAndFocus([nodeId])} onEditAnnotations={() => setAnnotationEditorNodeId(selectedNode.type === 'image' ? selectedNode.id : null)} api={api} locked={Boolean(layoutPreview)} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
-        <hr />
-        <div className="step-summary"><div><span className="eyebrow">LESSON PATH</span><strong>{deriveSemanticFlow(document).lessonSteps.length} 个教学步骤</strong></div>{deriveSemanticFlow(document).lessonSteps.map((step, index) => <div className="step-row" key={step.id}><span>{index + 1}</span><p>{step.title}</p></div>)}</div>
+      <aside className="inspector" aria-label="节点属性">
+        {layoutPreview ? <CanvasLayoutPreviewDialog
+          layout={layoutPreview}
+          avoidedEdgeCount={routing?.report.avoidedEdgeIds.length ?? 0}
+          onApply={applyLayoutPreview}
+          onClose={() => setLayoutPreview(null)}
+        /> : selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} lanes={lanes} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} {...(selectedReferenceUpdate ? { referenceUpdate: selectedReferenceUpdate } : {})} onUpgradeReference={() => void upgradeReference()} onAddChildStep={addChildStep} onMoveStep={moveSelectedStep} resourceReferences={selectedResourceReferences} onFocusReference={(nodeId) => selectAndFocus([nodeId])} onEditAnnotations={() => setAnnotationEditorNodeId(selectedNode.type === 'image' ? selectedNode.id : null)} onUploadImage={(file) => requestImageUpload(selectedNode.id, file)} api={api} locked={Boolean(layoutPreview)} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
       </aside>
     </div>
     {error ? <div className="toast-error" role="alert">{error}</div> : null}
     </div>
-    {referenceOpen ? <div className="modal-backdrop" role="presentation"><section className="reference-modal" role="dialog" aria-modal="true" aria-labelledby="reference-title"><button className="modal-close" onClick={() => { setReferenceOpen(false); setReferenceSearching(false); }} aria-label="关闭子指南搜索">×</button><span className="eyebrow">REUSE PUBLISHED GUIDE</span><h2 id="reference-title">插入固定版本子指南</h2><p>打开后会载入全部已发布指南；输入标题、标签或内容关键词即可即时筛选。</p><label className="sr-only" htmlFor="reference-search">搜索可复用指南</label><input id="reference-search" type="search" autoFocus placeholder="例如：物料、销售订单、VA01" aria-label="搜索可复用指南" value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} /><div className="reference-results" aria-live="polite">{referenceSearching ? <p className="status-line">正在载入可复用指南…</p> : null}{referenceError ? <p className="error-message" role="alert">{referenceError}</p> : null}{!referenceSearching && !referenceError && referenceResults.length === 0 ? <p className="muted">没有找到可引用的已发布指南。</p> : null}{referenceResults.map((item) => <article key={item.versionId}><div><strong>{item.title}</strong><span>v{item.version} · {item.authorName}</span></div><button className="secondary-button" type="button" onClick={() => insertReference(item)} aria-label={`插入 ${item.title}`}>插入</button></article>)}</div></section></div> : null}
-    {annotationEditorNode ? <ImageAnnotationEditor node={annotationEditorNode} nodes={document.nodes} onClose={() => setAnnotationEditorNodeId(null)} onChange={(data) => commit({ ...document, nodes: document.nodes.map((node) => node.id === annotationEditorNode.id ? { ...annotationEditorNode, data } : node) })} onUploadSupplement={async (file) => {
+    {summaryOpen ? <GuideSummaryDialog summary={summary} disabled={Boolean(layoutPreview)} openerRef={summaryTriggerRef} onSummaryChange={(value) => { if (layoutPreview) return; setSummary(value); setSaveState('未保存'); }} onClose={() => setSummaryOpen(false)} /> : null}
+    {referenceOpen ? <EditorDialogSurface className="reference-modal guide-reference-dialog" ariaLabelledBy="reference-title" closeLabel="关闭子指南搜索" onClose={() => { setReferenceOpen(false); setReferenceSearching(false); }}><span className="eyebrow">REUSE PUBLISHED GUIDE</span><h2 id="reference-title">插入固定版本子指南</h2><p>打开后会载入全部已发布指南；输入标题、标签或内容关键词即可即时筛选。</p><label className="sr-only" htmlFor="reference-search">搜索可复用指南</label><input id="reference-search" type="search" autoFocus placeholder="例如：物料、销售订单、VA01" aria-label="搜索可复用指南" value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} /><div className="reference-results" aria-live="polite">{referenceSearching ? <p className="status-line">正在载入可复用指南…</p> : null}{referenceError ? <p className="error-message" role="alert">{referenceError}</p> : null}{!referenceSearching && !referenceError && referenceResults.length === 0 ? <p className="muted">没有找到可引用的已发布指南。</p> : null}{referenceResults.map((item) => <article key={item.versionId}><div><strong>{item.title}</strong><span>v{item.version} · {item.authorName}</span></div><button className="secondary-button" type="button" onClick={() => insertReference(item)} aria-label={`插入 ${item.title}`}>插入</button></article>)}</div></EditorDialogSurface> : null}
+    {annotationEditorNode ? <ImageAnnotationEditor node={annotationEditorNode} nodes={document.nodes} {...(annotationEditorNode.id === focusNodeId && focusAnnotationId ? { focusAnnotationId } : {})} onClose={() => setAnnotationEditorNodeId(null)} onChange={(data) => commit({ ...document, nodes: document.nodes.map((node) => node.id === annotationEditorNode.id ? { ...annotationEditorNode, data } : node) })} onUploadSupplement={async (file) => {
       if (!file.type.startsWith('image/')) throw new Error('仅支持图片文件。');
       const media = await api.uploadMedia(file);
       if (media.kind !== 'IMAGE') throw new Error('仅支持图片文件。');
@@ -1341,6 +1620,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, onBack }: 
     }} /> : null}
     {hierarchyDeletion && hierarchyDeletionItem ? <HierarchyDeletionDialog kind={hierarchyDeletion.kind} title={hierarchyDeletionItem.title} affectedNodeCount={hierarchyDeletionCount} onConfirm={confirmHierarchyDeletion} onCancel={() => setHierarchyDeletion(null)} /> : null}
     {annotatedImageDeletion ? <AnnotatedImageDeletionDialog imageCount={annotatedImageDeletion.imageCount} annotationCount={annotatedImageDeletion.annotationCount} onConfirm={confirmAnnotatedImageDeletion} onCancel={() => setAnnotatedImageDeletion(null)} /> : null}
+    {imageReplacement ? <ImageReplacementDialog annotationCount={imageReplacement.annotationCount} uploading={imageReplacementUploading} onConfirm={() => void confirmImageReplacement()} onCancel={() => { if (!imageReplacementUploading) setImageReplacement(null); }} /> : null}
     {draftHistoryOpen ? <DraftHistoryDialog items={draftHistory} currentRevision={guide.revision} loading={draftHistoryLoading} error={draftHistoryError} onRestore={restoreDraftHistory} onClose={() => setDraftHistoryOpen(false)} /> : null}
     {digestOpen ? <GuideDigestDialog guide={guide} status={digestStatus} proposal={digestProposal} generating={digestGenerating} error={digestError} onReconcile={reconcileDigest} onGenerate={generateDigest} onReject={rejectDigest} onApply={applyDigest} onClose={closeDigest} /> : null}
     {detailEditor ? <NodeDetailDialog nodeId={detailEditor.nodeId} title={detailEditor.title} value={detailEditor.value} openerRef={{ current: detailEditor.opener }} onSave={saveNodeDetail} onClose={() => setDetailEditor(null)} /> : null}
@@ -1492,14 +1772,37 @@ function isInlineEditableFlowNode(node: CanvasNode): node is CanvasNode<'start' 
   return ['start', 'end', 'process', 'decision', 'data'].includes(node.type);
 }
 
-function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleReference, referenceUpdate, onUpgradeReference, onAddChildStep, onMoveStep, resourceReferences, onFocusReference, onEditAnnotations, api, locked }: { node: CanvasNode; primaryNodes: CanvasNode[]; stages: FlowStage[]; lanes: FlowLane[]; onChange: (node: CanvasNode) => void; onToggleReference: () => void; referenceUpdate?: GuideReferenceUpdate; onUpgradeReference: () => void; onAddChildStep: () => void; onMoveStep: (direction: 'previous' | 'next') => void; resourceReferences: Array<{ nodeId: string; code: string }>; onFocusReference: (nodeId: string) => void; onEditAnnotations: () => void; api: EditorApi; locked: boolean }) {
+type VideoKeypoint = CanvasNode<'video'>['data']['keypoints'][number];
+
+function VideoKeypointTitleInput({ point, index, onCommit }: { point: VideoKeypoint; index: number; onCommit: (title: string) => void }) {
+  const [value, setValue] = useState(point.title);
+
+  useEffect(() => {
+    setValue(point.title);
+  }, [point.id, point.title]);
+
+  return <input
+    aria-label={`关键点 ${index + 1} 标题`}
+    value={value}
+    onChange={(event) => {
+      const nextValue = event.target.value;
+      setValue(nextValue);
+      if (nextValue.trim()) onCommit(nextValue);
+    }}
+    onBlur={() => {
+      if (!value.trim()) setValue(point.title);
+    }}
+  />;
+}
+
+function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleReference, referenceUpdate, onUpgradeReference, onAddChildStep, onMoveStep, resourceReferences, onFocusReference, onEditAnnotations, onUploadImage, api, locked }: { node: CanvasNode; primaryNodes: CanvasNode[]; stages: FlowStage[]; lanes: FlowLane[]; onChange: (node: CanvasNode) => void; onToggleReference: () => void; referenceUpdate?: GuideReferenceUpdate; onUpgradeReference: () => void; onAddChildStep: () => void; onMoveStep: (direction: 'previous' | 'next') => void; resourceReferences: Array<{ nodeId: string; code: string }>; onFocusReference: (nodeId: string) => void; onEditAnnotations: () => void; onUploadImage: (file: File) => void; api: EditorApi; locked: boolean }) {
   const updateData = (data: CanvasNode['data']) => onChange({ ...node, data } as CanvasNode);
   const flowData = ['start', 'end', 'process', 'decision', 'data'].includes(node.type) ? node.data as CanvasNode<'process'>['data'] : null;
   return <fieldset className="node-inspector" disabled={locked}><div className="inspector-node-heading"><span>{node.type.toUpperCase()}</span><code>{node.id.slice(0, 18)}</code></div>
     {flowData ? <><label>节点标题<input value={flowData.label} onChange={(event) => updateData({ ...flowData, label: event.target.value } as CanvasNode['data'])} /></label><label>节点明细<textarea rows={4} value={flowData.description ?? ''} onChange={(event) => { const description = event.target.value.trim(); const { description: _previousDescription, ...withoutDescription } = flowData; updateData((description ? { ...withoutDescription, description: event.target.value } : withoutDescription) as CanvasNode['data']); }} /></label><p className="node-inspector-hint">支持 Markdown 标题、列表、链接和代码块。</p></> : null}
     {node.type === 'markdown' ? <label>Markdown<textarea rows={12} value={node.data.markdown} onChange={(event) => updateData({ markdown: event.target.value })} /></label> : null}
-    {node.type === 'image' ? <><label>图片地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>替代文字<input value={node.data.alt} onChange={(event) => updateData({ ...node.data, alt: event.target.value })} /></label><label>图片说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><button className="secondary-button" type="button" onClick={onEditAnnotations} aria-label="编辑图片标注">编辑图片标注（{node.data.annotations?.length ?? 0}）</button><label className="upload-label">上传图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
-    {node.type === 'video' ? <><label>视频地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>视频说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><div className="keypoint-editor">{node.data.keypoints.map((point, index) => <div key={point.id}><input aria-label={`关键点 ${index + 1} 标题`} value={point.title} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, title: event.target.value } : item) })} /><input type="number" min="0" aria-label={`关键点 ${index + 1} 秒数`} value={point.timeSeconds} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, timeSeconds: Number(event.target.value) } : item) })} /></div>)}<button type="button" onClick={() => updateData({ ...node.data, keypoints: [...node.data.keypoints, { id: uniqueId('keypoint'), title: '新关键点', timeSeconds: 0 }] })}>添加视频关键点</button></div><label className="upload-label">上传视频<input type="file" accept="video/mp4,video/webm" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
+    {node.type === 'image' ? <><label>图片地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>替代文字<input value={node.data.alt} onChange={(event) => updateData({ ...node.data, alt: event.target.value })} /></label><label>图片说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><button className="secondary-button" type="button" onClick={onEditAnnotations} aria-label="编辑图片标注">编辑图片标注（{node.data.annotations?.length ?? 0}）</button><label className="upload-label">上传图片<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; onUploadImage(file); event.currentTarget.value = ''; }} /></label></> : null}
+    {node.type === 'video' ? <><label>视频地址<input value={node.data.url} onChange={(event) => updateData({ ...node.data, url: event.target.value })} /></label><label>视频说明<textarea value={node.data.caption ?? ''} onChange={(event) => updateData({ ...node.data, caption: event.target.value })} /></label><div className="keypoint-editor">{node.data.keypoints.map((point, index) => <div key={point.id}><VideoKeypointTitleInput point={point} index={index} onCommit={(title) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, title } : item) })} /><input type="number" min="0" aria-label={`关键点 ${index + 1} 秒数`} value={point.timeSeconds} onChange={(event) => updateData({ ...node.data, keypoints: node.data.keypoints.map((item) => item.id === point.id ? { ...item, timeSeconds: Number(event.target.value) } : item) })} /></div>)}<button type="button" onClick={() => updateData({ ...node.data, keypoints: [...node.data.keypoints, { id: uniqueId('keypoint'), title: '新关键点', timeSeconds: 0 }] })}>添加视频关键点</button></div><label className="upload-label">上传视频<input type="file" accept="video/mp4,video/webm,video/quicktime,.mov" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const asset = await api.uploadMedia(file); updateData({ ...node.data, assetId: asset.id, url: asset.url }); }} /></label></> : null}
     {node.type === 'subguide' ? <><div className="pinned-version"><strong>{node.data.title}</strong><span>固定版本 v{node.data.version}</span></div>{referenceUpdate ? <div className="reference-update"><span>发现 v{referenceUpdate.latestVersion}（当前 v{referenceUpdate.currentVersion}）</span><button className="secondary-button" type="button" onClick={onUpgradeReference} aria-label={`采用 ${referenceUpdate.latestTitle} v${referenceUpdate.latestVersion}`}>采用 v{referenceUpdate.latestVersion}</button></div> : null}<button className="secondary-button" type="button" onClick={onToggleReference} aria-label={node.data.expanded ? '折叠子指南' : '展开子指南'}>{node.data.expanded ? '折叠子指南' : '展开子指南'}</button></> : null}
     {isPrimaryFlowNode(node) ? <><label>所属业务阶段<select value={node.stageId ?? ''} onChange={(event) => onChange({ ...node, stageId: event.target.value || undefined })}><option value="">未分阶段</option>{stages.map((stage) => <option key={stage.id} value={stage.id}>{stage.title}</option>)}</select></label><label>责任泳道<select value={node.laneId ?? ''} onChange={(event) => onChange({ ...node, laneId: event.target.value || undefined })}><option value="">未分配责任</option>{lanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.title}</option>)}</select></label></> : null}
     {isContentNode(node) ? <><p className="node-inspector-hint">每份资料只挂靠一个主节点；其它节点通过可跳转引用访问它。</p><label>挂靠主节点<select value={node.attachment?.ownerNodeId ?? node.contentParentId ?? ''} onChange={(event) => {
@@ -1508,8 +1811,32 @@ function NodeInspector({ node, primaryNodes, stages, lanes, onChange, onToggleRe
       const order = primaryNodes.filter((primary) => primary.id !== node.id && primary.id === ownerNodeId).length;
       onChange(ownerNodeId ? { ...withoutAttachment, attachment: { ownerNodeId, order } } as CanvasNode : withoutAttachment as CanvasNode);
     }}><option value="">未挂靠</option>{primaryNodes.map((primary) => <option key={primary.id} value={primary.id}>{nodeLabel(primary)}</option>)}</select></label></> : null}
-    {isPrimaryFlowNode(node) ? <><div className="node-order-actions"><button className="secondary-button" type="button" onClick={() => onMoveStep('previous')} aria-label="前移步骤">前移步骤</button><button className="secondary-button" type="button" onClick={() => onMoveStep('next')} aria-label="后移步骤">后移步骤</button></div><button className="secondary-button" type="button" onClick={onAddChildStep}>添加子步骤</button>{resourceReferences.length > 0 ? <div className="node-reference-links"><span>资料引用</span>{resourceReferences.map((reference) => <button key={reference.nodeId} type="button" onClick={() => onFocusReference(reference.nodeId)}>↗ 引用 {reference.code}</button>)}</div> : null}</> : null}
+    {isPrimaryFlowNode(node) ? <><NodeStepActions key={node.id} onAddChildStep={onAddChildStep} onMoveStep={onMoveStep} />{resourceReferences.length > 0 ? <div className="node-reference-links"><span>资料引用</span>{resourceReferences.map((reference) => <button key={reference.nodeId} type="button" onClick={() => onFocusReference(reference.nodeId)}>↗ 引用 {reference.code}</button>)}</div> : null}</> : null}
   </fieldset>;
+}
+
+function NodeStepActions({ onAddChildStep, onMoveStep }: { onAddChildStep: () => void; onMoveStep: (direction: 'previous' | 'next') => void }) {
+  return <div className="node-step-actions" role="group" aria-label="当前步骤操作">
+    <div className="node-order-actions"><button className="secondary-button" type="button" onClick={() => onMoveStep('previous')} aria-label="前移步骤">前移步骤</button><button className="secondary-button" type="button" onClick={() => onMoveStep('next')} aria-label="后移步骤">后移步骤</button></div>
+    <button className="secondary-button" type="button" onClick={onAddChildStep}>添加子步骤</button>
+  </div>;
+}
+
+function nodeLabel(node: CanvasNode): string {
+  if (node.type === 'subguide') return node.data.title;
+  if (node.type === 'start' || node.type === 'end' || node.type === 'process' || node.type === 'decision' || node.type === 'data') return node.data.label;
+  return node.id;
+}
+
+function annotationTitleForTarget(
+  document: CanvasDocument,
+  target: { resourceNodeId: string; annotationId: string },
+): string {
+  const image = document.nodes.find((node): node is CanvasNode<'image'> =>
+    node.id === target.resourceNodeId && node.type === 'image',
+  );
+  return image?.data.annotations?.find((annotation) => annotation.id === target.annotationId)?.title
+    ?? target.annotationId;
 }
 
 function createNode(id: string, type: CanvasNode['type'], index: number, position?: { x: number; y: number }): CanvasNode {
@@ -1538,6 +1865,15 @@ export function persistableNodeChanges(changes: NodeChange<Node>[], expandedNode
 
 export function removeNodesFromDocument(document: CanvasDocument, nodeIds: string[]): CanvasDocument {
   const removed = new Set(nodeIds);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    document.nodes.forEach((node) => {
+      if (!node.source?.referenceNodeId || !removed.has(node.source.referenceNodeId) || removed.has(node.id)) return;
+      removed.add(node.id);
+      changed = true;
+    });
+  }
   return {
     ...document,
     nodes: document.nodes.filter((node) => !removed.has(node.id)).map((node) =>
@@ -1556,9 +1892,98 @@ export function removeNodesFromDocument(document: CanvasDocument, nodeIds: strin
   } as CanvasDocument;
 }
 
+function isAuthorResourceNode(node: CanvasNode): boolean {
+  return isContentNode(node) && node.source === undefined;
+}
+
+const resourceAppendixAnchorPrefix = 'resource-appendix-anchor:';
+
+export function resourceAppendixAnchorId(ownerId: string): string {
+  return `${resourceAppendixAnchorPrefix}${ownerId}`;
+}
+
+function isResourceAppendixAnchorId(nodeId: string): boolean {
+  return nodeId.startsWith(resourceAppendixAnchorPrefix);
+}
+
+function resourceOwnerId(node: CanvasNode): string | undefined {
+  return node.attachment?.ownerNodeId ?? node.contentParentId;
+}
+
+function resourceOwnerTitle(node: CanvasNode): string {
+  if ('label' in node.data && typeof node.data.label === 'string') return node.data.label;
+  if ('title' in node.data && typeof node.data.title === 'string') return node.data.title;
+  return '节点';
+}
+
+function allHiddenResourceIds(nodes: CanvasDocument['nodes']): Set<string> {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const byOwner = new Map<string, CanvasNode[]>();
+  nodes.filter((node) => isAuthorResourceNode(node) && !node.hidden).forEach((node) => {
+    const ownerId = resourceOwnerId(node);
+    if (!ownerId) return;
+    const resources = byOwner.get(ownerId);
+    if (resources) resources.push(node);
+    else byOwner.set(ownerId, [node]);
+  });
+
+  const collapsed = new Set<string>();
+  for (const [ownerId, resources] of byOwner) {
+    if (!nodeIds.has(ownerId) || !resources.every((node) => node.visibility === 'HIDDEN')) continue;
+    resources.forEach((node) => collapsed.add(node.id));
+  }
+  return collapsed;
+}
+
+export function setResourceVisibilityInDocument(document: CanvasDocument, nodeIds: Iterable<string>, hidden: boolean): CanvasDocument {
+  const resourceIds = new Set(nodeIds);
+  return {
+    ...document,
+    nodes: document.nodes.map((node) => {
+      if (!resourceIds.has(node.id) || !isAuthorResourceNode(node)) return node;
+      if (!hidden) {
+        const { visibility: _visibility, ...visibleNode } = node;
+        return visibleNode as CanvasNode;
+      }
+      return { ...node, visibility: 'HIDDEN' as const };
+    }),
+  };
+}
+
+export function toggleResourceVisibilityInDocument(document: CanvasDocument, nodeId: string): CanvasDocument {
+  const node = document.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node || !isAuthorResourceNode(node)) return document;
+  return setResourceVisibilityInDocument(document, [nodeId], node.visibility !== 'HIDDEN');
+}
+
 export function removeEdgesFromDocument(document: CanvasDocument, edgeIds: string[]): CanvasDocument {
   const removed = new Set(edgeIds);
   return { ...document, edges: document.edges.filter((edge) => !removed.has(edge.id)) };
+}
+
+/**
+ * React Flow reports the actual size after a node's text has wrapped. Keep that
+ * transient measurement in the rendering/layout model immediately, rather
+ * than routing from the last saved minimum height for one render.
+ */
+export function documentWithMeasuredNodeSizes(document: CanvasDocument, flowNodes: Node[]): CanvasDocument {
+  const measuredSizeByNodeId = new Map<string, { width: number; height: number }>();
+  for (const flowNode of flowNodes) {
+    const width = flowNode.measured?.width ?? flowNode.width;
+    const height = flowNode.measured?.height ?? flowNode.height;
+    if (width === undefined || height === undefined || width <= 0 || height <= 0) continue;
+    measuredSizeByNodeId.set(flowNode.id, { width, height });
+  }
+  if (measuredSizeByNodeId.size === 0) return document;
+
+  let changed = false;
+  const nodes = document.nodes.map((node) => {
+    const size = measuredSizeByNodeId.get(node.id);
+    if (!size || (node.size?.width === size.width && node.size?.height === size.height)) return node;
+    changed = true;
+    return { ...node, size };
+  });
+  return changed ? { ...document, nodes } : document;
 }
 
 export function toFlowNodes(
@@ -1569,9 +1994,15 @@ export function toFlowNodes(
   semanticCodeByNodeId: ReadonlyMap<string, string> = new Map(),
 ): Node[] {
   const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
+  const collapsedResourceIds = allHiddenResourceIds(nodes);
   return nodes.map((node) => {
     const size = node.size ?? defaultCanvasNodeSize(node);
     const detailExpanded = expandedNodeIds.has(node.id);
+    const baseStyle = detailExpanded
+      ? { width: size.width }
+      : isPrimaryFlowNode(node)
+        ? { width: size.width, minHeight: size.height }
+        : { width: size.width, height: size.height };
     return {
       id: node.id,
       type: node.type,
@@ -1579,6 +2010,7 @@ export function toFlowNodes(
       data: {
         ...node.data,
         detailExpanded,
+        ...(isAuthorResourceNode(node) ? { resourceVisibility: node.visibility ?? 'VISIBLE' } : {}),
         ...(isPrimaryFlowNode(node) && node.laneId && laneById.has(node.laneId) ? { responsibility: pickResponsibility(laneById.get(node.laneId)!) } : {}),
         ...(semanticCodeByNodeId.get(node.id) ? { semanticCode: semanticCodeByNodeId.get(node.id) } : {}),
       } as unknown as Record<string, unknown>,
@@ -1586,7 +2018,7 @@ export function toFlowNodes(
       zIndex: node.zIndex,
       className: node.attachment || node.contentParentId ? 'context-node appendix-node' : 'primary-node',
       selected: selectedIds.includes(node.id),
-      style: detailExpanded ? { width: size.width } : { width: size.width, height: size.height },
+      style: collapsedResourceIds.has(node.id) ? { ...baseStyle, display: 'none' as const } : baseStyle,
       ...(node.size && !detailExpanded ? { measured: { width: node.size.width, height: node.size.height } } : {}),
     };
   });
@@ -1610,7 +2042,8 @@ function EdgeToolbarAtRoute({ route, viewport, presentation, onChange, onClose, 
   onResetRoute: () => void;
 }) {
   const position = canvasPointToScreen(routeLabelPoint(route.points), viewport);
-  return <div className="edge-toolbar-position" style={{ left: position.x, top: position.y }}>
+  const placementClassName = position.y < 90 ? ' edge-toolbar-position--below' : '';
+  return <div className={`edge-toolbar-position${placementClassName}`} style={{ left: position.x, top: position.y }}>
     <EdgeToolbar
       presentation={presentation}
       onChange={onChange}
@@ -1653,9 +2086,11 @@ function sameViewport(left: CanvasDocument['viewport'], right: CanvasDocument['v
   return left.x === right.x && left.y === right.y && left.zoom === right.zoom;
 }
 
-function renderEdge(document: CanvasDocument, edge: CanvasEdge, route: OrthogonalRoute | undefined): Edge {
+function renderEdge(document: CanvasDocument, edge: CanvasEdge, route: OrthogonalRoute | undefined, screenToFlowPosition?: (point: { x: number; y: number }) => Point, onLabelOffsetChange?: (offset: number) => void, onLabelDoubleClick?: (event: { clientX: number; clientY: number }) => void, selected = false, reconnectActive = false): Edge {
   const source = document.nodes.find((node) => node.id === edge.source);
   const visuals = resolveEdgeVisuals(edge.presentation);
+  const editable = isEditableBusinessEdge(document, edge);
+  const endpointMode = editable ? (reconnectActive ? 'active' : 'idle') : undefined;
   return {
     id: edge.id,
     source: edge.source,
@@ -1664,8 +2099,17 @@ function renderEdge(document: CanvasDocument, edge: CanvasEdge, route: Orthogona
     sourceHandle: route ? physicalHandleId(edge.id, 'source') : edge.sourceHandle ?? (source?.type === 'decision' ? 'yes' : 'out'),
     targetHandle: route ? physicalHandleId(edge.id, 'target') : edge.targetHandle ?? 'in',
     type: route ? 'orthogonal' : 'smoothstep',
+    selected: editable && selected,
+    reconnectable: editable && reconnectActive,
     ...visuals,
-    data: { ...(route ? { route } : {}), canvasEdge: edge },
+    data: {
+      ...(route ? { route } : {}),
+      ...(endpointMode ? { endpointMode } : {}),
+      ...(edge.label ? { labelOffset: edge.presentation?.labelOffset, labelFontSize: edge.presentation?.labelFontSize } : {}),
+      ...(screenToFlowPosition && onLabelOffsetChange ? { screenToFlowPosition, onLabelOffsetChange } : {}),
+      ...(onLabelDoubleClick ? { onLabelDoubleClick } : {}),
+      canvasEdge: edge,
+    },
   };
 }
 
@@ -1695,6 +2139,10 @@ function isPhysicalAnchorHandle(handle: string | null | undefined): boolean {
   return Boolean(handle?.startsWith('anchor-') || handle?.startsWith('edge:'));
 }
 
+function isManualAnchorHandle(handle: string | null | undefined): boolean {
+  return Boolean(handle?.startsWith('anchor-source-') || handle?.startsWith('anchor-target-'));
+}
+
 function anchorFromPhysicalHandle(handle: string | null | undefined): EdgeAnchor | undefined {
   const match = handle?.match(/^anchor-(?:source|target)-(TOP|RIGHT|BOTTOM|LEFT)$/);
   return match ? { side: match[1] as EdgeAnchor['side'], offset: 0.5 } : undefined;
@@ -1709,13 +2157,53 @@ function semanticTargetHandle(handle?: string | null): string {
   return handle && !isPhysicalAnchorHandle(handle) ? handle : 'in';
 }
 
-function edgePresentationWithAnchors(existing: EdgePresentation | undefined, sourceAnchor: EdgeAnchor | undefined, targetAnchor: EdgeAnchor | undefined): EdgePresentation | undefined {
-  const presentation = {
-    ...existing,
-    ...(sourceAnchor ? { sourceAnchor } : {}),
-    ...(targetAnchor ? { targetAnchor } : {}),
-  };
+type EndpointAnchorUpdate = { anchor?: EdgeAnchor };
+
+function manualAnchorUpdate(handle: string | null | undefined): EndpointAnchorUpdate {
+  const anchor = isManualAnchorHandle(handle) ? anchorFromPhysicalHandle(handle) : undefined;
+  return anchor ? { anchor } : {};
+}
+
+function edgePresentationWithAnchorUpdates(
+  existing: EdgePresentation | undefined,
+  sourceUpdate?: EndpointAnchorUpdate,
+  targetUpdate?: EndpointAnchorUpdate,
+): EdgePresentation | undefined {
+  const presentation = { ...existing };
+  applyEndpointAnchorUpdate(presentation, 'source', sourceUpdate);
+  applyEndpointAnchorUpdate(presentation, 'target', targetUpdate);
   return Object.keys(presentation).length > 0 ? presentation : undefined;
+}
+
+function applyEndpointAnchorUpdate(
+  presentation: EdgePresentation,
+  endpoint: 'source' | 'target',
+  update: EndpointAnchorUpdate | undefined,
+) {
+  if (!update) return;
+  if (endpoint === 'source') {
+    if (update.anchor) {
+      presentation.sourceAnchor = update.anchor;
+      presentation.sourceAnchorMode = 'manual';
+    } else {
+      delete presentation.sourceAnchor;
+      delete presentation.sourceAnchorMode;
+    }
+    return;
+  }
+  if (update.anchor) {
+    presentation.targetAnchor = update.anchor;
+    presentation.targetAnchorMode = 'manual';
+  } else {
+    delete presentation.targetAnchor;
+    delete presentation.targetAnchorMode;
+  }
+}
+
+function edgeWithPresentation(edge: CanvasEdge, presentation: EdgePresentation | undefined): CanvasEdge {
+  if (presentation) return { ...edge, presentation };
+  const { presentation: _presentation, ...withoutPresentation } = edge;
+  return withoutPresentation;
 }
 
 function anchorForNodeClientPoint(nodeId: string, point: { x: number; y: number }): EdgeAnchor | undefined {
@@ -1729,6 +2217,7 @@ function anchorForNodeClientPoint(nodeId: string, point: { x: number; y: number 
 
 export function hierarchyPresentationEdges(document: CanvasDocument): Edge[] {
   const byOwner = new Map<string, CanvasNode[]>();
+  const appendixGroupByOwner = new Map(resourceAppendixGroups(document).map((group) => [group.ownerId, group]));
   document.nodes.filter((node) => isContentNode(node) && !node.hidden).forEach((node) => {
     const ownerId = node.attachment?.ownerNodeId ?? node.contentParentId;
     if (!ownerId) return;
@@ -1740,23 +2229,37 @@ export function hierarchyPresentationEdges(document: CanvasDocument): Edge[] {
     const owner = document.nodes.find((node) => node.id === ownerId);
     if (!owner) return [];
     const target = [...attachments].sort((left, right) => (left.attachment?.order ?? 0) - (right.attachment?.order ?? 0) || left.id.localeCompare(right.id))[0]!;
+    const appendixGroup = appendixGroupByOwner.get(ownerId);
+    const attachmentIds = new Set(attachments.map((node) => node.id));
+    const collapsed = appendixGroup?.allHidden === true
+      && appendixGroup.resourceIds.length === attachments.length
+      && appendixGroup.resourceIds.every((resourceId) => attachmentIds.has(resourceId));
+    const targetRect = collapsed
+      ? { x: appendixGroup!.x, y: appendixGroup!.y, width: appendixGroup!.width, height: appendixGroup!.height }
+      : canvasRect(target);
+    const sourceSide = boundarySideFromRectToward(canvasRect(owner), targetRect);
+    const targetSide = boundarySideFromRectToward(targetRect, canvasRect(owner));
     return [{
-    id: `hierarchy:${ownerId}`,
-    source: ownerId,
-    target: target.id,
-    sourceHandle: owner.type === 'decision' ? 'yes' : 'out',
-    targetHandle: 'in',
-    type: 'smoothstep',
-    selectable: false,
-    style: { stroke: '#9a6a42', strokeDasharray: '5 5', strokeWidth: 1.5 },
-    label: attachments.length > 1 ? `资料 ×${attachments.length}` : undefined,
-  }];
+      id: `hierarchy:${ownerId}`,
+      source: ownerId,
+      target: collapsed ? resourceAppendixAnchorId(ownerId) : target.id,
+      sourceHandle: `anchor-source-${sourceSide}`,
+      targetHandle: collapsed ? resourceAppendixTargetHandleId(targetSide) : `anchor-target-${targetSide}`,
+      type: 'straight',
+      selectable: false,
+      reconnectable: false,
+      className: 'hierarchy-presentation-edge',
+      style: { stroke: '#9a6a42', strokeDasharray: '5 5', strokeWidth: 1.5 },
+      label: attachments.length > 1 ? `资料 ×${attachments.length}` : undefined,
+    }];
   });
 }
 
 export interface ResourceAppendixGroup {
   ownerId: string;
+  ownerTitle: string;
   resourceIds: string[];
+  allHidden: boolean;
   x: number;
   y: number;
   width: number;
@@ -1765,27 +2268,79 @@ export interface ResourceAppendixGroup {
 
 export function resourceAppendixGroups(document: CanvasDocument): ResourceAppendixGroup[] {
   const byOwner = new Map<string, CanvasNode[]>();
-  document.nodes.filter((node) => isContentNode(node) && !node.hidden).forEach((node) => {
-    const ownerId = node.attachment?.ownerNodeId ?? node.contentParentId;
+  document.nodes.filter((node) => isAuthorResourceNode(node) && !node.hidden).forEach((node) => {
+    const ownerId = resourceOwnerId(node);
     if (!ownerId) return;
     const resources = byOwner.get(ownerId);
     if (resources) resources.push(node);
     else byOwner.set(ownerId, [node]);
   });
   return [...byOwner.entries()].flatMap(([ownerId, resources]) => {
-    if (!document.nodes.some((node) => node.id === ownerId)) return [];
+    const owner = document.nodes.find((node) => node.id === ownerId);
+    if (!owner) return [];
     const minX = Math.min(...resources.map((node) => node.position.x));
     const minY = Math.min(...resources.map((node) => node.position.y));
     const maxX = Math.max(...resources.map((node) => node.position.x + (node.size?.width ?? defaultCanvasNodeSize(node).width)));
     const maxY = Math.max(...resources.map((node) => node.position.y + (node.size?.height ?? defaultCanvasNodeSize(node).height)));
+    const allHidden = resources.every((node) => node.visibility === 'HIDDEN');
+    const ownerTitle = resourceOwnerTitle(owner);
+    const resourceIds = [...resources].sort((left, right) => (left.attachment?.order ?? 0) - (right.attachment?.order ?? 0) || left.id.localeCompare(right.id)).map((node) => node.id);
     return [{
       ownerId,
-      resourceIds: resources.sort((left, right) => (left.attachment?.order ?? 0) - (right.attachment?.order ?? 0) || left.id.localeCompare(right.id)).map((node) => node.id),
+      ownerTitle,
+      resourceIds,
+      allHidden,
       x: minX - 18,
       y: minY - 30,
-      width: maxX - minX + 36,
-      height: maxY - minY + 48,
+      width: allHidden ? Math.max(220, Math.min(420, ownerTitle.length * 14 + 132)) : maxX - minX + 36,
+      height: allHidden ? 58 : maxY - minY + 48,
     }];
+  });
+}
+
+export function resourceAppendixTargetSide(group: ResourceAppendixGroup, owner: CanvasNode): ResourceAppendixAnchorSide {
+  return boundarySideFromRectToward(
+    { x: group.x, y: group.y, width: group.width, height: group.height },
+    canvasRect(owner),
+  );
+}
+
+function canvasRect(node: CanvasNode): { x: number; y: number; width: number; height: number } {
+  const size = node.size ?? defaultCanvasNodeSize(node);
+  return { x: node.position.x, y: node.position.y, width: size.width, height: size.height };
+}
+
+function boundarySideFromRectToward(
+  from: { x: number; y: number; width: number; height: number },
+  toward: { x: number; y: number; width: number; height: number },
+): ResourceAppendixAnchorSide {
+  const fromCenter = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+  const towardCenter = { x: toward.x + toward.width / 2, y: toward.y + toward.height / 2 };
+  const deltaX = towardCenter.x - fromCenter.x;
+  const deltaY = towardCenter.y - fromCenter.y;
+  if (Math.abs(deltaX) >= Math.abs(deltaY)) return deltaX >= 0 ? 'RIGHT' : 'LEFT';
+  return deltaY >= 0 ? 'BOTTOM' : 'TOP';
+}
+
+export function resourceAppendixAnchorNodes(document: CanvasDocument): Node[] {
+  return resourceAppendixGroups(document).flatMap((group) => {
+    if (!group.allHidden) return [];
+    const owner = document.nodes.find((node) => node.id === group.ownerId);
+    if (!owner) return [];
+    return [{
+      id: resourceAppendixAnchorId(group.ownerId),
+      type: 'resource-appendix-anchor',
+      position: { x: group.x, y: group.y },
+      data: { targetSide: resourceAppendixTargetSide(group, owner) },
+      className: 'resource-appendix-anchor',
+      selectable: false,
+      draggable: false,
+      connectable: false,
+      width: group.width,
+      height: group.height,
+      handles: resourceAppendixAnchorHandles(group.width, group.height),
+      style: { width: group.width, height: group.height, pointerEvents: 'none' as const },
+    } satisfies Node];
   });
 }
 
@@ -1843,8 +2398,8 @@ function stripPresentationData(data: Record<string, unknown>): Record<string, un
   return persisted;
 }
 
-function pickResponsibility(lane: FlowLane): { title: string; kind: FlowLane['kind'] } {
-  return { title: lane.title, kind: lane.kind };
+function pickResponsibility(lane: FlowLane): { title: string } {
+  return { title: lane.title };
 }
 
 export function toCanvasEdge(edge: Edge): CanvasEdge {
@@ -1892,12 +2447,4 @@ function moveOrderedItem<T extends { id: string; order: number }>(items: T[], id
   const [item] = ordered.splice(index, 1);
   ordered.splice(targetIndex, 0, item!);
   return ordered.map((current, order) => ({ ...current, order }));
-}
-
-function nodeLabel(node: CanvasNode): string {
-  if (node.type === 'subguide') return node.data.title;
-  if (node.type === 'markdown') return node.data.markdown.split('\n').find(Boolean)?.replace(/^#+\s*/, '').slice(0, 80) || 'Markdown 说明';
-  if (node.type === 'image') return node.data.caption || node.data.alt;
-  if (node.type === 'video') return node.data.caption || '视频资料';
-  return node.data.label;
 }

@@ -14,6 +14,9 @@ const ResourceAttachmentSchema = z.object({
   order: z.number().int().min(0).max(1_000_000),
 });
 
+export const CanvasResourceVisibilitySchema = z.enum(['VISIBLE', 'HIDDEN']);
+export type CanvasResourceVisibility = z.infer<typeof CanvasResourceVisibilitySchema>;
+
 const CanvasEdgeSemanticSchema = z.object({
   kind: z.enum(['FLOW', 'BRANCH', 'EXCEPTION', 'RETRY', 'RESOURCE_REFERENCE']),
   order: z.number().int().min(0).max(1_000_000).optional(),
@@ -32,6 +35,7 @@ const NodeBaseSchema = z.object({
   size: z.object({ width: z.number().positive(), height: z.number().positive() }).optional(),
   zIndex: z.number().int(),
   hidden: z.boolean().optional(),
+  visibility: CanvasResourceVisibilitySchema.optional(),
   source: SourceTraceSchema.optional(),
   stageId: IdSchema.optional(),
   laneId: IdSchema.optional(),
@@ -130,6 +134,7 @@ const EdgeAnchorSchema = z.object({
 const EdgeRoutingSchema = z.enum(['straight', 'elbow', 'smart']);
 
 const EdgeRouteModeSchema = z.enum(['auto', 'manual']);
+const EdgeAnchorModeSchema = z.enum(['auto', 'manual']);
 const EdgeWaypointSchema = z.object({
   x: z.number().finite(),
   y: z.number().finite(),
@@ -138,18 +143,23 @@ const EdgeWaypointSchema = z.object({
 export const EdgePresentationSchema = z.object({
   color: z.union([z.enum(['default', 'blue', 'green', 'yellow', 'red', 'purple']), z.string().regex(/^#[0-9a-f]{6}$/i)]).optional(),
   width: z.number().int().min(1).max(24).optional(),
+  labelFontSize: z.number().int().min(10).max(32).optional(),
+  labelOffset: z.number().min(0).max(1).optional(),
   pattern: z.enum(['solid', 'dashed', 'dotted']).optional(),
   arrows: z.enum(['none', 'forward', 'reverse', 'both']).optional(),
   routing: EdgeRoutingSchema.optional(),
   routeMode: EdgeRouteModeSchema.optional(),
   waypoints: z.array(EdgeWaypointSchema).max(32).optional(),
   sourceAnchor: EdgeAnchorSchema.optional(),
+  sourceAnchorMode: EdgeAnchorModeSchema.optional(),
   targetAnchor: EdgeAnchorSchema.optional(),
+  targetAnchorMode: EdgeAnchorModeSchema.optional(),
 });
 
 export type EdgeAnchor = z.infer<typeof EdgeAnchorSchema>;
 export type EdgeRouting = z.infer<typeof EdgeRoutingSchema>;
 export type EdgeRouteMode = z.infer<typeof EdgeRouteModeSchema>;
+export type EdgeAnchorMode = z.infer<typeof EdgeAnchorModeSchema>;
 export type EdgeWaypoint = z.infer<typeof EdgeWaypointSchema>;
 export type EdgePresentation = z.infer<typeof EdgePresentationSchema>;
 export type FlowOutline = z.infer<typeof OutlineSchema>;
@@ -282,6 +292,9 @@ export const CanvasDocumentSchema = z.object({
   document.nodes.forEach((node, index) => {
     const primary = primaryTypes.has(node.type) && !node.source;
     const content = contentTypes.has(node.type) && !node.source;
+    if (node.visibility !== undefined && !content) {
+      context.addIssue({ code: 'custom', path: ['nodes', index, 'visibility'], message: '资料可见性只能标记 Markdown、图片或视频资料' });
+    }
     if (node.stageId && (!primary || !stageIds.has(node.stageId))) {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'stageId'], message: '阶段只能标记存在的一级主流程节点' });
     }

@@ -393,12 +393,13 @@ export function AgentConversationPanel({
               key={message.runId}
               answer={message.answer}
               returnTo={currentPath}
+              {...(scope.kind === 'WORKSPACE' ? { regressionApi: api } : {})}
               targeted={message.id === targetMessageId}
               targetRef={message.id === targetMessageId ? targetMessageRef : undefined}
             />)}
         {detail && targetMessageRequested && !targetMessageFound ? <p className="agent-reference-missing" role="alert">引用消息不存在或当前不可访问</p> : null}
         <AgentRunTimeline state={runState} />
-        {showStreamAnswer ? <AgentAnswer key={runState.runId ?? 'live-answer'} answer={runState.answer!} returnTo={currentPath} live /> : null}
+        {showStreamAnswer ? <AgentAnswer key={runState.runId ?? 'live-answer'} answer={runState.answer!} returnTo={currentPath} {...(scope.kind === 'WORKSPACE' ? { regressionApi: api } : {})} live /> : null}
       </div>
 
       {error ? <p className="agent-panel-error" role="alert">{error}</p> : null}
@@ -479,12 +480,14 @@ function AgentWelcome({ global }: { global: boolean }) {
 function AgentAnswer({
   answer,
   returnTo,
+  regressionApi,
   live = false,
   targeted = false,
   targetRef,
 }: {
   answer: NonNullable<ReturnType<typeof useAgentRunStream>['answer']>;
   returnTo: string;
+  regressionApi?: Pick<AgentApi, 'getFlowRegressionReferenceEligibility' | 'createFlowRegressionCase'>;
   live?: boolean;
   targeted?: boolean;
   targetRef?: RefObject<HTMLElement | null> | undefined;
@@ -499,7 +502,10 @@ function AgentAnswer({
     <div className="agent-answer-body">
       <p className="agent-answer-conclusion">{answer.conclusion}</p>
       {answer.sections.map((section) => <section key={section.id}><h3>{section.title}</h3><SanitizedMarkdown>{section.markdown}</SanitizedMarkdown></section>)}
-      {answer.citations.length > 0 ? <div className="agent-citations"><strong>引用依据</strong>{answer.citations.map((citation) => citation.href ? <Link key={citation.referenceId} to={appendSafeReturnTo(citation.href, returnTo)}><span>{citation.title}</span><small>{citation.excerpt}</small><ArrowRight size={15} /></Link> : <div className="is-invalid" key={citation.referenceId}><span>{citation.title}</span><small>{citation.invalidReason}</small></div>)}</div> : null}
+      {answer.citations.length > 0 ? <div className="agent-citations"><strong>引用依据</strong>{answer.citations.map((citation) => citation.href ? <div className="agent-citation" key={citation.referenceId}>
+        <Link to={appendSafeReturnTo(citation.href, returnTo)}><span>{citation.title}</span><small>{citation.excerpt}</small><ArrowRight size={15} /></Link>
+        {regressionApi ? <EligibilityPinAction api={regressionApi} referenceId={citation.referenceId} /> : null}
+      </div> : <div className="is-invalid" key={citation.referenceId}><span>{citation.title}</span><small>{citation.invalidReason}</small></div>)}</div> : null}
       {answer.flowFeedback.length > 0 ? <div className="agent-flow-feedback"><strong>流程反馈</strong>{answer.flowFeedback.map((feedback) => feedback.href
         ? <Link key={`${feedback.kind}:${feedback.referenceId}`} to={appendSafeReturnTo(feedback.href, returnTo)}><span>{feedback.message}</span><ArrowRight size={15} /></Link>
         : <div className="is-invalid" key={`${feedback.kind}:${feedback.referenceId}`}><span>{feedback.message}</span><small>{feedback.invalidReason}</small></div>)}</div> : null}
@@ -509,6 +515,62 @@ function AgentAnswer({
       </details>)}</div> : null}
     </div>
   </article>;
+}
+
+function EligibilityPinAction({
+  api,
+  referenceId,
+}: {
+  api: Pick<AgentApi, 'getFlowRegressionReferenceEligibility' | 'createFlowRegressionCase'>;
+  referenceId: string;
+}) {
+  const [eligible, setEligible] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [pending, setPending] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    setEligible(false);
+    setChecking(true);
+    setPending(false);
+    setPinned(false);
+    setError('');
+    api.getFlowRegressionReferenceEligibility(referenceId).then((result) => {
+      if (!active) return;
+      setEligible(result.eligible);
+    }).catch(() => {
+      if (active) setEligible(false);
+    }).finally(() => {
+      if (active) setChecking(false);
+    });
+    return () => { active = false; };
+  }, [api, referenceId]);
+
+  if (checking || !eligible) return null;
+
+  const pin = async () => {
+    if (pending || pinned) return;
+    setPending(true);
+    setError('');
+    try {
+      await api.createFlowRegressionCase(referenceId);
+      setPinned(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '固定回归题失败');
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return <span className="agent-citation-action">
+    <button type="button" onClick={() => { void pin(); }} disabled={pending || pinned}>
+      {pending ? '固定中…' : pinned ? '已固定' : '固定为回归题'}
+    </button>
+    {pinned ? <small role="status">已固定为回归题</small> : null}
+    {error ? <small role="alert">{error}</small> : null}
+  </span>;
 }
 
 function artifactLabel(kind: string) {

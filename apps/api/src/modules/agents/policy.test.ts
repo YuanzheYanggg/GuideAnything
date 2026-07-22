@@ -82,6 +82,20 @@ describe('agent orchestration policy', () => {
     expect(scheduled.tasks[0]?.kind).toBe('WORKSPACE_FLOW');
   });
 
+  it('allows a focused flow question to reserve six workspace candidates', () => {
+    const decision = focusedDecision({
+      budget: { ...focusedDecision().budget, maxWorkspaceCandidates: 6 },
+    });
+
+    const scheduled = enforceSchedulePolicy(decision, {
+      allowedSources: sources({ workspaceFlows: true }),
+      allowRawApproved: false,
+      configuredMaxConcurrency: 3,
+    });
+
+    expect(scheduled.budget.maxWorkspaceCandidates).toBe(6);
+  });
+
   it('allocates one vault digest when a focused plan schedules a Santexwell task', () => {
     const scheduled = enforceSchedulePolicy(focusedDecision({
       sources: sources({ santexwell: true }),

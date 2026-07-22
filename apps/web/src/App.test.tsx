@@ -219,6 +219,37 @@ describe('workspace API clients', () => {
     expect(request).toHaveBeenNthCalledWith(5, '/workspaces/workspace%2F1/sources');
     expect(request).toHaveBeenNthCalledWith(6, '/workspaces/workspace%2F1/flow-snapshots');
   });
+
+  it('keeps compact flow-regression controls behind the authenticated editor facade', async () => {
+    const client = new ApiClient();
+    const item = {
+      id: 'case-1', guideId: 'guide/1', resourceNodeId: 'image-1', annotationId: 'version-type',
+      question: '版类型如何设置？', expectedAgentStatus: 'SUPPORTED', status: 'ACTIVE',
+      createdAt: '2026-07-21T00:00:00.000Z', updatedAt: '2026-07-21T00:00:00.000Z',
+      lastVerifiedSnapshotId: null, lastRetrievalVerification: null, lastAgentVerification: null,
+    };
+    const request = vi.spyOn(client, 'request').mockImplementation(async (path, init) => {
+      if (path.endsWith('/flow-annotation-health')) return { health: { snapshotId: 'snapshot-1', issues: [] } } as never;
+      if (path.endsWith('/real-run')) return { run: { id: 'run-1' } } as never;
+      if (path.endsWith('/replay') || init?.method === 'PATCH') return { case: item } as never;
+      return { items: [item] } as never;
+    });
+    const editor = client.editorApi();
+
+    await expect(editor.listFlowRegressionCases('guide/1')).resolves.toEqual([item]);
+    await expect(editor.replayFlowRegressionCase('guide/1', 'case/1')).resolves.toEqual(item);
+    await expect(editor.archiveFlowRegressionCase('guide/1', 'case/1')).resolves.toEqual(item);
+    await expect(editor.createFlowRegressionRealRun('guide/1', 'case/1')).resolves.toEqual({ id: 'run-1' });
+    await expect(editor.getFlowAnnotationHealth('guide/1')).resolves.toEqual({ snapshotId: 'snapshot-1', issues: [] });
+
+    expect(request).toHaveBeenNthCalledWith(1, '/guides/guide%2F1/flow-regression-cases');
+    expect(request).toHaveBeenNthCalledWith(2, '/guides/guide%2F1/flow-regression-cases/case%2F1/replay', { method: 'POST' });
+    expect(request).toHaveBeenNthCalledWith(3, '/guides/guide%2F1/flow-regression-cases/case%2F1/status', {
+      method: 'PATCH', body: JSON.stringify({ status: 'ARCHIVED' }),
+    });
+    expect(request).toHaveBeenNthCalledWith(4, '/guides/guide%2F1/flow-regression-cases/case%2F1/real-run', { method: 'POST' });
+    expect(request).toHaveBeenNthCalledWith(5, '/guides/guide%2F1/flow-annotation-health');
+  });
 });
 
 function knowledgeApi(): KnowledgeApi {

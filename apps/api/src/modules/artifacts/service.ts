@@ -12,6 +12,7 @@ import { normalizeFlowKnowledgeSnapshot } from '@guideanything/canvas-core';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { httpError } from '../../lib/http-error';
+import { resolveFlowAnnotationTarget } from '../flow-regressions/targets';
 import { getWorkspacePermission } from '../workspaces/repository';
 
 interface CitationRow {
@@ -227,13 +228,13 @@ export class ArtifactReferenceService {
         return this.invalid(citation, 'STALE', '流程草稿已经更新，请重新生成答案。');
       }
       return this.valid(citation, 'WORKSPACE_FLOW', 'CURRENT_DRAFT_FLOW_NODE',
-        `/guides/${encodeURIComponent(locator.guideId)}/edit?nodeId=${encodeURIComponent(locator.nodeId)}`);
+        flowTargetHref(`/guides/${encodeURIComponent(locator.guideId)}/edit`, locator));
     }
     if (!row.version_id || !row.version) {
       return this.invalid(citation, 'SOURCE_UNAVAILABLE', '已发布流程版本缺少定位信息。');
     }
     return this.valid(citation, 'WORKSPACE_FLOW', 'PUBLISHED_FLOW_NODE',
-      `/versions/${encodeURIComponent(row.version_id)}/learn?nodeId=${encodeURIComponent(locator.nodeId)}`);
+      flowTargetHref(`/versions/${encodeURIComponent(row.version_id)}/learn`, locator));
   }
 
   private resolveSessionAttachment(
@@ -379,6 +380,17 @@ function snapshotContainsFlowLocator(
   snapshot: FlowKnowledgeSnapshotV2,
   locator: Extract<InternalEvidenceLocatorV1, { kind: 'WORKSPACE_FLOW' }>,
 ): boolean {
+  if (locator.annotationId) {
+    try {
+      const target = resolveFlowAnnotationTarget(snapshot, locator.nodeId, locator.annotationId);
+      const candidate = target.resource.locator;
+      return candidate.guideId === locator.guideId
+        && candidate.snapshotId === locator.snapshotId
+        && candidate.nodeId === locator.nodeId;
+    } catch {
+      return false;
+    }
+  }
   const candidates = [
     ...snapshot.nodes.map((node) => node.locator),
     ...snapshot.resources.map((resource) => resource.locator),
@@ -388,4 +400,13 @@ function snapshotContainsFlowLocator(
     && candidate.snapshotId === locator.snapshotId
     && candidate.nodeId === locator.nodeId
   ));
+}
+
+function flowTargetHref(
+  path: string,
+  locator: Extract<InternalEvidenceLocatorV1, { kind: 'WORKSPACE_FLOW' }>,
+): string {
+  const query = new URLSearchParams({ nodeId: locator.nodeId });
+  if (locator.annotationId) query.set('annotationId', locator.annotationId);
+  return `${path}?${query.toString()}`;
 }

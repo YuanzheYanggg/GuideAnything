@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { editableRouteSegments, moveRouteSegment, seedManualRoute } from './manual-routing';
+import { editableRouteSegments, moveRouteSegment, seedManualRoute, snapRouteCoordinate } from './manual-routing';
 
 describe('manual route geometry', () => {
   it('exposes only interior orthogonal segments as editable handles', () => {
@@ -44,5 +44,15 @@ describe('manual route geometry', () => {
       { x: 336, y: 52 },
       { x: 360, y: 52 },
     ]);
+  });
+
+  it('snaps a manual segment back to an endpoint row before applying the grid', () => {
+    const points = [
+      { x: 0, y: 52 }, { x: 24, y: 52 }, { x: 24, y: 132 },
+      { x: 200, y: 132 }, { x: 200, y: 52 }, { x: 240, y: 52 },
+    ];
+
+    expect(snapRouteCoordinate(points, 'horizontal', 60)).toBe(52);
+    expect(snapRouteCoordinate(points, 'horizontal', 173)).toBe(180);
   });
 });

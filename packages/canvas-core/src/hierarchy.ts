@@ -7,7 +7,7 @@ const NODE_GAP_Y = 32;
 const STAGE_GAP_Y = 96;
 const CONTENT_GAP_X = 32;
 const CONTENT_GAP_Y = 24;
-const SEMANTIC_ATTACHMENT_RAIL_GAP_Y = CONTENT_GAP_Y + 48;
+const APPENDIX_RAIL_GAP_Y = CONTENT_GAP_Y + 48;
 const STAGE_PADDING = 40;
 const GRID_COLUMN_GAP = 72;
 const CHILD_COLUMN_GAP = 56;
@@ -38,8 +38,7 @@ interface PrimaryPlacement {
   byId: Map<string, CanvasNode>;
   unassignedContentX: number;
   unassignedContentY: number;
-  contentPlacement: 'right' | 'below' | 'appendix';
-  appendixX?: number;
+  contentPlacement: 'right' | 'below';
 }
 
 interface SemanticLayoutTree {
@@ -198,7 +197,7 @@ export function translateStageNodes(document: CanvasDocument, stageId: string, d
 }
 
 export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutResult {
-  const reconciledDocument = reconcileSemanticFanoutParents(document);
+  const reconciledDocument = reconcileSimpleSemanticFlowEdges(reconcileSemanticFanoutParents(document));
   const visible = reconciledDocument.nodes.filter((node) => !node.hidden);
   const primary = visible.filter(isPrimaryFlowNode).sort(compareNodes);
   const content = visible.filter(isContentNode).sort(compareNodes);
@@ -220,7 +219,12 @@ export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutRe
     ? placeSemanticMatrix(reconciledDocument, semanticPrimary, stages, lanes, contentByParent, looseContent)
     : placePrimary(layoutNodes, ranked.rankById, stages, contentByParent, reconciledDocument.edges);
   const withExpandedSubguides = placeExpandedSubguideArtifacts(reconciledDocument.nodes, positioned);
-  const withContent = placeContent(remainingContent, withExpandedSubguides, contentByParent);
+  const positionedDocument = {
+    ...reconciledDocument,
+    nodes: reconciledDocument.nodes.map((node) => withExpandedSubguides.byId.get(node.id) ?? node),
+  };
+  const stageBounds = getStageBounds(positionedDocument);
+  const withContent = placeContent(remainingContent, withExpandedSubguides, contentByParent, stageBounds);
   const byId = new Map(withContent.map((node) => [node.id, node]));
   const next = { ...reconciledDocument, nodes: reconciledDocument.nodes.map((node) => byId.get(node.id) ?? node) };
 
@@ -229,6 +233,98 @@ export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutRe
     report: reportFor(primary, content, ranked, stages, lanes, primaryIds, connectedContentIds, reconciledDocument.edges),
     stageBounds: getStageBounds(next),
   };
+}
+
+/**
+ * The semantic outline is the source of truth for automatic arrangement.  Old
+ * documents may still contain a single, unbranched physical chain whose edge
+ * directions reflect an earlier manual order.  When that chain can be proven
+ * to be a simple path, reconnect it to the top-level semantic sequence before
+ * calculating positions.  Branches, feedback links, labels, and non-linear
+ * graphs are deliberately left untouched.
+ */
+function reconcileSimpleSemanticFlowEdges(document: CanvasDocument): CanvasDocument {
+  if (!hasSemanticFlow(document)) return document;
+  const flow = deriveSemanticFlow(document);
+  const orderedStepIds = flow.items
+    .filter((item) => item.kind === 'STEP' && !item.parentId)
+    .map((item) => item.nodeId);
+  if (orderedStepIds.length < 2) return document;
+
+  const primaryById = new Map(document.nodes.filter(isPrimaryFlowNode).map((node) => [node.id, node]));
+  if (orderedStepIds.some((id) => !primaryById.has(id) || primaryById.get(id)?.type === 'decision')) return document;
+  const stepIds = new Set(orderedStepIds);
+  const ordinaryEdges = document.edges.filter((edge) => isSimpleSemanticFlowEdge(edge, stepIds));
+  if (!isSingleUndirectedPath(ordinaryEdges, orderedStepIds)) return document;
+
+  const needsRelink = ordinaryEdges.some((edge, index) => edge.source !== orderedStepIds[index] || edge.target !== orderedStepIds[index + 1]);
+  if (!needsRelink) return document;
+
+  const edgeIndexById = new Map(ordinaryEdges.map((edge, index) => [edge.id, index]));
+  return {
+    ...document,
+    edges: document.edges.map((edge) => {
+      const index = edgeIndexById.get(edge.id);
+      if (index === undefined) return edge;
+      return resetFlowGeometry({
+        ...edge,
+        source: orderedStepIds[index]!,
+        target: orderedStepIds[index + 1]!,
+        semantic: { kind: 'FLOW' },
+      });
+    }),
+  };
+}
+
+function isSimpleSemanticFlowEdge(edge: CanvasEdge, stepIds: Set<string>): boolean {
+  return !edge.hidden
+    && !edge.sourceTrace
+    && stepIds.has(edge.source)
+    && stepIds.has(edge.target)
+    && (!edge.semantic || edge.semantic.kind === 'FLOW')
+    && !edge.label?.trim()
+    && edge.sourceHandle !== 'yes'
+    && edge.sourceHandle !== 'no';
+}
+
+function isSingleUndirectedPath(edges: CanvasEdge[], orderedStepIds: string[]): boolean {
+  if (edges.length !== orderedStepIds.length - 1) return false;
+  const adjacent = new Map(orderedStepIds.map((id) => [id, new Set<string>()]));
+  for (const edge of edges) {
+    if (edge.source === edge.target) return false;
+    const sourceNeighbors = adjacent.get(edge.source);
+    const targetNeighbors = adjacent.get(edge.target);
+    if (!sourceNeighbors || !targetNeighbors) return false;
+    sourceNeighbors.add(edge.target);
+    targetNeighbors.add(edge.source);
+  }
+  if ([...adjacent.values()].some((neighbors) => neighbors.size === 0 || neighbors.size > 2)) return false;
+
+  const visited = new Set<string>();
+  const pending = [orderedStepIds[0]!];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    adjacent.get(current)!.forEach((neighbor) => pending.push(neighbor));
+  }
+  return visited.size === orderedStepIds.length;
+}
+
+function resetFlowGeometry(edge: CanvasEdge): CanvasEdge {
+  const { presentation, ...withoutPresentation } = edge;
+  if (!presentation) return withoutPresentation;
+  const {
+    routing: _routing,
+    routeMode: _routeMode,
+    waypoints: _waypoints,
+    sourceAnchor: _sourceAnchor,
+    sourceAnchorMode: _sourceAnchorMode,
+    targetAnchor: _targetAnchor,
+    targetAnchorMode: _targetAnchorMode,
+    ...style
+  } = presentation;
+  return Object.keys(style).length > 0 ? { ...withoutPresentation, presentation: style } : withoutPresentation;
 }
 
 function flowThroughContent(content: CanvasNode[], edges: CanvasEdge[]): CanvasNode[] {
@@ -248,8 +344,9 @@ export function getStageBounds(document: CanvasDocument): StageBounds[] {
   const boundsByStage = new Map<string | null, { minX: number; minY: number; maxX: number; maxY: number }>();
 
   document.nodes.forEach((node) => {
-    if (node.hidden || node.source) return;
-    const stageId = stageForNode(node, nodesById, stagesById, document.edges);
+    if (node.hidden) return;
+    const stageId = stageForBounds(node, nodesById, stagesById, document.edges);
+    if (stageId === undefined) return;
     const size = nodeSize(node);
     const existing = boundsByStage.get(stageId);
     const maxX = node.position.x + size.width;
@@ -328,9 +425,7 @@ function semanticSwimlaneBounds(document: CanvasDocument, lanes: FlowLane[]): Sw
 function getGridGeometryForDocument(document: CanvasDocument, lanes: FlowLane[]): GridGeometry {
   const visible = document.nodes.filter((node) => !node.hidden);
   const primary = visible.filter(isPrimaryFlowNode).sort(compareNodes);
-  const primaryIds = new Set(primary.map((node) => node.id));
-  const content = visible.filter(isContentNode).sort(compareNodes);
-  return gridGeometry(primary, document.stages ?? [], lanes, attachedContentByParent(content, primaryIds), unassignedContent(content, primaryIds));
+  return gridGeometry(primary, document.stages ?? [], lanes, new Map());
 }
 
 function gridGeometry(
@@ -631,6 +726,32 @@ function contentOwnerId(node: CanvasNode): string | undefined {
   return node.attachment?.ownerNodeId ?? node.contentParentId;
 }
 
+/**
+ * Resources created before explicit attachment metadata were represented by a
+ * normal edge from their owner process. Keep those persisted documents within
+ * the owner's stage bounds. Modern attachments deliberately remain on the
+ * external appendix rail, so they must not contribute to the stage frame.
+ */
+function stageForBounds(
+  node: CanvasNode,
+  nodesById: Map<string, CanvasNode>,
+  stagesById: Map<string, FlowStage>,
+  edges: CanvasEdge[],
+): string | null | undefined {
+  if (isPrimaryFlowNode(node)) return configuredStageId(node, stagesById);
+  if (!isContentNode(node) || node.attachment || node.contentParentId) return undefined;
+
+  const owner = edges
+    .filter((edge) => !edge.hidden && !edge.sourceTrace && edge.semantic?.kind !== 'RESOURCE_REFERENCE' && edge.target === node.id)
+    .map((edge) => nodesById.get(edge.source))
+    .find((candidate) => candidate && !candidate.hidden && isPrimaryFlowNode(candidate));
+  return owner ? configuredStageId(owner, stagesById) : undefined;
+}
+
+function configuredStageId(node: CanvasNode, stagesById: Map<string, FlowStage>): string | null {
+  return node.stageId && stagesById.has(node.stageId) ? node.stageId : null;
+}
+
 function compareContentAttachment(left: CanvasNode, right: CanvasNode): number {
   return (left.attachment?.order ?? Number.MAX_SAFE_INTEGER) - (right.attachment?.order ?? Number.MAX_SAFE_INTEGER)
     || compareNodes(left, right);
@@ -772,7 +893,7 @@ function semanticLaneGeometry(blocks: SemanticLayoutBlock[], laneOrder: Array<Fl
     laneX,
     laneColumnOffsets,
     laneWidths,
-    totalWidth: nextX,
+    totalWidth: Math.max(0, nextX - (laneOrder.length > 0 ? GRID_COLUMN_GAP : 0)),
   };
 }
 
@@ -848,8 +969,7 @@ function placeSemanticMatrix(
     byId,
     unassignedContentX: geometry.laneX.get(null) ?? 0,
     unassignedContentY: stageY,
-    contentPlacement: 'appendix',
-    appendixX: geometry.totalWidth + CONTENT_GAP_X,
+    contentPlacement: 'right',
   };
 }
 
@@ -883,8 +1003,7 @@ function semanticRowHeight(
     if (attached.length === 0) return;
     const nodeCenterX = node.position.x + nodeSize(node).width / 2;
     const side = nodeCenterX <= stageCenterX ? 'left' : 'right';
-    const attachmentHeight = attached.reduce((total, item, index) => total + nodeSize(item).height + (index > 0 ? CONTENT_GAP_Y : 0), 0);
-    railUsage.set(side, (railUsage.get(side) ?? 0) + attachmentHeight + SEMANTIC_ATTACHMENT_RAIL_GAP_Y);
+    railUsage.set(side, (railUsage.get(side) ?? 0) + attachmentStackHeight(attached) + APPENDIX_RAIL_GAP_Y);
   });
   const railHeight = Math.max(0, ...railUsage.values()) - NODE_GAP_Y;
   return Math.max(primaryHeight, railHeight);
@@ -1197,50 +1316,65 @@ function gridOccupiedHeight(node: CanvasNode, contentByParent: Map<string, Canva
   return nodeSize(node).height + CONTENT_GAP_Y + contentHeight;
 }
 
-function placeContent(content: CanvasNode[], positioned: PrimaryPlacement, contentByParent: Map<string, CanvasNode[]>): CanvasNode[] {
+function placeContent(
+  content: CanvasNode[],
+  positioned: PrimaryPlacement,
+  contentByParent: Map<string, CanvasNode[]>,
+  stageBounds: StageBounds[],
+): CanvasNode[] {
   const nodes = [...positioned.nodes];
-  const nextYByParent = new Map<string, number>();
-  const appendixYByParent = new Map<string, number>();
-  if (positioned.contentPlacement === 'appendix') {
-    const appendixOwners = [...contentByParent.entries()]
-      .map(([ownerId, attachments]) => ({ owner: positioned.byId.get(ownerId), attachments }))
-      .filter((entry): entry is { owner: CanvasNode; attachments: CanvasNode[] } => Boolean(entry.owner))
-      .sort((left, right) => left.owner.position.y - right.owner.position.y
-        || left.owner.position.x - right.owner.position.x
-        || left.owner.id.localeCompare(right.owner.id));
-    let nextAppendixY = Number.NEGATIVE_INFINITY;
-    appendixOwners.forEach(({ owner, attachments }) => {
-      const appendixY = Math.max(owner.position.y, nextAppendixY);
-      appendixYByParent.set(owner.id, appendixY);
-      const appendixHeight = attachments.reduce((total, item, index) => total + nodeSize(item).height + (index > 0 ? CONTENT_GAP_Y : 0), 0);
-      nextAppendixY = appendixY + appendixHeight + CONTENT_GAP_Y;
-    });
-  }
-  let unassignedY = positioned.unassignedContentY;
-  content.forEach((node) => {
-    const ownerId = contentOwnerId(node);
-    const parent = ownerId ? positioned.byId.get(ownerId) : undefined;
-    if (!parent || !contentByParent.has(parent.id)) {
-      nodes.push({ ...node, position: { x: positioned.unassignedContentX, y: unassignedY } });
-      unassignedY += nodeSize(node).height + CONTENT_GAP_Y;
+  const attachedIds = new Set<string>();
+  const nextYByRail = new Map<string, number>();
+  const boundsByStageId = new Map(stageBounds.map((bound) => [bound.stageId, bound]));
+  const attachmentGroups = [...contentByParent.entries()]
+    .map(([ownerId, attachments]) => ({ owner: positioned.byId.get(ownerId), attachments }))
+    .filter((entry): entry is { owner: CanvasNode; attachments: CanvasNode[] } => Boolean(entry.owner))
+    .sort((left, right) => left.owner.position.y - right.owner.position.y
+      || left.owner.position.x - right.owner.position.x
+      || left.owner.id.localeCompare(right.owner.id));
+
+  attachmentGroups.forEach(({ owner, attachments }) => {
+    attachments.forEach((attachment) => attachedIds.add(attachment.id));
+    const stageBound = boundsByStageId.get(owner.stageId ?? null);
+    if (stageBound) {
+      const width = Math.max(...attachments.map((attachment) => nodeSize(attachment).width));
+      const ownerCenterX = owner.position.x + nodeSize(owner).width / 2;
+      const side = ownerCenterX <= stageBound.x + stageBound.width / 2 ? 'left' : 'right';
+      const railKey = `${stageBound.stageId ?? 'unassigned'}:${side}`;
+      let y = Math.max(owner.position.y, nextYByRail.get(railKey) ?? Number.NEGATIVE_INFINITY);
+      const x = side === 'left'
+        ? stageBound.x - CONTENT_GAP_X - width
+        : stageBound.x + stageBound.width + CONTENT_GAP_X;
+      attachments.forEach((attachment) => {
+        nodes.push({ ...attachment, position: { x, y } });
+        y += nodeSize(attachment).height + CONTENT_GAP_Y;
+      });
+      nextYByRail.set(railKey, y + APPENDIX_RAIL_GAP_Y - CONTENT_GAP_Y);
       return;
     }
-    const y = nextYByParent.get(parent.id) ?? appendixYByParent.get(parent.id) ?? parent.position.y;
-    const below = positioned.contentPlacement === 'below';
-    const appendix = positioned.contentPlacement === 'appendix';
-    const contentY = below && !nextYByParent.has(parent.id)
-      ? parent.position.y + nodeSize(parent).height + CONTENT_GAP_Y
-      : y;
-    nodes.push({
-      ...node,
-      position: {
-        x: below ? parent.position.x : appendix ? positioned.appendixX ?? parent.position.x + nodeSize(parent).width + CONTENT_GAP_X : parent.position.x + nodeSize(parent).width + CONTENT_GAP_X,
-        y: contentY,
-      },
+
+    let y = positioned.contentPlacement === 'below'
+      ? owner.position.y + nodeSize(owner).height + CONTENT_GAP_Y
+      : owner.position.y;
+    const x = positioned.contentPlacement === 'below'
+      ? owner.position.x
+      : owner.position.x + nodeSize(owner).width + CONTENT_GAP_X;
+    attachments.forEach((attachment) => {
+      nodes.push({ ...attachment, position: { x, y } });
+      y += nodeSize(attachment).height + CONTENT_GAP_Y;
     });
-    nextYByParent.set(parent.id, contentY + nodeSize(node).height + CONTENT_GAP_Y);
+  });
+
+  let unassignedY = positioned.unassignedContentY;
+  content.filter((node) => !attachedIds.has(node.id)).forEach((node) => {
+    nodes.push({ ...node, position: { x: positioned.unassignedContentX, y: unassignedY } });
+    unassignedY += nodeSize(node).height + CONTENT_GAP_Y;
   });
   return nodes;
+}
+
+function attachmentStackHeight(attachments: CanvasNode[]): number {
+  return attachments.reduce((total, item, index) => total + nodeSize(item).height + (index > 0 ? CONTENT_GAP_Y : 0), 0);
 }
 
 function placeExpandedSubguideArtifacts(allNodes: CanvasNode[], positioned: PrimaryPlacement): PrimaryPlacement {
@@ -1315,25 +1449,6 @@ function orderedStages(stages: FlowStage[]): FlowStage[] {
 
 function orderedLanes(lanes: FlowLane[]): FlowLane[] {
   return [...lanes].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
-}
-
-function stageForNode(
-  node: CanvasNode,
-  nodesById: Map<string, CanvasNode>,
-  stagesById: Map<string, FlowStage>,
-  edges: CanvasEdge[] = [],
-): string | null {
-  const ownerId = isContentNode(node) ? contentOwnerId(node) : undefined;
-  const parent = ownerId ? nodesById.get(ownerId) : undefined;
-  const linkedParent = !parent && isContentNode(node)
-    ? edges
-      .filter((edge) => !edge.hidden && !edge.sourceTrace && edge.target === node.id)
-      .map((edge) => nodesById.get(edge.source))
-      .find((candidate) => candidate && isPrimaryFlowNode(candidate))
-    : undefined;
-  const candidateParent = parent && isPrimaryFlowNode(parent) ? parent : linkedParent;
-  const candidate = candidateParent ? candidateParent.stageId : node.stageId;
-  return candidate && stagesById.has(candidate) ? candidate : null;
 }
 
 function toStageBounds(

@@ -3,11 +3,18 @@ import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgeRouting } 
 const CHANNEL_GAP = 18;
 const PORT_GAP = 24;
 const OUTER_GAP = 64;
-const OBSTACLE_PADDING = 10;
+const OBSTACLE_PADDING = 6;
+const ROUTE_CLEARANCE = 2;
+const ROUTE_BEND_PENALTY = 18;
 const FANOUT_NEIGHBORHOOD = 18;
 const FANOUT_GAP = 18;
 const FANOUT_EDGE_INSET = 12;
 const DEFAULT_ALIGNMENT_THRESHOLD = 12;
+const FORWARD_ALIGNMENT_THRESHOLD = 24;
+const NODE_ALIGNMENT_THRESHOLD = 24;
+
+export const ORTHOGONAL_BRIDGE_HALF_WIDTH = 8;
+export const ORTHOGONAL_BRIDGE_HEIGHT = 12;
 
 export interface Point {
   x: number;
@@ -23,7 +30,7 @@ export interface NodeRect {
 }
 
 export type RouteSide = 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM';
-export type RouteKind = 'FORWARD' | 'BRANCH' | 'WRAP' | 'CROSS_STAGE' | 'BACK';
+export type RouteKind = 'FORWARD' | 'DOWNSTREAM' | 'BRANCH' | 'WRAP' | 'CROSS_STAGE' | 'BACK';
 
 export interface OrthogonalRoute {
   edgeId: string;
@@ -35,6 +42,7 @@ export interface OrthogonalRoute {
   sourceAnchor: EdgeAnchor;
   targetAnchor: EdgeAnchor;
   collision: boolean;
+  bridges?: Point[];
 }
 
 export interface NodeAlignmentSnap {
@@ -74,15 +82,32 @@ interface RouteCandidate {
   routing: EdgeRouting;
   sourceFanned: boolean;
   targetFanned: boolean;
+  routeOrder: RouteOrder;
+  sourceAnchorPinned: boolean;
+  targetAnchorPinned: boolean;
+}
+
+interface RouteOrder {
+  semanticPriority: number;
+  order: number;
+  targetY: number;
+  targetX: number;
+  nodeIndex: number;
+  edgeId: string;
 }
 
 export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
   const visibleNodes = document.nodes.filter((node) => !node.hidden);
   const rects = visibleNodes.map(nodeRect);
   const rectById = new Map(rects.map((rect) => [rect.id, rect]));
+  const nodeById = new Map(visibleNodes.map((node) => [node.id, node]));
+  const nodeIndexById = new Map(document.nodes.map((node, index) => [node.id, index]));
   const routable = document.edges
     .filter((edge) => !edge.hidden && !edge.sourceTrace && edge.semantic?.kind !== 'RESOURCE_REFERENCE' && rectById.has(edge.source) && rectById.has(edge.target))
-    .sort((left, right) => left.id.localeCompare(right.id));
+    .sort((left, right) => compareRouteOrder(
+      routeOrderForEdge(left, nodeById.get(left.source)!, nodeById.get(left.target)!, nodeIndexById),
+      routeOrderForEdge(right, nodeById.get(right.source)!, nodeById.get(right.target)!, nodeIndexById),
+    ));
   const maximumRight = Math.max(0, ...rects.map((rect) => rect.x + rect.width));
   const minimumTop = Math.min(0, ...rects.map((rect) => rect.y));
   const routesByEdgeId = new Map<string, OrthogonalRoute>();
@@ -95,10 +120,19 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
   const candidates: RouteCandidate[] = routable.map((edge) => {
     const source = rectById.get(edge.source)!;
     const target = rectById.get(edge.target)!;
+    const sourceNode = nodeById.get(edge.source)!;
+    const targetNode = nodeById.get(edge.target)!;
     const kind = classify(edge, source, target, document.nodes);
     const fallbackSides = sidesFor(kind, source, target);
-    const sourcePort = anchoredPort(source, edge.presentation?.sourceAnchor, fallbackSides.source);
-    const targetPort = anchoredPort(target, edge.presentation?.targetAnchor, fallbackSides.target);
+    const sourceAnchor = manualEndpointAnchor(edge, 'source');
+    const targetAnchor = manualEndpointAnchor(edge, 'target');
+    let sourcePort = anchoredPort(source, sourceAnchor, fallbackSides.source);
+    let targetPort = anchoredPort(target, targetAnchor, fallbackSides.target);
+    if (kind === 'FORWARD') {
+      const aligned = alignAutomaticForwardPorts(source, target, sourcePort, targetPort, !sourceAnchor, !targetAnchor);
+      sourcePort = aligned.source;
+      targetPort = aligned.target;
+    }
     return {
       edge,
       source,
@@ -107,13 +141,22 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
       fallbackSides,
       sourcePort,
       targetPort,
-      usesAnchors: Boolean(edge.presentation?.sourceAnchor || edge.presentation?.targetAnchor),
+      usesAnchors: Boolean(sourceAnchor || targetAnchor),
       routing: edge.presentation?.routing ?? 'elbow',
       sourceFanned: false,
       targetFanned: false,
+      routeOrder: routeOrderForEdge(edge, sourceNode, targetNode, nodeIndexById),
+      sourceAnchorPinned: isManualEndpointAnchor(edge, 'source'),
+      targetAnchorPinned: isManualEndpointAnchor(edge, 'target'),
     };
   });
   fanOutSharedPorts(candidates);
+  candidates.forEach((candidate) => {
+    if (candidate.kind !== 'FORWARD' || (!candidate.sourceFanned && !candidate.targetFanned)) return;
+    const aligned = alignAutomaticForwardPorts(candidate.source, candidate.target, candidate.sourcePort, candidate.targetPort, true, true);
+    candidate.sourcePort = aligned.source;
+    candidate.targetPort = aligned.target;
+  });
 
   candidates.forEach((candidate) => {
     const { edge, source, target, kind, fallbackSides, sourcePort, targetPort, routing } = candidate;
@@ -124,16 +167,22 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
     const obstacles = rects.filter((rect) => rect.id !== source.id && rect.id !== target.id);
     const directPoints = [sourcePort.point, targetPort.point];
     const routeBlocked = (candidatePoints: Point[]) => routeIntersects(candidatePoints, obstacles)
-      || routeIntersectsEndpointNodes(candidatePoints, source, target);
+      || (!isLocalDownstreamGap(candidatePoints, kind, sourcePort, targetPort)
+        && routeIntersectsEndpointNodes(candidatePoints, source, target, sourcePort, targetPort));
     const usesDisplayedPorts = candidate.usesAnchors || candidate.sourceFanned || candidate.targetFanned;
-    const manualPoints = edge.presentation?.routeMode === 'manual' && edge.presentation.waypoints?.length
+    // An explicit toolbar mode is authoritative. This also heals older drafts
+    // that accidentally persisted both automatic routing and manual waypoints.
+    const explicitAutomaticRouting = routing === 'straight' || routing === 'smart';
+    const manualPoints = !explicitAutomaticRouting && edge.presentation?.routeMode === 'manual' && edge.presentation.waypoints?.length
       ? compact([sourcePort.point, ...edge.presentation.waypoints, targetPort.point])
       : undefined;
     const manualBlocked = manualPoints ? !isOrthogonal(manualPoints) || routeBlocked(manualPoints) : false;
-    const elbowPoints = () => usesDisplayedPorts
+    const hasAdjustedForwardPorts = kind === 'FORWARD'
+      && (!samePort(sourcePort, source, fallbackSides.source) || !samePort(targetPort, target, fallbackSides.target));
+    const elbowPoints = () => usesDisplayedPorts || hasAdjustedForwardPorts
       ? anchoredDirectRoute(kind, sourcePort, targetPort, offset, maximumRight)
       : directRoute(kind, source, target, fallbackSides.source, fallbackSides.target, offset, maximumRight);
-    const elbowCandidates = [elbowPoints()];
+    const elbowCandidates = [elbowPoints(), ...localVerticalChannelRoutes(kind, sourcePort, targetPort, obstacles, offset)];
     if (kind === 'BACK' && usesDisplayedPorts && portsFaceEachOther(sourcePort, targetPort)) {
       elbowCandidates.push(routePorts(sourcePort, targetPort, offset));
     }
@@ -150,14 +199,21 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
           : chooseShortestRoute(clearElbowCandidates) ?? elbowCandidates[0]!;
     }
     if ((routing !== 'straight' || manualBlocked) && clearElbowCandidates.length === 0) {
-      avoidedEdgeIds.push(edge.id);
-      points = usesDisplayedPorts
-        ? kind === 'BACK'
-          ? anchoredBackRoute(sourcePort, targetPort, offset, maximumRight)
-          : anchoredOuterRoute(sourcePort, targetPort, offset, maximumRight, minimumTop)
-        : kind === 'BACK'
-          ? backRoute(source, target, offset, maximumRight)
-          : outerRoute(source, target, fallbackSides.source, fallbackSides.target, offset, maximumRight, minimumTop);
+      const clearLocalDetours = localObstacleRoutes(kind, sourcePort, targetPort, obstacles)
+        .filter((candidatePoints) => !routeBlocked(candidatePoints));
+      const localDetour = chooseShortestRoute(clearLocalDetours);
+      if (localDetour) {
+        points = localDetour;
+      } else {
+        avoidedEdgeIds.push(edge.id);
+        points = usesDisplayedPorts
+          ? kind === 'BACK'
+            ? anchoredBackRoute(sourcePort, targetPort, offset, maximumRight)
+            : anchoredOuterRoute(sourcePort, targetPort, offset, maximumRight, minimumTop)
+          : kind === 'BACK'
+            ? backRoute(source, target, offset, maximumRight)
+            : outerRoute(source, target, fallbackSides.source, fallbackSides.target, offset, maximumRight, minimumTop);
+      }
     }
     points = compact(points);
     const collision = routeBlocked(points);
@@ -173,8 +229,11 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
       sourceAnchor: anchorFromPort(sourcePort),
       targetAnchor: anchorFromPort(targetPort),
       collision,
+      bridges: [],
     });
   });
+
+  annotateRouteBridges(routesByEdgeId);
 
   return { routesByEdgeId, report: { backEdgeIds, avoidedEdgeIds, collisionEdgeIds, manualConflictEdgeIds } };
 }
@@ -183,7 +242,7 @@ export function snapNodeForStraightRoute(
   document: CanvasDocument,
   nodeId: string,
   position: Point,
-  threshold = DEFAULT_ALIGNMENT_THRESHOLD,
+  threshold = NODE_ALIGNMENT_THRESHOLD,
 ): NodeAlignmentSnap | undefined {
   const movingNode = document.nodes.find((node) => node.id === nodeId && !node.hidden);
   if (!movingNode) return undefined;
@@ -201,11 +260,9 @@ export function snapNodeForStraightRoute(
       const source = rectById.get(edge.source);
       const target = rectById.get(edge.target);
       if (!source || !target) return;
-      const kind = classify(edge, source, target, document.nodes);
-      const fallbackSides = sidesFor(kind, source, target);
-      const sourcePort = anchoredPort(source, edge.presentation?.sourceAnchor, fallbackSides.source);
-      const targetPort = anchoredPort(target, edge.presentation?.targetAnchor, fallbackSides.target);
-      if (!portsFaceEachOther(sourcePort, targetPort)) return;
+      const ports = alignmentPorts(edge, source, target);
+      if (!ports) return;
+      const { sourcePort, targetPort } = ports;
 
       const horizontal = isHorizontalSide(sourcePort.side);
       const desired = horizontal
@@ -222,8 +279,9 @@ export function snapNodeForStraightRoute(
       const snappedMovingRect = { ...movingRect, x: snappedPosition.x, y: snappedPosition.y };
       const snappedSource = source.id === nodeId ? snappedMovingRect : source;
       const snappedTarget = target.id === nodeId ? snappedMovingRect : target;
-      const snappedSourcePort = anchoredPort(snappedSource, edge.presentation?.sourceAnchor, fallbackSides.source);
-      const snappedTargetPort = anchoredPort(snappedTarget, edge.presentation?.targetAnchor, fallbackSides.target);
+      const snappedPorts = alignmentPorts(edge, snappedSource, snappedTarget);
+      if (!snappedPorts) return;
+      const { sourcePort: snappedSourcePort, targetPort: snappedTargetPort } = snappedPorts;
       const obstacles = rects.filter((rect) => rect.id !== source.id && rect.id !== target.id);
       if (routeIntersects([snappedSourcePort.point, snappedTargetPort.point], obstacles)) return;
 
@@ -242,12 +300,47 @@ export function snapNodeForStraightRoute(
   })[0];
 }
 
+function alignmentPorts(edge: CanvasEdge, source: NodeRect, target: NodeRect): { sourcePort: RoutePort; targetPort: RoutePort } | undefined {
+  if (
+    edge.semantic?.kind === 'BRANCH'
+    || edge.semantic?.kind === 'RETRY'
+    || edge.semantic?.kind === 'EXCEPTION'
+    || edge.sourceHandle === 'yes'
+    || edge.sourceHandle === 'no'
+  ) return undefined;
+
+  const sourceAnchor = manualEndpointAnchor(edge, 'source');
+  const targetAnchor = manualEndpointAnchor(edge, 'target');
+
+  if (sourceAnchor && targetAnchor) {
+    const sourcePort = anchoredPort(source, sourceAnchor, sourceAnchor.side);
+    const targetPort = anchoredPort(target, targetAnchor, targetAnchor.side);
+    return portsFaceEachOther(sourcePort, targetPort)
+      ? { sourcePort, targetPort }
+      : undefined;
+  }
+
+  const sourceCenter = { x: source.x + source.width / 2, y: source.y + source.height / 2 };
+  const targetCenter = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
+  const horizontal = Math.abs(targetCenter.x - sourceCenter.x) >= Math.abs(targetCenter.y - sourceCenter.y);
+  const inferredSourceSide = horizontal
+    ? targetCenter.x >= sourceCenter.x ? 'RIGHT' : 'LEFT'
+    : targetCenter.y >= sourceCenter.y ? 'BOTTOM' : 'TOP';
+  const inferredTargetSide = oppositeSide(inferredSourceSide);
+  const sourceSide = sourceAnchor?.side ?? (targetAnchor ? oppositeSide(targetAnchor.side) : inferredSourceSide);
+  const targetSide = targetAnchor?.side ?? (sourceAnchor ? oppositeSide(sourceAnchor.side) : inferredTargetSide);
+  const sourcePort = anchoredPort(source, sourceAnchor, sourceSide);
+  const targetPort = anchoredPort(target, targetAnchor, targetSide);
+  return portsFaceEachOther(sourcePort, targetPort) ? { sourcePort, targetPort } : undefined;
+}
+
 function classify(edge: CanvasEdge, source: NodeRect, target: NodeRect, nodes: CanvasNode[]): RouteKind {
   const sourceNode = nodes.find((node) => node.id === edge.source);
   const targetNode = nodes.find((node) => node.id === edge.target);
   if (edge.semantic?.kind === 'RETRY' || edge.semantic?.kind === 'EXCEPTION') return 'BACK';
   if (edge.semantic?.kind === 'BRANCH') return 'BRANCH';
   if (sourceNode?.stageId && targetNode?.stageId && sourceNode.stageId !== targetNode.stageId) return 'CROSS_STAGE';
+  if (isSameLaneDownstreamContinuation(edge, sourceNode, targetNode, source, target)) return 'DOWNSTREAM';
   if (edge.sourceHandle !== 'no' && target.y > source.y + source.height + CHANNEL_GAP && target.x <= source.x) return 'WRAP';
   const nearlySameRow = Math.abs(target.y - source.y) <= DEFAULT_ALIGNMENT_THRESHOLD;
   if ((!nearlySameRow && target.y < source.y) || (target.x <= source.x && sourceNode?.stageId === targetNode?.stageId)) return 'BACK';
@@ -256,7 +349,7 @@ function classify(edge: CanvasEdge, source: NodeRect, target: NodeRect, nodes: C
 }
 
 function sidesFor(kind: RouteKind, source: NodeRect, target: NodeRect): { source: RouteSide; target: RouteSide } {
-  if (kind === 'CROSS_STAGE' || kind === 'WRAP') return { source: 'BOTTOM', target: 'TOP' };
+  if (kind === 'CROSS_STAGE' || kind === 'DOWNSTREAM' || kind === 'WRAP') return { source: 'BOTTOM', target: 'TOP' };
   if (kind === 'BRANCH') return { source: 'BOTTOM', target: target.x > source.x ? 'LEFT' : 'TOP' };
   if (kind === 'BACK') return { source: 'RIGHT', target: 'RIGHT' };
   return { source: 'RIGHT', target: 'LEFT' };
@@ -274,8 +367,12 @@ function directRoute(
   const start = port(source, sourceSide);
   const finish = port(target, targetSide);
   if (kind === 'BACK') return backRoute(source, target, offset, maximumRight);
+  if (kind === 'DOWNSTREAM') {
+    const channelY = channelCoordinate(start.y, finish.y, offset);
+    return [start, { x: start.x, y: channelY }, { x: finish.x, y: channelY }, finish];
+  }
   if (kind === 'CROSS_STAGE' || kind === 'WRAP') {
-    const channelY = start.y + Math.max(PORT_GAP, (finish.y - start.y) / 2) + offset;
+    const channelY = channelCoordinate(start.y, finish.y, offset);
     return [start, { x: start.x, y: channelY }, { x: finish.x, y: channelY }, finish];
   }
   if (kind === 'BRANCH') {
@@ -336,6 +433,35 @@ function offsetChannelKey(kind: RouteKind, edge: CanvasEdge, sourceSide: RouteSi
   return `${kind}:${edge.source}:${sourceSide}`;
 }
 
+function routeOrderForEdge(
+  edge: CanvasEdge,
+  source: CanvasNode,
+  target: CanvasNode,
+  nodeIndexById: ReadonlyMap<string, number>,
+): RouteOrder {
+  const directChildOrder = target.outline?.parentId === source.id ? target.outline.order : undefined;
+  const edgeOrder = edge.semantic?.order;
+  const fallbackOutlineOrder = target.outline?.order;
+  const order = directChildOrder ?? edgeOrder ?? fallbackOutlineOrder ?? target.position.y;
+  return {
+    semanticPriority: directChildOrder !== undefined ? 0 : edgeOrder !== undefined ? 1 : fallbackOutlineOrder !== undefined ? 2 : 3,
+    order,
+    targetY: target.position.y,
+    targetX: target.position.x,
+    nodeIndex: nodeIndexById.get(target.id) ?? Number.MAX_SAFE_INTEGER,
+    edgeId: edge.id,
+  };
+}
+
+function compareRouteOrder(left: RouteOrder, right: RouteOrder): number {
+  return left.semanticPriority - right.semanticPriority
+    || left.order - right.order
+    || left.targetY - right.targetY
+    || left.targetX - right.targetX
+    || left.nodeIndex - right.nodeIndex
+    || left.edgeId.localeCompare(right.edgeId);
+}
+
 function outerRoute(
   source: NodeRect,
   target: NodeRect,
@@ -390,6 +516,7 @@ function anchoredOuterRoute(
 }
 
 function routePorts(source: RoutePort, target: RoutePort, offset: number): Point[] {
+  if (portsFaceEachOther(source, target)) return facingPortsRoute(source, target, offset);
   const sourceExit = extendPort(source, PORT_GAP);
   const targetApproach = extendPort(target, PORT_GAP);
   if (source.side === 'LEFT' || source.side === 'RIGHT') {
@@ -414,6 +541,263 @@ function routePorts(source: RoutePort, target: RoutePort, offset: number): Point
   ];
 }
 
+function facingPortsRoute(source: RoutePort, target: RoutePort, offset: number): Point[] {
+  if (isHorizontalSide(source.side)) {
+    const channelX = channelCoordinate(source.point.x, target.point.x, offset);
+    return [
+      source.point,
+      { x: channelX, y: source.point.y },
+      { x: channelX, y: target.point.y },
+      target.point,
+    ];
+  }
+  const channelY = channelCoordinate(source.point.y, target.point.y, offset);
+  return [
+    source.point,
+    { x: source.point.x, y: channelY },
+    { x: target.point.x, y: channelY },
+    target.point,
+  ];
+}
+
+function localVerticalChannelRoutes(
+  kind: RouteKind,
+  source: RoutePort,
+  target: RoutePort,
+  obstacles: NodeRect[],
+  offset: number,
+): Point[][] {
+  if (!['DOWNSTREAM', 'WRAP', 'CROSS_STAGE'].includes(kind)) return [];
+  if (source.side !== 'BOTTOM' || target.side !== 'TOP' || source.point.y >= target.point.y) return [];
+  const channels = localVerticalChannelCoordinates(source, target, obstacles, offset);
+  return channels.map((channelY) => [
+    source.point,
+    { x: source.point.x, y: channelY },
+    { x: target.point.x, y: channelY },
+    target.point,
+  ]);
+}
+
+function localVerticalChannelCoordinates(
+  source: RoutePort,
+  target: RoutePort,
+  obstacles: NodeRect[],
+  offset: number,
+): number[] {
+  const lower = source.point.y + OBSTACLE_PADDING;
+  const upper = target.point.y - OBSTACLE_PADDING;
+  if (lower >= upper) return [];
+  const left = Math.min(source.point.x, target.point.x);
+  const right = Math.max(source.point.x, target.point.x);
+  let gaps: Array<{ start: number; end: number }> = [{ start: lower, end: upper }];
+
+  obstacles.forEach((obstacle) => {
+    const obstacleLeft = obstacle.x - OBSTACLE_PADDING;
+    const obstacleRight = obstacle.x + obstacle.width + OBSTACLE_PADDING;
+    if (right < obstacleLeft || left > obstacleRight) return;
+    const blockedStart = Math.max(lower, obstacle.y - OBSTACLE_PADDING);
+    const blockedEnd = Math.min(upper, obstacle.y + obstacle.height + OBSTACLE_PADDING);
+    if (blockedStart >= blockedEnd) return;
+    gaps = gaps.flatMap((gap) => subtractVerticalInterval(gap, { start: blockedStart, end: blockedEnd }));
+  });
+
+  const preferred = channelCoordinate(source.point.y, target.point.y, offset);
+  return gaps
+    .map((gap) => channelCoordinate(gap.start, gap.end, offset))
+    .sort((leftChannel, rightChannel) => Math.abs(leftChannel - preferred) - Math.abs(rightChannel - preferred));
+}
+
+function localObstacleRoutes(kind: RouteKind, source: RoutePort, target: RoutePort, obstacles: NodeRect[]): Point[][] {
+  if (!['DOWNSTREAM', 'BRANCH', 'WRAP', 'CROSS_STAGE'].includes(kind)) return [];
+  if (source.side !== 'BOTTOM' || !['TOP', 'LEFT', 'RIGHT'].includes(target.side)) return [];
+
+  const targetApproach = extendPort(target, PORT_GAP);
+  const sourceExit = extendPort(source, PORT_GAP);
+  const corridorPoints = [source.point, sourceExit, targetApproach, target.point];
+  const corridor = {
+    left: Math.min(...corridorPoints.map((point) => point.x)) - OBSTACLE_PADDING,
+    right: Math.max(...corridorPoints.map((point) => point.x)) + OBSTACLE_PADDING,
+    top: Math.min(...corridorPoints.map((point) => point.y)) - OBSTACLE_PADDING,
+    bottom: Math.max(...corridorPoints.map((point) => point.y)) + OBSTACLE_PADDING,
+  };
+  const relevantObstacles = obstacles.filter((obstacle) => {
+    const right = obstacle.x + obstacle.width + OBSTACLE_PADDING;
+    const bottom = obstacle.y + obstacle.height + OBSTACLE_PADDING;
+    return right >= corridor.left && obstacle.x - OBSTACLE_PADDING <= corridor.right
+      && bottom >= corridor.top && obstacle.y - OBSTACLE_PADDING <= corridor.bottom;
+  });
+  const xCoordinates = uniqueCoordinates([
+    ...corridorPoints.map((point) => point.x),
+    ...relevantObstacles.flatMap((obstacle) => [
+      obstacle.x - OBSTACLE_PADDING - ROUTE_CLEARANCE,
+      obstacle.x + obstacle.width + OBSTACLE_PADDING + ROUTE_CLEARANCE,
+    ]),
+  ]);
+  const yCoordinates = uniqueCoordinates([
+    ...corridorPoints.map((point) => point.y),
+    ...relevantObstacles.flatMap((obstacle) => [
+      obstacle.y - OBSTACLE_PADDING - ROUTE_CLEARANCE,
+      obstacle.y + obstacle.height + OBSTACLE_PADDING + ROUTE_CLEARANCE,
+    ]),
+  ]);
+  const vertices = new Map<string, Point>();
+  xCoordinates.forEach((x) => yCoordinates.forEach((y) => {
+    const point = { x, y };
+    if (!pointInsideRoutingObstacle(point, relevantObstacles)) vertices.set(pointKey(point), point);
+  }));
+  const startKey = pointKey(source.point);
+  const targetKey = pointKey(targetApproach);
+  if (!vertices.has(startKey) || !vertices.has(targetKey)) return [];
+
+  const adjacency = new Map<string, Array<{ key: string; direction: 'H' | 'V' }>>();
+  vertices.forEach((point, key) => adjacency.set(key, []));
+  const addVisibleNeighbours = (points: Point[]) => {
+    points.sort((left, right) => left.x - right.x || left.y - right.y);
+    points.slice(1).forEach((point, index) => {
+      const previous = points[index]!;
+      if (routeIntersects([previous, point], relevantObstacles)) return;
+      const previousKey = pointKey(previous);
+      const pointKeyValue = pointKey(point);
+      const direction = previous.x === point.x ? 'V' : 'H';
+      adjacency.get(previousKey)?.push({ key: pointKeyValue, direction });
+      adjacency.get(pointKeyValue)?.push({ key: previousKey, direction });
+    });
+  };
+  const rows = new Map<number, Point[]>();
+  const columns = new Map<number, Point[]>();
+  vertices.forEach((point) => {
+    const row = rows.get(point.y) ?? [];
+    row.push(point);
+    rows.set(point.y, row);
+    const column = columns.get(point.x) ?? [];
+    column.push(point);
+    columns.set(point.x, column);
+  });
+  rows.forEach(addVisibleNeighbours);
+  columns.forEach(addVisibleNeighbours);
+
+  const path = shortestVisibilityPath(startKey, targetKey, vertices, adjacency);
+  return path ? [compact([...path, target.point])] : [];
+}
+
+function shortestVisibilityPath(
+  startKey: string,
+  targetKey: string,
+  vertices: Map<string, Point>,
+  adjacency: Map<string, Array<{ key: string; direction: 'H' | 'V' }>>,
+): Point[] | undefined {
+  type SearchState = { key: string; direction: 'H' | 'V' | null };
+  const stateKey = (key: string, direction: 'H' | 'V' | null) => `${key}|${direction ?? 'START'}`;
+  const startState = stateKey(startKey, null);
+  const distances = new Map<string, number>([[startState, 0]]);
+  const previous = new Map<string, string>();
+  const queue: Array<{ state: SearchState; key: string; cost: number }> = [{ state: { key: startKey, direction: null }, key: startState, cost: 0 }];
+
+  while (queue.length > 0) {
+    queue.sort((left, right) => left.cost - right.cost || left.key.localeCompare(right.key));
+    const current = queue.shift()!;
+    if (current.cost !== distances.get(current.key)) continue;
+    for (const next of adjacency.get(current.state.key) ?? []) {
+      const nextCost = current.cost
+        + manhattanDistance(vertices.get(current.state.key)!, vertices.get(next.key)!)
+        + (current.state.direction && current.state.direction !== next.direction ? ROUTE_BEND_PENALTY : 0);
+      const nextStateKey = stateKey(next.key, next.direction);
+      if (nextCost >= (distances.get(nextStateKey) ?? Number.POSITIVE_INFINITY)) continue;
+      distances.set(nextStateKey, nextCost);
+      previous.set(nextStateKey, current.key);
+      queue.push({ state: { key: next.key, direction: next.direction }, key: nextStateKey, cost: nextCost });
+    }
+  }
+
+  const endState = [...distances.entries()]
+    .filter(([key]) => key.startsWith(`${targetKey}|`))
+    .sort((left, right) => left[1] - right[1] || left[0].localeCompare(right[0]))[0]?.[0];
+  if (!endState) return undefined;
+  const keys: string[] = [];
+  for (let key: string | undefined = endState; key; key = previous.get(key)) keys.push(key.split('|')[0]!);
+  return keys.reverse().map((key) => vertices.get(key)!).filter(Boolean);
+}
+
+function uniqueCoordinates(values: number[]): number[] {
+  return [...new Set(values)].sort((left, right) => left - right);
+}
+
+function pointKey(point: Point): string {
+  return `${point.x}:${point.y}`;
+}
+
+function pointInsideRoutingObstacle(point: Point, obstacles: NodeRect[]): boolean {
+  return obstacles.some((obstacle) => point.x > obstacle.x - OBSTACLE_PADDING && point.x < obstacle.x + obstacle.width + OBSTACLE_PADDING
+    && point.y > obstacle.y - OBSTACLE_PADDING && point.y < obstacle.y + obstacle.height + OBSTACLE_PADDING);
+}
+
+function manhattanDistance(left: Point, right: Point): number {
+  return Math.abs(left.x - right.x) + Math.abs(left.y - right.y);
+}
+
+function subtractVerticalInterval(
+  gap: { start: number; end: number },
+  blocked: { start: number; end: number },
+): Array<{ start: number; end: number }> {
+  if (blocked.end <= gap.start || blocked.start >= gap.end) return [gap];
+  return [
+    ...(blocked.start > gap.start ? [{ start: gap.start, end: blocked.start }] : []),
+    ...(blocked.end < gap.end ? [{ start: blocked.end, end: gap.end }] : []),
+  ];
+}
+
+function channelCoordinate(start: number, finish: number, offset: number): number {
+  const minimum = Math.min(start, finish);
+  const maximum = Math.max(start, finish);
+  const midpoint = (start + finish) / 2;
+  const clearance = Math.min(PORT_GAP, Math.max(1, (maximum - minimum) / 3));
+  const lower = minimum + clearance;
+  const upper = maximum - clearance;
+  if (lower > upper) return midpoint;
+  const direction = finish >= start ? 1 : -1;
+  return Math.min(upper, Math.max(lower, midpoint + direction * offset));
+}
+
+function manualEndpointAnchor(edge: CanvasEdge, endpoint: 'source' | 'target'): EdgeAnchor | undefined {
+  const presentation = edge.presentation;
+  const anchor = endpoint === 'source' ? presentation?.sourceAnchor : presentation?.targetAnchor;
+  const mode = endpoint === 'source' ? presentation?.sourceAnchorMode : presentation?.targetAnchorMode;
+  if (!anchor) return undefined;
+  if (presentation?.routeMode === 'manual') return anchor;
+  // Anchor modes were introduced after the first published guides. Their
+  // persisted anchors were always intentional, so an omitted mode remains
+  // manual for backwards compatibility. New automatic routes clear anchors or
+  // may explicitly persist `auto`.
+  return mode === 'auto' ? undefined : anchor;
+}
+
+function isManualEndpointAnchor(edge: CanvasEdge, endpoint: 'source' | 'target'): boolean {
+  const presentation = edge.presentation;
+  const anchor = endpoint === 'source' ? presentation?.sourceAnchor : presentation?.targetAnchor;
+  if (!anchor) return false;
+  const mode = endpoint === 'source' ? presentation?.sourceAnchorMode : presentation?.targetAnchorMode;
+  return mode !== 'auto';
+}
+
+function isSameLaneDownstreamContinuation(
+  edge: CanvasEdge,
+  sourceNode: CanvasNode | undefined,
+  targetNode: CanvasNode | undefined,
+  source: NodeRect,
+  target: NodeRect,
+): boolean {
+  const hasSemanticContinuation = edge.semantic?.kind === 'FLOW'
+    || Boolean(sourceNode?.outline && targetNode?.outline)
+    // Historical ordinary connections predate semantic edge kinds.  Their
+    // out-to-in handle pair is still an unambiguous main-flow signal, while
+    // explicit yes/no handles remain branch intent.
+    || (!edge.semantic?.kind && edge.sourceHandle !== 'yes' && edge.sourceHandle !== 'no');
+  if (!hasSemanticContinuation) return false;
+  const sameStage = Boolean(sourceNode?.stageId) && sourceNode?.stageId === targetNode?.stageId;
+  const sameLane = (sourceNode?.laneId ?? null) === (targetNode?.laneId ?? null);
+  return sameStage && sameLane && target.y > source.y + DEFAULT_ALIGNMENT_THRESHOLD;
+}
+
 function anchoredPort(rect: NodeRect, anchor: EdgeAnchor | undefined, fallback: RouteSide): RoutePort {
   const side = anchor?.side ?? fallback;
   const offset = Math.min(1, Math.max(0, anchor?.offset ?? 0.5));
@@ -423,12 +807,75 @@ function anchoredPort(rect: NodeRect, anchor: EdgeAnchor | undefined, fallback: 
   return { side, offset, point: { x: rect.x + rect.width * offset, y: rect.y + rect.height } };
 }
 
+function samePort(portValue: RoutePort, rect: NodeRect, side: RouteSide): boolean {
+  const defaultPoint = port(rect, side);
+  return portValue.side === side && portValue.point.x === defaultPoint.x && portValue.point.y === defaultPoint.y;
+}
+
+function alignAutomaticForwardPorts(
+  source: NodeRect,
+  target: NodeRect,
+  sourcePort: RoutePort,
+  targetPort: RoutePort,
+  adjustSource: boolean,
+  adjustTarget: boolean,
+): { source: RoutePort; target: RoutePort } {
+  if (!portsFaceEachOther(sourcePort, targetPort) || !isHorizontalSide(sourcePort.side)) return { source: sourcePort, target: targetPort };
+  const sourceCenter = sourcePort.point.y;
+  const targetTop = target.y;
+  const targetBottom = target.y + target.height;
+  const sourceTop = source.y;
+  const sourceBottom = source.y + source.height;
+  if (!adjustSource && !adjustTarget) {
+    if (Math.abs(sourcePort.point.y - targetPort.point.y) > FORWARD_ALIGNMENT_THRESHOLD) return { source: sourcePort, target: targetPort };
+    const coordinate = (sourcePort.point.y + targetPort.point.y) / 2;
+    return {
+      source: horizontalPortAtY(source, sourcePort, coordinate),
+      target: horizontalPortAtY(target, targetPort, coordinate),
+    };
+  }
+  if (!adjustSource && (sourceCenter < targetTop || sourceCenter > targetBottom)) return { source: sourcePort, target: targetPort };
+  if (!adjustTarget && (targetPort.point.y < sourceTop || targetPort.point.y > sourceBottom)) return { source: sourcePort, target: targetPort };
+  const coordinate = !adjustSource
+    ? sourceCenter
+    : !adjustTarget
+      ? targetPort.point.y
+      : sourceCenter >= targetTop && sourceCenter <= targetBottom
+        ? sourceCenter
+        : targetPort.point.y >= sourceTop && targetPort.point.y <= sourceBottom
+          ? targetPort.point.y
+          : (Math.max(sourceTop, targetTop) + Math.min(sourceBottom, targetBottom)) / 2;
+  return {
+    source: adjustSource
+      ? horizontalPortAtY(source, sourcePort, coordinate)
+      : sourcePort,
+    target: adjustTarget
+      ? horizontalPortAtY(target, targetPort, coordinate)
+      : targetPort,
+  };
+}
+
+function horizontalPortAtY(rect: NodeRect, portValue: RoutePort, y: number): RoutePort {
+  return {
+    side: portValue.side,
+    offset: Math.min(1, Math.max(0, (y - rect.y) / rect.height)),
+    point: { x: portValue.point.x, y },
+  };
+}
+
 function fanOutSharedPorts(candidates: RouteCandidate[]) {
-  const endpoints = candidates.flatMap((candidate) => [
-    { candidate, end: 'source' as const, node: candidate.source, port: candidate.sourcePort },
-    { candidate, end: 'target' as const, node: candidate.target, port: candidate.targetPort },
+  type Endpoint = {
+    candidate: RouteCandidate;
+    end: 'source' | 'target';
+    node: NodeRect;
+    port: RoutePort;
+    pinned: boolean;
+  };
+  const endpoints: Endpoint[] = candidates.flatMap((candidate) => [
+    { candidate, end: 'source' as const, node: candidate.source, port: candidate.sourcePort, pinned: candidate.sourceAnchorPinned },
+    { candidate, end: 'target' as const, node: candidate.target, port: candidate.targetPort, pinned: candidate.targetAnchorPinned },
   ]);
-  const groups = new Map<string, typeof endpoints>();
+  const groups = new Map<string, Endpoint[]>();
   endpoints.forEach((endpoint) => {
     const key = `${endpoint.node.id}:${endpoint.port.side}`;
     const group = groups.get(key) ?? [];
@@ -439,8 +886,8 @@ function fanOutSharedPorts(candidates: RouteCandidate[]) {
   groups.forEach((group) => {
     const sideLength = isHorizontalSide(group[0]!.port.side) ? group[0]!.node.height : group[0]!.node.width;
     group
-      .sort((left, right) => left.port.offset - right.port.offset || endpointKey(left).localeCompare(endpointKey(right)))
-      .reduce<typeof group[]>((clusters, endpoint) => {
+      .sort((left, right) => left.port.offset - right.port.offset || compareEndpointOrder(left, right))
+      .reduce<Endpoint[][]>((clusters, endpoint) => {
         const cluster = clusters.at(-1);
         const first = cluster?.[0];
         if (!cluster || !first || (endpoint.port.offset - first.port.offset) * sideLength > FANOUT_NEIGHBORHOOD) {
@@ -451,31 +898,70 @@ function fanOutSharedPorts(candidates: RouteCandidate[]) {
         return clusters;
       }, [])
       .filter((cluster) => cluster.length > 1)
-      .forEach((cluster) => {
-        const average = cluster.reduce((total, endpoint) => total + endpoint.port.offset, 0) / cluster.length;
-        const gap = Math.min(FANOUT_GAP, (sideLength - FANOUT_EDGE_INSET * 2) / Math.max(1, cluster.length - 1));
-        const span = gap * (cluster.length - 1);
-        const minimum = FANOUT_EDGE_INSET / sideLength;
-        const firstOffset = Math.min(1 - minimum - span / sideLength, Math.max(minimum, average - span / sideLength / 2));
-        cluster.forEach((endpoint, index) => {
-          const port = anchoredPort(endpoint.node, {
-            side: endpoint.port.side,
-            offset: firstOffset + index * gap / sideLength,
-          }, endpoint.port.side);
-          if (endpoint.end === 'source') {
-            endpoint.candidate.sourcePort = port;
-            endpoint.candidate.sourceFanned = true;
-          } else {
-            endpoint.candidate.targetPort = port;
-            endpoint.candidate.targetFanned = true;
-          }
-        });
-      });
+      .forEach((cluster) => fanOutEndpointCluster(cluster, sideLength));
   });
 }
 
-function endpointKey(endpoint: { candidate: RouteCandidate; end: 'source' | 'target' }): string {
-  return `${endpoint.candidate.edge.id}:${endpoint.end}`;
+function fanOutEndpointCluster(
+  cluster: Array<{
+    candidate: RouteCandidate;
+    end: 'source' | 'target';
+    node: NodeRect;
+    port: RoutePort;
+    pinned: boolean;
+  }>,
+  sideLength: number,
+) {
+  const average = cluster.reduce((total, endpoint) => total + endpoint.port.offset, 0) / cluster.length;
+  const gap = Math.min(FANOUT_GAP, (sideLength - FANOUT_EDGE_INSET * 2) / Math.max(1, cluster.length - 1));
+  const span = gap * (cluster.length - 1);
+  const minimum = FANOUT_EDGE_INSET / sideLength;
+  const firstOffset = Math.min(1 - minimum - span / sideLength, Math.max(minimum, average - span / sideLength / 2));
+  const offsets = cluster.map((_, index) => firstOffset + index * gap / sideLength);
+  const pinnedOffsets = cluster.filter((endpoint) => endpoint.pinned).map((endpoint) => endpoint.port.offset);
+  const usedOffsets: number[] = [];
+
+  cluster.forEach((endpoint, index) => {
+    if (endpoint.pinned) return;
+    const desired = offsets[index]!;
+    const available = offsets
+      .map((offset, offsetIndex) => ({ offset, offsetIndex }))
+      .filter(({ offset }) => !pinnedOffsets.some((pinnedOffset) => Math.abs(offset - pinnedOffset) * sideLength < FANOUT_GAP * 0.75))
+      .filter(({ offset }) => !usedOffsets.some((usedOffset) => Math.abs(offset - usedOffset) * sideLength < FANOUT_GAP * 0.75))
+      .sort((left, right) => Math.abs(left.offset - desired) - Math.abs(right.offset - desired) || left.offsetIndex - right.offsetIndex);
+    const nextOffset = available[0]?.offset ?? desired;
+    usedOffsets.push(nextOffset);
+    const port = anchoredPort(endpoint.node, { side: endpoint.port.side, offset: nextOffset }, endpoint.port.side);
+    if (endpoint.end === 'source') {
+      endpoint.candidate.sourcePort = port;
+      endpoint.candidate.sourceFanned = true;
+    } else {
+      endpoint.candidate.targetPort = port;
+      endpoint.candidate.targetFanned = true;
+    }
+  });
+
+  if (pinnedOffsets.length === 0) {
+    cluster.forEach((endpoint, index) => {
+      const port = anchoredPort(endpoint.node, { side: endpoint.port.side, offset: offsets[index]! }, endpoint.port.side);
+      if (endpoint.end === 'source') {
+        endpoint.candidate.sourcePort = port;
+        endpoint.candidate.sourceFanned = true;
+      } else {
+        endpoint.candidate.targetPort = port;
+        endpoint.candidate.targetFanned = true;
+      }
+    });
+  }
+}
+
+function compareEndpointOrder(
+  left: { candidate: RouteCandidate; end: 'source' | 'target' },
+  right: { candidate: RouteCandidate; end: 'source' | 'target' },
+): number {
+  return compareRouteOrder(left.candidate.routeOrder, right.candidate.routeOrder)
+    || left.end.localeCompare(right.end)
+    || left.candidate.edge.id.localeCompare(right.candidate.edge.id);
 }
 
 function anchorFromPort(port: RoutePort): EdgeAnchor {
@@ -486,6 +972,13 @@ function isHorizontalSide(side: RouteSide): boolean {
   return side === 'LEFT' || side === 'RIGHT';
 }
 
+function oppositeSide(side: RouteSide): RouteSide {
+  if (side === 'LEFT') return 'RIGHT';
+  if (side === 'RIGHT') return 'LEFT';
+  if (side === 'TOP') return 'BOTTOM';
+  return 'TOP';
+}
+
 function portsFaceEachOther(source: RoutePort, target: RoutePort): boolean {
   if (isHorizontalSide(source.side) !== isHorizontalSide(target.side)) return false;
   if (source.side === 'RIGHT' && target.side === 'LEFT') return source.point.x <= target.point.x;
@@ -493,6 +986,12 @@ function portsFaceEachOther(source: RoutePort, target: RoutePort): boolean {
   if (source.side === 'BOTTOM' && target.side === 'TOP') return source.point.y <= target.point.y;
   if (source.side === 'TOP' && target.side === 'BOTTOM') return source.point.y >= target.point.y;
   return false;
+}
+
+function isLocalDownstreamGap(points: Point[], kind: RouteKind, source: RoutePort, target: RoutePort): boolean {
+  if (kind !== 'DOWNSTREAM' || source.side !== 'BOTTOM' || target.side !== 'TOP') return false;
+  if (source.point.y > target.point.y) return false;
+  return compact(points).every((point) => point.y >= source.point.y && point.y <= target.point.y);
 }
 
 function chooseShortestRoute(routes: Point[][]): Point[] | undefined {
@@ -521,6 +1020,94 @@ function bendCount(points: Point[]): number {
   }, 0);
 }
 
+function annotateRouteBridges(routesByEdgeId: Map<string, OrthogonalRoute>) {
+  const bridgesByEdgeId = new Map<string, Point[]>();
+  const rawRoutes = [...routesByEdgeId.values()];
+  const hasHorizontalSegment = rawRoutes.some((route) => route.points.some((point, index) => index > 0 && point.y === route.points[index - 1]!.y && point.x !== route.points[index - 1]!.x));
+  const hasVerticalSegment = rawRoutes.some((route) => route.points.some((point, index) => index > 0 && point.x === route.points[index - 1]!.x && point.y !== route.points[index - 1]!.y));
+  if (!hasHorizontalSegment || !hasVerticalSegment) {
+    rawRoutes.forEach((route) => { route.bridges = []; });
+    return;
+  }
+  const routes = rawRoutes.map((route) => ({
+    route,
+    segments: routeSegments(route.points),
+    bounds: routeBounds(route.points),
+  })).sort((left, right) => left.bounds.left - right.bounds.left || left.route.edgeId.localeCompare(right.route.edgeId));
+  const addBridge = (edgeId: string, point: Point) => {
+    const bridges = bridgesByEdgeId.get(edgeId) ?? [];
+    if (!bridges.some((candidate) => candidate.x === point.x && candidate.y === point.y)) bridges.push(point);
+    bridgesByEdgeId.set(edgeId, bridges);
+  };
+
+  routes.forEach((left, leftIndex) => {
+    for (let rightIndex = leftIndex + 1; rightIndex < routes.length; rightIndex += 1) {
+      const right = routes[rightIndex]!;
+      if (right.bounds.left > left.bounds.right) break;
+      if (right.bounds.top > left.bounds.bottom || right.bounds.bottom < left.bounds.top) continue;
+      for (const leftSegment of left.segments) {
+        for (const rightSegment of right.segments) {
+          const crossing = crossingBetween(leftSegment, rightSegment);
+          if (!crossing) continue;
+          addBridge(crossing.horizontal === 'left' ? left.route.edgeId : right.route.edgeId, crossing.point);
+        }
+      }
+    }
+  });
+
+  routes.forEach(({ route }) => {
+    route.bridges = bridgesByEdgeId.get(route.edgeId) ?? [];
+  });
+}
+
+interface RouteSegment {
+  start: Point;
+  finish: Point;
+}
+
+function routeSegments(points: Point[]): RouteSegment[] {
+  return points.slice(1).flatMap((finish, index) => {
+    const start = points[index]!;
+    return start.x === finish.x || start.y === finish.y ? [{ start, finish }] : [];
+  });
+}
+
+function routeBounds(points: Point[]): { left: number; right: number; top: number; bottom: number } {
+  return {
+    left: Math.min(...points.map((point) => point.x)),
+    right: Math.max(...points.map((point) => point.x)),
+    top: Math.min(...points.map((point) => point.y)),
+    bottom: Math.max(...points.map((point) => point.y)),
+  };
+}
+
+function crossingBetween(left: RouteSegment, right: RouteSegment): { point: Point; horizontal: 'left' | 'right' } | undefined {
+  const leftHorizontal = left.start.y === left.finish.y && left.start.x !== left.finish.x;
+  const rightHorizontal = right.start.y === right.finish.y && right.start.x !== right.finish.x;
+  const leftVertical = left.start.x === left.finish.x && left.start.y !== left.finish.y;
+  const rightVertical = right.start.x === right.finish.x && right.start.y !== right.finish.y;
+  if (leftHorizontal && rightVertical) {
+    const point = { x: right.start.x, y: left.start.y };
+    return isInteriorCrossing(point, left, right) ? { point, horizontal: 'left' } : undefined;
+  }
+  if (leftVertical && rightHorizontal) {
+    const point = { x: left.start.x, y: right.start.y };
+    return isInteriorCrossing(point, right, left) ? { point, horizontal: 'right' } : undefined;
+  }
+  return undefined;
+}
+
+function isInteriorCrossing(point: Point, horizontal: RouteSegment, vertical: RouteSegment): boolean {
+  const horizontalMin = Math.min(horizontal.start.x, horizontal.finish.x);
+  const horizontalMax = Math.max(horizontal.start.x, horizontal.finish.x);
+  const verticalMin = Math.min(vertical.start.y, vertical.finish.y);
+  const verticalMax = Math.max(vertical.start.y, vertical.finish.y);
+  return point.x > horizontalMin + ORTHOGONAL_BRIDGE_HALF_WIDTH
+    && point.x < horizontalMax - ORTHOGONAL_BRIDGE_HALF_WIDTH
+    && point.y > verticalMin + ROUTE_CLEARANCE
+    && point.y < verticalMax - ROUTE_CLEARANCE;
+}
+
 function extendPort(port: RoutePort, amount: number): Point {
   if (port.side === 'LEFT') return { x: port.point.x - amount, y: port.point.y };
   if (port.side === 'RIGHT') return { x: port.point.x + amount, y: port.point.y };
@@ -539,16 +1126,54 @@ function routeIntersects(points: Point[], obstacles: NodeRect[]): boolean {
   return points.slice(1).some((point, index) => obstacles.some((rect) => segmentIntersects(points[index]!, point, rect)));
 }
 
-function routeIntersectsEndpointNodes(points: Point[], source: NodeRect, target: NodeRect): boolean {
+function routeIntersectsEndpointNodes(
+  points: Point[],
+  source: NodeRect,
+  target: NodeRect,
+  sourcePort: RoutePort,
+  targetPort: RoutePort,
+): boolean {
   const segments = points.slice(1);
+  const targetApproach = points.length >= 3 ? points.at(-2) : undefined;
+  const beforeTargetApproach = points.length >= 3 ? points.at(-3) : undefined;
+  const hasSafeTargetApproach = Boolean(targetApproach && beforeTargetApproach
+    && pointOnNodeBoundary(targetApproach, target)
+    && !pointInsideNode(beforeTargetApproach, target));
   return segments.some((finish, index) => {
     const start = points[index]!;
     return [source, target].some((rect) => {
-      if (rect.id === source.id && index === 0) return false;
-      if (rect.id === target.id && index === segments.length - 1) return false;
+      if (rect.id === source.id && index === 0 && segmentLeavesPort(start, finish, sourcePort)) return false;
+      if (rect.id === target.id && index === segments.length - 1 && segmentApproachesPort(start, finish, targetPort)) return false;
+      if (rect.id === target.id && index === segments.length - 2 && hasSafeTargetApproach) return false;
       return segmentIntersects(start, finish, rect);
     });
   });
+}
+
+function segmentLeavesPort(start: Point, finish: Point, port: RoutePort): boolean {
+  if (port.side === 'LEFT') return finish.x <= start.x;
+  if (port.side === 'RIGHT') return finish.x >= start.x;
+  if (port.side === 'TOP') return finish.y <= start.y;
+  return finish.y >= start.y;
+}
+
+function segmentApproachesPort(start: Point, finish: Point, port: RoutePort): boolean {
+  if (port.side === 'LEFT') return start.x <= finish.x;
+  if (port.side === 'RIGHT') return start.x >= finish.x;
+  if (port.side === 'TOP') return start.y <= finish.y;
+  return start.y >= finish.y;
+}
+
+function pointOnNodeBoundary(point: Point, rect: NodeRect): boolean {
+  const onHorizontalBoundary = (point.y === rect.y || point.y === rect.y + rect.height)
+    && point.x >= rect.x && point.x <= rect.x + rect.width;
+  const onVerticalBoundary = (point.x === rect.x || point.x === rect.x + rect.width)
+    && point.y >= rect.y && point.y <= rect.y + rect.height;
+  return onHorizontalBoundary || onVerticalBoundary;
+}
+
+function pointInsideNode(point: Point, rect: NodeRect): boolean {
+  return point.x > rect.x && point.x < rect.x + rect.width && point.y > rect.y && point.y < rect.y + rect.height;
 }
 
 function segmentIntersects(start: Point, finish: Point, rect: NodeRect): boolean {

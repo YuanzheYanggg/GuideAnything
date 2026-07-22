@@ -91,6 +91,27 @@ export class ApiClient {
         `/guides/${guideId}/draft-history/${sourceRevision}/restore`,
         { method: 'POST', body: JSON.stringify({ revision }) },
       )).guide,
+      listFlowRegressionCases: async (guideId) => (await this.request<{
+        items: Awaited<ReturnType<EditorApi['listFlowRegressionCases']>>;
+      }>(`/guides/${encodeURIComponent(guideId)}/flow-regression-cases`)).items,
+      replayFlowRegressionCase: async (guideId, caseId) => (await this.request<{
+        case: Awaited<ReturnType<EditorApi['replayFlowRegressionCase']>>;
+      }>(`/guides/${encodeURIComponent(guideId)}/flow-regression-cases/${encodeURIComponent(caseId)}/replay`, {
+        method: 'POST',
+      })).case,
+      archiveFlowRegressionCase: async (guideId, caseId) => (await this.request<{
+        case: Awaited<ReturnType<EditorApi['archiveFlowRegressionCase']>>;
+      }>(`/guides/${encodeURIComponent(guideId)}/flow-regression-cases/${encodeURIComponent(caseId)}/status`, {
+        method: 'PATCH', body: JSON.stringify({ status: 'ARCHIVED' }),
+      })).case,
+      createFlowRegressionRealRun: async (guideId, caseId) => (await this.request<{
+        run: Awaited<ReturnType<EditorApi['createFlowRegressionRealRun']>>;
+      }>(`/guides/${encodeURIComponent(guideId)}/flow-regression-cases/${encodeURIComponent(caseId)}/real-run`, {
+        method: 'POST',
+      })).run,
+      getFlowAnnotationHealth: async (guideId) => (await this.request<{
+        health: Awaited<ReturnType<EditorApi['getFlowAnnotationHealth']>>;
+      }>(`/guides/${encodeURIComponent(guideId)}/flow-annotation-health`)).health,
       publishGuide: async (guideId) => (await this.request<{ version: GuideVersionSnapshot }>(`/guides/${guideId}/publish`, { method: 'POST' })).version,
       search: async (query, offset = 0, consumerWorkspaceId) => this.request<SearchPage>(`/search?q=${encodeURIComponent(query)}&limit=50&offset=${offset}${consumerWorkspaceId ? `&consumerWorkspaceId=${encodeURIComponent(consumerWorkspaceId)}` : ''}`),
       referenceUpdates: async (guideId) => (await this.request<{ items: GuideReferenceUpdate[] }>(`/guides/${guideId}/reference-updates`)).items,
@@ -302,6 +323,14 @@ export class ApiClient {
         `/agent-runs/${encodeURIComponent(runId)}/steer`,
         { method: 'POST', body: JSON.stringify(request) },
       )).run,
+      getFlowRegressionReferenceEligibility: async (referenceId) => (await this.request<{
+        eligibility: Awaited<ReturnType<AgentApi['getFlowRegressionReferenceEligibility']>>;
+      }>(`/references/${encodeURIComponent(referenceId)}/flow-regression-eligibility`)).eligibility,
+      createFlowRegressionCase: async (referenceId) => (await this.request<{
+        case: Awaited<ReturnType<AgentApi['createFlowRegressionCase']>>;
+      }>(`/references/${encodeURIComponent(referenceId)}/flow-regression-cases`, {
+        method: 'POST',
+      })).case,
     };
   }
 

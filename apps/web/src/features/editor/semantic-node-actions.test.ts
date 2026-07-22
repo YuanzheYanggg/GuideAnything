@@ -41,6 +41,42 @@ const document = (nodes: CanvasNode[]): CanvasDocument => ({
 });
 
 describe('semantic node actions', () => {
+  it('keeps author positions when a toolbar flow node is inserted', () => {
+    const result = insertSemanticNode(document([
+      process('receive', { position: { x: 920, y: 80 }, stageId: 'intake', laneId: 'sales', outline: { order: 0, kind: 'STEP' } }),
+      process('archive', { position: { x: 1_280, y: 240 }, stageId: 'intake', laneId: 'sales', outline: { order: 1, kind: 'STEP' } }),
+    ]), process('confirm', { position: { x: 420, y: 720 } }), { origin: 'toolbar', sourceId: 'receive', edgeId: 'receive-confirm' });
+
+    expect(result.nodes.map(({ id, position }) => ({ id, position }))).toEqual([
+      { id: 'receive', position: { x: 920, y: 80 } },
+      { id: 'archive', position: { x: 1_280, y: 240 } },
+      { id: 'confirm', position: { x: 420, y: 720 } },
+    ]);
+  });
+
+  it('keeps author positions when a flow node is created from a dragged connection', () => {
+    const result = insertSemanticNode(document([
+      { ...decision('qualified'), position: { x: 1_040, y: 120 }, stageId: 'intake', laneId: 'sales', outline: { order: 0, kind: 'STEP' } },
+    ]), process('continue', { position: { x: 180, y: 680 } }), { origin: 'connection', sourceId: 'qualified', edgeId: 'qualified-continue' });
+
+    expect(result.nodes.map(({ id, position }) => ({ id, position }))).toEqual([
+      { id: 'qualified', position: { x: 1_040, y: 120 } },
+      { id: 'continue', position: { x: 180, y: 680 } },
+    ]);
+  });
+
+  it('keeps author positions when a decision branch is connected to an existing node', () => {
+    const result = connectSemanticNodes(document([
+      { ...decision('qualified'), position: { x: 1_040, y: 120 }, outline: { order: 0, kind: 'STEP' } },
+      process('continue', { position: { x: 180, y: 680 }, outline: { order: 1, kind: 'STEP' } }),
+    ]), { id: 'qualified-continue', source: 'qualified', target: 'continue' });
+
+    expect(result.nodes.map(({ id, position }) => ({ id, position }))).toEqual([
+      { id: 'qualified', position: { x: 1_040, y: 120 } },
+      { id: 'continue', position: { x: 180, y: 680 } },
+    ]);
+  });
+
   it('inserts a toolbar step immediately after the selected peer and inherits its stage and lane', () => {
     const result = insertSemanticNode(document([
       process('receive', { stageId: 'intake', laneId: 'sales', outline: { order: 0, kind: 'STEP' } }),

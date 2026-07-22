@@ -356,6 +356,18 @@ describe('conversation API contracts', () => {
 
     expect(ReferenceResolutionV1Schema.parse({
       status: 'VALID',
+      referenceId: 'reference-image-annotation',
+      source: 'WORKSPACE_FLOW',
+      title: '版类型',
+      excerpt: '初样用于新建版型。',
+      target: {
+        kind: 'PUBLISHED_FLOW_NODE',
+        href: '/versions/version-1/learn?nodeId=image-resource&annotationId=version-type',
+      },
+    }).status).toBe('VALID');
+
+    expect(ReferenceResolutionV1Schema.parse({
+      status: 'VALID',
       referenceId: 'reference-santexwell',
       source: 'SANTEXWELL',
       title: '知识页',

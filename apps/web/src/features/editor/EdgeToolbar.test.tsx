@@ -136,6 +136,12 @@ describe('EdgeToolbar', () => {
     expect(onResetRoute).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the route toolbar free of a separate drag handle while editing', () => {
+    render(<EdgeToolbar presentation={{ routeMode: 'manual' }} onChange={vi.fn()} onClose={vi.fn()} routeEditing />);
+
+    expect(screen.queryByRole('button', { name: '拖动编辑工具条' })).not.toBeInTheDocument();
+  });
+
   it('prevents saving a manual route while it is blocked by a node', () => {
     render(
       <EdgeToolbar

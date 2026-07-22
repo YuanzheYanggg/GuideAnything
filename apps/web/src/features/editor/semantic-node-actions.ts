@@ -12,8 +12,9 @@ export interface SemanticNodeInsert {
 }
 
 /**
- * Converts all authoring entry points into the same semantic operation before
- * the canvas is reflowed. Coordinates are deliberately ignored here.
+ * Converts all authoring entry points into the same semantic operation while
+ * preserving the author's current canvas positions. Automatic arrangement is
+ * an explicit preview/apply action in the editor.
  */
 export function insertSemanticNode(document: CanvasDocument, createdNode: CanvasNode, input: SemanticNodeInsert): CanvasDocument {
   const source = input.sourceId
@@ -34,8 +35,7 @@ export function insertSemanticNode(document: CanvasDocument, createdNode: Canvas
   const ordered = source && !isContentNode(created) && !(input.origin === 'child' || (input.origin === 'connection' && source.type === 'decision'))
     ? moveInsertedStepAfterSource(normalized, source.id, created.id)
     : normalized;
-  const renumbered = renumberSemanticFlow(ordered);
-  return layoutFlowHierarchy(renumbered).document;
+  return renumberSemanticFlow(ordered);
 }
 
 /** Moves a node within its semantic siblings, then refreshes codes and placement. */
@@ -104,7 +104,7 @@ export function connectSemanticNodes(document: CanvasDocument, edge: CanvasEdge)
       ...(label ? { label } : {}),
     }],
   };
-  return layoutFlowHierarchy(renumberSemanticFlow(next)).document;
+  return renumberSemanticFlow(next);
 }
 
 function attachResource(document: CanvasDocument, created: CanvasNode, source: CanvasNode | undefined): CanvasNode {

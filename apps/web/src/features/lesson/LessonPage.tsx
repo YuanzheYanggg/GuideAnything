@@ -43,6 +43,7 @@ export function resolveStepLane(document: CanvasDocument, nodeId: string): FlowL
 export function resourcesForStep(document: CanvasDocument, nodeId: string): CanvasNode[] {
   return document.nodes.filter((node) =>
     !node.hidden
+    && node.visibility !== 'HIDDEN'
     && !node.source
     && (node.attachment?.ownerNodeId ?? node.contentParentId) === nodeId
     && (node.type === 'markdown' || node.type === 'image' || node.type === 'video'),
@@ -50,12 +51,22 @@ export function resourcesForStep(document: CanvasDocument, nodeId: string): Canv
 }
 
 export function lessonStepsForDocument(document: CanvasDocument) {
-  return hasSemanticFlow(document)
+  const steps = hasSemanticFlow(document)
     ? deriveSemanticFlow(document).lessonSteps
     : [...document.steps].sort((left, right) => left.order - right.order);
+  return steps.filter((step) => {
+    const node = document.nodes.find((candidate) => candidate.id === step.nodeId);
+    return !node || !isHiddenLessonResource(node);
+  });
 }
 
-export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }: { versionId: string; api: LessonApi; personalApi?: PersonalApi; focusNodeId?: string; onBack: () => void }) {
+function isHiddenLessonResource(node: CanvasNode): boolean {
+  return !node.source
+    && node.visibility === 'HIDDEN'
+    && (node.type === 'markdown' || node.type === 'image' || node.type === 'video');
+}
+
+export function LessonPage({ versionId, api, personalApi, focusNodeId, focusAnnotationId, onBack }: { versionId: string; api: LessonApi; personalApi?: PersonalApi; focusNodeId?: string; focusAnnotationId?: string; onBack: () => void }) {
   const [versionHistory, setVersionHistory] = useState<GuideVersionSnapshot[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [instance, setInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
@@ -63,6 +74,7 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
   const [error, setError] = useState('');
   const [previewStack, setPreviewStack] = useState<MediaPreview[]>([]);
   const inFlightSubguidesRef = useRef(new Set<string>());
+  const appliedAnnotationFocusRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -96,7 +108,7 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
   const currentLane = lessonSteps[currentIndex]?.lane;
   const currentNode = version?.document.nodes.find((node) => node.id === currentStep?.nodeId);
   const focusedUnsequencedNode = useMemo(() => version && focusNodeId && focusedStepIndex < 0
-    ? version.document.nodes.find((node) => node.id === focusNodeId) ?? null
+    ? version.document.nodes.find((node) => node.id === focusNodeId && !isHiddenLessonResource(node)) ?? null
     : null, [focusNodeId, focusedStepIndex, version]);
   const displayedNode = focusedUnsequencedNode ?? currentNode;
   const displayedStep = focusedUnsequencedNode ? undefined : currentStep;
@@ -109,12 +121,14 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
   );
   const currentPreview = previewStack[previewStack.length - 1] ?? null;
   const openPreview = useCallback((node: CanvasNode) => {
+    if (isHiddenLessonResource(node)) return;
     const preview = previewForNode(node);
     if (preview) setPreviewStack([preview]);
   }, []);
   const openAnnotationTarget = useCallback((targetNodeId: string, annotationIndex: number) => {
     if (!version) return;
     const target = version.document.nodes.find((node) => node.id === targetNodeId);
+    if (!target || isHiddenLessonResource(target)) return;
     const targetPreview = target ? previewForNode(target) : null;
     if (!targetPreview) return;
     setPreviewStack((stack) => {
@@ -164,13 +178,14 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
     }
   }, [onBack, versionHistory.length]);
   const selectMapNode = useCallback((nodeId: string) => {
+    if (version?.document.nodes.some((node) => node.id === nodeId && isHiddenLessonResource(node))) return;
     const targetIndex = lessonSteps.findIndex(({ step }) => step.nodeId === nodeId);
     if (targetIndex >= 0) {
       setCurrentIndex(targetIndex);
       return;
     }
     void instance?.fitView({ nodes: [{ id: nodeId }], duration: 280, padding: 1.1, minZoom: 0.4, maxZoom: 1.3 });
-  }, [instance, lessonSteps]);
+  }, [instance, lessonSteps, version]);
 
   useEffect(() => {
     if (!instance || !displayedNode) return;
@@ -180,6 +195,16 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
   useEffect(() => {
     setPreviewStack([]);
   }, [currentStep?.id, version?.id]);
+
+  useEffect(() => {
+    if (!version || !focusNodeId || !focusAnnotationId) return;
+    const node = version.document.nodes.find((item): item is CanvasNode<'image'> => item.id === focusNodeId && item.type === 'image');
+    if (!node || isHiddenLessonResource(node) || !node.data.annotations?.some((annotation) => annotation.id === focusAnnotationId)) return;
+    const focusKey = `${version.id}:${focusNodeId}:${focusAnnotationId}`;
+    if (appliedAnnotationFocusRef.current === focusKey) return;
+    appliedAnnotationFocusRef.current = focusKey;
+    setPreviewStack([{ kind: 'image', node, initialAnnotationId: focusAnnotationId }]);
+  }, [focusAnnotationId, focusNodeId, version]);
 
   if (!version) return <main className="center-state">{error ? <p className="error-message" role="alert">{error}</p> : <><span className="spinner" /><p>正在载入教学指南…</p></>}</main>;
 
@@ -228,8 +253,9 @@ export function LessonPage({ versionId, api, personalApi, focusNodeId, onBack }:
       {...(previewStack.length > 1 ? { onBack: () => setPreviewStack((stack) => stack.slice(0, -1)) } : {})}
       onOpenTarget={openAnnotationTarget}
       onOpenSupplement={openAnnotationSupplement}
-      isTargetValid={(targetNodeId) => Boolean(version.document.nodes.find((node) => node.id === targetNodeId && node.id !== (currentPreview.kind === 'image' ? currentPreview.node.id : '')))}
+      isTargetValid={(targetNodeId) => Boolean(version.document.nodes.find((node) => node.id === targetNodeId && node.id !== (currentPreview.kind === 'image' ? currentPreview.node.id : '') && !isHiddenLessonResource(node)))}
       onActivateNode={(node) => {
+        if (isHiddenLessonResource(node)) return;
         if (node.type === 'subguide') {
           setPreviewStack([]);
           void openSubguide(node.data.guideVersionId);

@@ -5,9 +5,9 @@ import { routeCanvasEdges, snapNodeForStraightRoute, type OrthogonalRoute, type 
 import { layoutFlowHierarchy } from './hierarchy';
 import { createComplexSemanticFlowDocument } from './complex-semantic-flow-fixture';
 
-const process = (id: string, x: number, y: number, stageId?: string): CanvasNode => ({
+const process = (id: string, x: number, y: number, stageId?: string, laneId?: string): CanvasNode => ({
   id, type: 'process', position: { x, y }, size: { width: 200, height: 100 }, zIndex: 0,
-  ...(stageId ? { stageId } : {}), data: { label: id, shape: 'process' },
+  ...(stageId ? { stageId } : {}), ...(laneId ? { laneId } : {}), data: { label: id, shape: 'process' },
 });
 const edge = (id: string, source: string, target: string, extra: Partial<CanvasEdge> = {}): CanvasEdge => ({ id, source, target, ...extra });
 
@@ -59,6 +59,204 @@ describe('orthogonal edge routing', () => {
     expectOrthogonal(route.points);
   });
 
+  it('aligns an automatic same-row flow to one horizontal segment when card heights differ', () => {
+    const source = { ...process('source', 0, 0), size: { width: 200, height: 133 } };
+    const target = { ...process('target', 400, 0), size: { width: 200, height: 100 } };
+    const result = routeCanvasEdges(document([source, target], [edge('aligned-height', 'source', 'target')]));
+
+    expect(result.routesByEdgeId.get('aligned-height')!.points).toEqual([
+      { x: 200, y: 66.5 },
+      { x: 400, y: 66.5 },
+    ]);
+  });
+
+  it('lets the automatic endpoint follow a single manually dragged forward anchor', () => {
+    const source = { ...process('source', 0, 0), size: { width: 200, height: 133 } };
+    const target = { ...process('target', 400, 0), size: { width: 200, height: 100 } };
+    const result = routeCanvasEdges(document([source, target], [edge('single-manual-anchor', 'source', 'target', {
+      presentation: {
+        sourceAnchor: { side: 'RIGHT', offset: 0.7 },
+        sourceAnchorMode: 'manual',
+      },
+    })]));
+    const route = result.routesByEdgeId.get('single-manual-anchor')!;
+
+    expect(route.points).toEqual([
+      { x: 200, y: 93.1 },
+      { x: 400, y: 93.1 },
+    ]);
+    expect(route.sourceAnchor).toEqual({ side: 'RIGHT', offset: 0.7 });
+    expect(route.targetAnchor.side).toBe('LEFT');
+    expect(route.targetAnchor.offset).toBeCloseTo(0.931, 10);
+  });
+
+  it('snaps nearly aligned manual forward anchors onto one horizontal segment', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 400, 0)],
+      [edge('near-aligned-manual', 'source', 'target', {
+        presentation: {
+          sourceAnchor: { side: 'RIGHT', offset: 0.5 },
+          sourceAnchorMode: 'manual',
+          targetAnchor: { side: 'LEFT', offset: 0.54 },
+          targetAnchorMode: 'manual',
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('near-aligned-manual')!;
+
+    expect(route.points).toEqual([
+      { x: 200, y: 52 },
+      { x: 400, y: 52 },
+    ]);
+    expect(route.sourceAnchor.offset).toBeCloseTo(0.52, 10);
+    expect(route.targetAnchor.offset).toBeCloseTo(0.52, 10);
+  });
+
+  it('removes a visually small manual forward bend instead of preserving a tiny elbow', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 400, 0)],
+      [edge('tiny-manual-bend', 'source', 'target', {
+        presentation: {
+          sourceAnchor: { side: 'RIGHT', offset: 0.5 },
+          sourceAnchorMode: 'manual',
+          targetAnchor: { side: 'LEFT', offset: 0.68 },
+          targetAnchorMode: 'manual',
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('tiny-manual-bend')!;
+
+    expect(route.points).toEqual([
+      { x: 200, y: 59 },
+      { x: 400, y: 59 },
+    ]);
+    expect(route.sourceAnchor.offset).toBeCloseTo(0.59, 10);
+    expect(route.targetAnchor.offset).toBeCloseTo(0.59, 10);
+  });
+
+  it('collapses floating-point noise after aligning uneven manual forward anchors', () => {
+    const result = routeCanvasEdges(document(
+      [
+        { ...process('source', 0, 0), size: { width: 240, height: 129 } },
+        { ...process('target', 360, 0), size: { width: 200, height: 104 } },
+      ],
+      [edge('fractional-manual-bend', 'source', 'target', {
+        presentation: {
+          sourceAnchor: { side: 'RIGHT', offset: 0.523702219266312 },
+          sourceAnchorMode: 'manual',
+          targetAnchor: { side: 'LEFT', offset: 0.46233041792458973 },
+          targetAnchorMode: 'manual',
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('fractional-manual-bend')!;
+
+    expect(route.points).toHaveLength(2);
+    expect(route.points[0]!.y).toBe(route.points[1]!.y);
+  });
+
+  it('rejects a manual route that leaves a bottom endpoint through the source card', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 0, 300)],
+      [edge('manual-source-interior', 'source', 'target', {
+        presentation: {
+          routeMode: 'manual',
+          waypoints: [{ x: 100, y: 20 }, { x: 220, y: 20 }, { x: 220, y: 200 }],
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('manual-source-interior')!;
+
+    expect(result.report.manualConflictEdgeIds).toEqual(['manual-source-interior']);
+    expect(route.points).not.toEqual([
+      { x: 100, y: 100 },
+      { x: 100, y: 20 },
+      { x: 220, y: 20 },
+      { x: 220, y: 200 },
+      { x: 100, y: 300 },
+    ]);
+    expect(route.collision).toBe(false);
+  });
+
+  it('rejects a manual route that approaches a top endpoint from below through the target card', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 0, 300)],
+      [edge('manual-target-interior', 'source', 'target', {
+        presentation: {
+          routeMode: 'manual',
+          waypoints: [{ x: 100, y: 200 }, { x: 220, y: 200 }, { x: 220, y: 400 }, { x: 100, y: 400 }],
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('manual-target-interior')!;
+
+    expect(result.report.manualConflictEdgeIds).toEqual(['manual-target-interior']);
+    expect(route.points).not.toEqual([
+      { x: 100, y: 100 },
+      { x: 100, y: 200 },
+      { x: 220, y: 200 },
+      { x: 220, y: 400 },
+      { x: 100, y: 400 },
+      { x: 100, y: 300 },
+    ]);
+    expect(route.collision).toBe(false);
+  });
+
+  it('routes a downstream continuation around the nearest side of a blocking card', () => {
+    const result = routeCanvasEdges(document(
+      [
+        process('source', 0, 0, 'stage', 'lane'),
+        process('target', 0, 300, 'stage', 'lane'),
+        { ...process('blocker', 100, 150), size: { width: 100, height: 100 } },
+      ],
+      [edge('local-downstream', 'source', 'target', { sourceHandle: 'out', targetHandle: 'in' })],
+    ));
+    const route = result.routesByEdgeId.get('local-downstream')!;
+
+    expect(route.kind).toBe('DOWNSTREAM');
+    expect(result.report.avoidedEdgeIds).toEqual([]);
+    expect(result.report.collisionEdgeIds).toEqual([]);
+    expect(Math.min(...route.points.map((point) => point.y))).toBeGreaterThanOrEqual(100);
+    expect(Math.min(...route.points.map((point) => point.x))).toBeLessThan(100);
+    expectOrthogonal(route.points);
+  });
+
+  it('routes a branch around a nearby card without escaping to the canvas gutter', () => {
+    const result = routeCanvasEdges(document(
+      [
+        process('source', 0, 0),
+        process('target', 400, 250),
+        { ...process('blocker', 100, 120), size: { width: 200, height: 120 } },
+      ],
+      [edge('local-branch', 'source', 'target', { sourceHandle: 'no' })],
+    ));
+    const route = result.routesByEdgeId.get('local-branch')!;
+
+    expect(route.kind).toBe('BRANCH');
+    expect(result.report.avoidedEdgeIds).toEqual([]);
+    expect(result.report.collisionEdgeIds).toEqual([]);
+    expect(Math.min(...route.points.map((point) => point.y))).toBeGreaterThanOrEqual(100);
+    expect(Math.max(...route.points.map((point) => point.x))).toBeLessThan(640);
+    expectOrthogonal(route.points);
+  });
+
+  it('marks a horizontal route as the bridge owner when two routes cross', () => {
+    const nodes = [
+      { ...process('horizontal-source', 0, 0), size: { width: 100, height: 100 } },
+      { ...process('horizontal-target', 400, 0), size: { width: 100, height: 100 } },
+      { ...process('vertical-source', 250, -200, 'stage', 'lane'), size: { width: 100, height: 100 } },
+      { ...process('vertical-target', 250, 300, 'stage', 'lane'), size: { width: 100, height: 100 } },
+    ];
+    const result = routeCanvasEdges(document(nodes, [
+      edge('horizontal', 'horizontal-source', 'horizontal-target'),
+      edge('vertical', 'vertical-source', 'vertical-target', { sourceHandle: 'out', targetHandle: 'in' }),
+    ]));
+
+    expect(result.routesByEdgeId.get('horizontal')!.points).toEqual([{ x: 100, y: 50 }, { x: 400, y: 50 }]);
+    expect(result.routesByEdgeId.get('horizontal')!.bridges).toEqual([{ x: 300, y: 50 }]);
+    expect(result.routesByEdgeId.get('vertical')!.bridges).toEqual([]);
+  });
+
   it('keeps a nearly aligned forward edge on the main row', () => {
     const result = routeCanvasEdges(document([process('source', 0, 0), process('target', 400, -4)], [edge('aligned', 'source', 'target')]));
     const route = result.routesByEdgeId.get('aligned')!;
@@ -96,6 +294,123 @@ describe('orthogonal edge routing', () => {
     expect(route.kind).toBe('CROSS_STAGE');
     expect(route.sourceSide).toBe('BOTTOM');
     expect(route.targetSide).toBe('TOP');
+    expectOrthogonal(route.points);
+  });
+
+  it('keeps an explicitly automatic same-stage continuation on the vertical semantic route', () => {
+    const result = routeCanvasEdges(document(
+      [process('first', 0, 0, 'intake', 'sales'), process('second', 0, 180, 'intake', 'sales')],
+      [edge('downstream', 'first', 'second', {
+        semantic: { kind: 'FLOW' },
+        presentation: {
+          sourceAnchor: { side: 'RIGHT', offset: 0.5 },
+          sourceAnchorMode: 'auto',
+          targetAnchor: { side: 'LEFT', offset: 0.5 },
+          targetAnchorMode: 'auto',
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('downstream')!;
+
+    expect(route.kind).toBe('DOWNSTREAM');
+    expect(route.sourceSide).toBe('BOTTOM');
+    expect(route.targetSide).toBe('TOP');
+    expectOrthogonal(route.points);
+  });
+
+  it('uses endpoint anchors from documents that predate anchor modes', () => {
+    const result = routeCanvasEdges(document(
+      [process('first', 0, 0), process('second', 400, 0)],
+      [edge('legacy-anchors', 'first', 'second', {
+        presentation: {
+          sourceAnchor: { side: 'BOTTOM', offset: 0.25 },
+          targetAnchor: { side: 'TOP', offset: 0.75 },
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('legacy-anchors')!;
+
+    expect(route.sourceSide).toBe('BOTTOM');
+    expect(route.targetSide).toBe('TOP');
+    expect(route.points[0]).toEqual({ x: 50, y: 100 });
+    expect(route.points.at(-1)).toEqual({ x: 550, y: 0 });
+  });
+
+  it('treats a close legacy ordinary out-to-in edge in the same stage and lane as a local downstream continuation', () => {
+    const first = {
+      ...process('first', 0, 0, 'intake', 'sales'),
+      type: 'start' as const,
+      size: { width: 240, height: 104 },
+      data: { label: 'first', shape: 'start' as const },
+    };
+    const second = { ...process('second', 0, 136, 'intake', 'sales'), size: { width: 240, height: 104 } };
+    const result = routeCanvasEdges(document(
+      [first, second],
+      [edge('legacy-downstream', 'first', 'second', {
+        sourceHandle: 'out',
+        targetHandle: 'in',
+        presentation: {
+          sourceAnchor: { side: 'BOTTOM', offset: 0.5 },
+          targetAnchor: { side: 'TOP', offset: 0.5 },
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('legacy-downstream')!;
+
+    expect(route.kind).toBe('DOWNSTREAM');
+    expect(route.sourceSide).toBe('BOTTOM');
+    expect(route.targetSide).toBe('TOP');
+    expect(result.report.backEdgeIds).toEqual([]);
+    expect(result.report.avoidedEdgeIds).toEqual([]);
+    expect(route.points).toEqual([{ x: 120, y: 104 }, { x: 120, y: 136 }]);
+    expectOrthogonal(route.points);
+  });
+
+  it('keeps near-centered legacy downstream anchors inside a narrow vertical gap', () => {
+    const first = {
+      ...process('first', 0, 0, 'intake', 'sales'),
+      type: 'start' as const,
+      size: { width: 240, height: 129 },
+      data: { label: '收到客人提案需求，可以是邮件或者微信', shape: 'start' as const },
+    };
+    const second = { ...process('second', 0, 136, 'intake', 'sales'), size: { width: 240, height: 104 } };
+    const result = routeCanvasEdges(document(
+      [first, second],
+      [edge('narrow-legacy-downstream', 'first', 'second', {
+        sourceHandle: 'out',
+        targetHandle: 'in',
+        presentation: {
+          sourceAnchor: { side: 'BOTTOM', offset: 0.5110637014010254 },
+          targetAnchor: { side: 'TOP', offset: 0.4924150004198662 },
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('narrow-legacy-downstream')!;
+
+    expect(result.report.avoidedEdgeIds).toEqual([]);
+    expect(result.report.collisionEdgeIds).toEqual([]);
+    expect(Math.min(...route.points.map((point) => point.y))).toBeGreaterThanOrEqual(129);
+    expect(Math.max(...route.points.map((point) => point.y))).toBeLessThanOrEqual(136);
+    expectOrthogonal(route.points);
+  });
+
+  it('keeps a newly taller same-lane card directly connected through its remaining vertical gap', () => {
+    const first = {
+      ...process('first', 0, 0, 'intake', 'sales'),
+      type: 'start' as const,
+      size: { width: 240, height: 129 },
+      data: { label: '收到客人提案需求，可以是邮件或者微信', shape: 'start' as const },
+    };
+    const second = { ...process('second', 0, 136, 'intake', 'sales'), size: { width: 240, height: 104 } };
+    const result = routeCanvasEdges(document(
+      [first, second],
+      [edge('grown-downstream', 'first', 'second', { sourceHandle: 'out', targetHandle: 'in' })],
+    ));
+    const route = result.routesByEdgeId.get('grown-downstream')!;
+
+    expect(route.kind).toBe('DOWNSTREAM');
+    expect(result.report.avoidedEdgeIds).toEqual([]);
+    expect(route.points).toEqual([{ x: 120, y: 129 }, { x: 120, y: 136 }]);
     expectOrthogonal(route.points);
   });
 
@@ -148,6 +463,42 @@ describe('orthogonal edge routing', () => {
     )).routesByEdgeId).toEqual(result.routesByEdgeId);
   });
 
+  it('orders sibling source ports and shared forward channels by semantic child order', () => {
+    const parent = { ...process('parent', 0, 0), outline: { order: 0, kind: 'STEP' as const } };
+    const first = { ...process('child-1', 400, 200), outline: { parentId: 'parent', order: 0, kind: 'STEP' as const } };
+    const second = { ...process('child-2', 700, 200), outline: { parentId: 'parent', order: 1, kind: 'STEP' as const } };
+    const third = { ...process('child-3', 1_000, 200), outline: { parentId: 'parent', order: 2, kind: 'STEP' as const } };
+    const result = routeCanvasEdges(document([parent, first, second, third], [
+      edge('a-child-3', 'parent', 'child-3', { sourceHandle: 'no', semantic: { kind: 'BRANCH', order: 2 } }),
+      edge('m-child-1', 'parent', 'child-1', { sourceHandle: 'no', semantic: { kind: 'BRANCH', order: 0 } }),
+      edge('z-child-2', 'parent', 'child-2', { sourceHandle: 'no', semantic: { kind: 'BRANCH', order: 1 } }),
+    ]));
+
+    const routes = ['m-child-1', 'z-child-2', 'a-child-3'].map((edgeId) => result.routesByEdgeId.get(edgeId)!);
+    expect(routes.map((route) => route.sourceAnchor.offset)).toEqual([
+      expect.closeTo(0.41, 5),
+      expect.closeTo(0.5, 5),
+      expect.closeTo(0.59, 5),
+    ]);
+  });
+
+  it('preserves intentionally shared manual source anchors while fanning out unpinned siblings', () => {
+    const parent = { ...process('parent', 0, 0), outline: { order: 0, kind: 'STEP' as const } };
+    const first = { ...process('child-1', 400, 200), outline: { parentId: 'parent', order: 0, kind: 'STEP' as const } };
+    const second = { ...process('child-2', 700, 200), outline: { parentId: 'parent', order: 1, kind: 'STEP' as const } };
+    const third = { ...process('child-3', 1_000, 200), outline: { parentId: 'parent', order: 2, kind: 'STEP' as const } };
+    const sharedSourceAnchor = { side: 'BOTTOM' as const, offset: 0.5 };
+    const result = routeCanvasEdges(document([parent, first, second, third], [
+      edge('first', 'parent', 'child-1', { sourceHandle: 'no', semantic: { kind: 'BRANCH', order: 0 }, presentation: { sourceAnchor: sharedSourceAnchor, sourceAnchorMode: 'manual' } }),
+      edge('second', 'parent', 'child-2', { sourceHandle: 'no', semantic: { kind: 'BRANCH', order: 1 }, presentation: { sourceAnchor: sharedSourceAnchor, sourceAnchorMode: 'manual' } }),
+      edge('third', 'parent', 'child-3', { sourceHandle: 'no', semantic: { kind: 'BRANCH', order: 2 } }),
+    ]));
+
+    expect(result.routesByEdgeId.get('first')!.sourceAnchor).toEqual(sharedSourceAnchor);
+    expect(result.routesByEdgeId.get('second')!.sourceAnchor).toEqual(sharedSourceAnchor);
+    expect(result.routesByEdgeId.get('third')!.sourceAnchor.offset).not.toBeCloseTo(sharedSourceAnchor.offset, 5);
+  });
+
   it('uses persisted exact edge anchors as route endpoints', () => {
     const result = routeCanvasEdges(document(
       [process('source', 100, 80), process('target', 500, 300)],
@@ -155,7 +506,9 @@ describe('orthogonal edge routing', () => {
         presentation: {
           routing: 'elbow',
           sourceAnchor: { side: 'BOTTOM', offset: 0.25 },
+          sourceAnchorMode: 'manual',
           targetAnchor: { side: 'LEFT', offset: 0.6 },
+          targetAnchorMode: 'manual',
         },
       })],
     ));
@@ -168,13 +521,38 @@ describe('orthogonal edge routing', () => {
     expectOrthogonal(route.points);
   });
 
+  it('keeps manually bottom-pinned vertical endpoints in their local gap instead of routing around the canvas', () => {
+    const result = routeCanvasEdges(document(
+      [process('first', 0, 0, 'intake', 'sales'), process('second', 16, 132, 'intake', 'sales')],
+      [edge('manual-downstream', 'first', 'second', {
+        semantic: { kind: 'FLOW' },
+        presentation: {
+          routeMode: 'manual',
+          sourceAnchor: { side: 'BOTTOM', offset: 0.5 },
+          targetAnchor: { side: 'TOP', offset: 0.5 },
+        },
+      })],
+    ));
+    const route = result.routesByEdgeId.get('manual-downstream')!;
+
+    expect(route.kind).toBe('DOWNSTREAM');
+    expect(route.sourceSide).toBe('BOTTOM');
+    expect(route.targetSide).toBe('TOP');
+    expect(result.report.avoidedEdgeIds).toEqual([]);
+    expect(result.report.collisionEdgeIds).toEqual([]);
+    expect(Math.min(...route.points.map((point) => point.y))).toBeGreaterThanOrEqual(0);
+    expectOrthogonal(route.points);
+  });
+
   it('routes around a target node when persisted side anchors cross its interior', () => {
     const result = routeCanvasEdges(document(
       [process('source', 0, 0), process('target', 0, 240)],
       [edge('blocked-anchor', 'source', 'target', {
         presentation: {
           sourceAnchor: { side: 'RIGHT', offset: 0.45 },
+          sourceAnchorMode: 'manual',
           targetAnchor: { side: 'LEFT', offset: 0.5 },
+          targetAnchorMode: 'manual',
         },
       })],
     ));
@@ -225,7 +603,9 @@ describe('orthogonal edge routing', () => {
       [edge('short-back', 'source', 'target', {
         presentation: {
           sourceAnchor: { side: 'RIGHT', offset: 0.45 },
+          sourceAnchorMode: 'manual',
           targetAnchor: { side: 'LEFT', offset: 0.5 },
+          targetAnchorMode: 'manual',
         },
       })],
     ));
@@ -242,12 +622,46 @@ describe('orthogonal edge routing', () => {
         presentation: {
           routing: 'straight',
           sourceAnchor: { side: 'RIGHT', offset: 0.2 },
+          sourceAnchorMode: 'manual',
           targetAnchor: { side: 'LEFT', offset: 0.75 },
+          targetAnchorMode: 'manual',
         },
       })],
     ));
 
     expect(result.routesByEdgeId.get('straight')!.points).toEqual([{ x: 200, y: 20 }, { x: 400, y: 75 }]);
+  });
+
+  it('lets an explicit automatic route override stale manual waypoints', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 400, 0)],
+      [edge('straight', 'source', 'target', {
+        presentation: {
+          routing: 'straight',
+          routeMode: 'manual',
+          waypoints: [{ x: 224, y: 50 }, { x: 224, y: 180 }, { x: 376, y: 180 }, { x: 376, y: 50 }],
+        },
+      })],
+    ));
+
+    expect(result.routesByEdgeId.get('straight')!.points).toEqual([{ x: 200, y: 50 }, { x: 400, y: 50 }]);
+    expect(result.report.manualConflictEdgeIds).toEqual([]);
+  });
+
+  it('lets explicit smart routing override stale manual waypoints', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 400, 0)],
+      [edge('smart', 'source', 'target', {
+        presentation: {
+          routing: 'smart',
+          routeMode: 'manual',
+          waypoints: [{ x: 224, y: 50 }, { x: 224, y: 180 }, { x: 376, y: 180 }, { x: 376, y: 50 }],
+        },
+      })],
+    ));
+
+    expect(result.routesByEdgeId.get('smart')!.points).toEqual([{ x: 200, y: 50 }, { x: 400, y: 50 }]);
+    expect(result.report.manualConflictEdgeIds).toEqual([]);
   });
 
   it('uses a direct path in smart mode when the endpoints have a clear line of sight', () => {
@@ -257,7 +671,9 @@ describe('orthogonal edge routing', () => {
         presentation: {
           routing: 'smart',
           sourceAnchor: { side: 'RIGHT', offset: 0.2 },
+          sourceAnchorMode: 'manual',
           targetAnchor: { side: 'LEFT', offset: 0.75 },
+          targetAnchorMode: 'manual',
         },
       })],
     ));
@@ -292,6 +708,17 @@ describe('orthogonal edge routing', () => {
     expect(first.points[1]).not.toEqual(second.points[1]);
   });
 
+  it('keeps fanned forward routes horizontal when their target row is only slightly different', () => {
+    const result = routeCanvasEdges(document(
+      [{ ...process('source', 0, 0), size: { width: 200, height: 300 } }, process('first', 400, 0), process('second', 400, 104)],
+      [edge('first-edge', 'source', 'first'), edge('second-edge', 'source', 'second')],
+    ));
+
+    const points = result.routesByEdgeId.get('second-edge')!.points;
+    expect(points).toHaveLength(2);
+    expect(points[0]!.y).toBe(points[1]!.y);
+  });
+
   it('snaps a moved node to a clear, opposing horizontal connection when it is close to alignment', () => {
     const result = snapNodeForStraightRoute(
       document([process('source', 0, 0), process('target', 400, 0)], [edge('aligned', 'source', 'target')]),
@@ -304,6 +731,93 @@ describe('orthogonal edge routing', () => {
       axis: 'y',
       coordinate: 50,
       position: { x: 400, y: 0 },
+    });
+  });
+
+  it('snaps a center-aligned horizontal edge when the target top edge sits slightly above the source', () => {
+    const source = { ...process('source', 0, 0), size: { width: 240, height: 129 } };
+    const target = { ...process('target', 320, -20), size: { width: 240, height: 133 } };
+    const result = snapNodeForStraightRoute(
+      document([source, target], [edge('aligned-center', 'source', 'target')]),
+      'target',
+      { x: 320, y: -20 },
+    );
+
+    expect(result).toEqual({
+      edgeId: 'aligned-center',
+      axis: 'y',
+      coordinate: 64.5,
+      position: { x: 320, y: -2 },
+    });
+  });
+
+  it('snaps a center-aligned vertical edge when the target left edge is slightly offset', () => {
+    const source = { ...process('source', 0, 0), size: { width: 240, height: 104 } };
+    const target = { ...process('target', 20, 220), size: { width: 240, height: 104 } };
+    const result = snapNodeForStraightRoute(
+      document([source, target], [edge('aligned-vertical', 'source', 'target')]),
+      'target',
+      { x: 20, y: 220 },
+    );
+
+    expect(result).toEqual({
+      edgeId: 'aligned-vertical',
+      axis: 'x',
+      coordinate: 120,
+      position: { x: 0, y: 220 },
+    });
+  });
+
+  it('snaps a manually anchored forward node within the route alignment tolerance', () => {
+    const result = snapNodeForStraightRoute(
+      document(
+        [
+          { ...process('source', 0, 0), size: { width: 240, height: 129 } },
+          { ...process('target', 320, 0), size: { width: 240, height: 108 } },
+        ],
+        [edge('aligned-manual', 'source', 'target', {
+          presentation: {
+            sourceAnchor: { side: 'RIGHT', offset: 0.523702219266312 },
+            sourceAnchorMode: 'manual',
+            targetAnchor: { side: 'LEFT', offset: 0.46233041792458973 },
+            targetAnchorMode: 'manual',
+          },
+        })],
+      ),
+      'target',
+      { x: 320, y: 0 },
+    );
+
+    expect(result?.axis).toBe('y');
+    expect(result?.position.x).toBe(320);
+    expect(result?.position.y).toBeCloseTo(17.6259011495, 8);
+  });
+
+  it('uses current measured node sizes when snapping a manually anchored edge', () => {
+    const source = { ...process('source', 0, 0), size: { width: 240, height: 115 } };
+    const target = { ...process('target', 320, -20), size: { width: 240, height: 140 } };
+    const sourceOffset = 0.523702219266312;
+    const targetOffset = 0.46233041792458973;
+    const result = snapNodeForStraightRoute(
+      document(
+        [source, target],
+        [edge('aligned-measured', 'source', 'target', {
+          presentation: {
+            sourceAnchor: { side: 'RIGHT', offset: sourceOffset },
+            sourceAnchorMode: 'manual',
+            targetAnchor: { side: 'LEFT', offset: targetOffset },
+            targetAnchorMode: 'manual',
+          },
+        })],
+      ),
+      'target',
+      { x: 320, y: -20 },
+    );
+
+    expect(result?.axis).toBe('y');
+    expect(result?.position).toEqual({
+      x: 320,
+      y: 115 * sourceOffset - 140 * targetOffset,
     });
   });
 
@@ -327,7 +841,9 @@ describe('orthogonal edge routing', () => {
         presentation: {
           routing: 'elbow',
           sourceAnchor: { side: 'RIGHT', offset: 0.2 },
+          sourceAnchorMode: 'manual',
           targetAnchor: { side: 'LEFT', offset: 0.75 },
+          targetAnchorMode: 'manual',
         },
       })],
     ));
@@ -344,7 +860,9 @@ describe('orthogonal edge routing', () => {
         presentation: {
           routing: 'elbow',
           sourceAnchor: { side: 'TOP', offset: 0.75 },
+          sourceAnchorMode: 'manual',
           targetAnchor: { side: 'BOTTOM', offset: 0.2 },
+          targetAnchorMode: 'manual',
         },
       })],
     ));

@@ -2,6 +2,9 @@ import type { Point } from './routing';
 
 export type RouteSegmentOrientation = 'horizontal' | 'vertical';
 
+const MANUAL_ROUTE_GRID = 20;
+const MANUAL_ROUTE_ENDPOINT_SNAP = 12;
+
 export interface EditableRouteSegment {
   index: number;
   orientation: RouteSegmentOrientation;
@@ -90,6 +93,20 @@ export function moveRouteSegment(points: Point[], segmentIndex: number, coordina
     next[segment.index + 1] = { ...next[segment.index + 1]!, x: coordinate };
   }
   return next;
+}
+
+export function snapRouteCoordinate(points: Point[], orientation: RouteSegmentOrientation, coordinate: number): number {
+  if (!Number.isFinite(coordinate)) return coordinate;
+  const first = points[0];
+  const last = points.at(-1);
+  const endpointCoordinate = orientation === 'horizontal'
+    ? [first?.y, last?.y]
+    : [first?.x, last?.x];
+  const nearestEndpoint = endpointCoordinate
+    .filter((candidate): candidate is number => candidate !== undefined)
+    .sort((left, right) => Math.abs(left - coordinate) - Math.abs(right - coordinate))[0];
+  if (nearestEndpoint !== undefined && Math.abs(nearestEndpoint - coordinate) <= MANUAL_ROUTE_ENDPOINT_SNAP) return nearestEndpoint;
+  return Math.round(coordinate / MANUAL_ROUTE_GRID) * MANUAL_ROUTE_GRID;
 }
 
 function midpoint(start: Point, end: Point): Point {

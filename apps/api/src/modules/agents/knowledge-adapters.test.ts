@@ -387,6 +387,149 @@ describe('database-backed Agent knowledge adapters', () => {
     expect(Object.keys(evidence[0]!.locator).sort()).toEqual(['guideId', 'kind', 'nodeId', 'snapshotId']);
   });
 
+  it('returns an image annotation when a flow overview also matches the question', async () => {
+    const flow = seedDraftFlow(database, annotatedFlowDocument(), { title: '打样提案流程' });
+    const context = seedRun({
+      database,
+      sources: sources({ workspaceFlows: true }),
+      text: '打样流程里应该怎么设置版类型？',
+    });
+    const decision = focusedDecision('WORKSPACE_FLOW', context.sources, '查找打样流程中的版类型设置');
+
+    const evidence = await adapters().retriever.retrieve(request(context, decision, 3));
+
+    expect(evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'WORKSPACE_FLOW',
+        excerpt: expect.stringContaining('版类型'),
+        locator: expect.objectContaining({ nodeId: 'annotated-image' }),
+      }),
+    ]));
+    expect(flow.snapshotId).toBeTruthy();
+  });
+
+  it('returns structural context for an exact image annotation leaf', async () => {
+    const flow = seedDraftFlow(database, annotatedFlowDocument(), { title: '打样提案流程' });
+    const context = seedRun({
+      database,
+      sources: sources({ workspaceFlows: true }),
+      text: '打样流程里版类型应该怎么设置？',
+    });
+    const decision = focusedDecision('WORKSPACE_FLOW', context.sources, '查找打样流程中的版类型设置');
+
+    const evidence = await adapters().retriever.retrieve(request(context, decision, 3));
+
+    expect(evidence[0]).toMatchObject({
+      source: 'WORKSPACE_FLOW',
+      excerpt: expect.stringContaining('版类型'),
+      locator: expect.objectContaining({
+        nodeId: 'annotated-image',
+        annotationId: 'annotation-version-type',
+      }),
+    });
+    expect(evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ locator: expect.objectContaining({ nodeId: 'middle' }) }),
+      expect.objectContaining({ excerpt: expect.stringContaining('流程结构索引') }),
+    ]));
+    expect(evidence.every((item) => (
+      item.locator.kind !== 'WORKSPACE_FLOW' || item.locator.snapshotId === flow.snapshotId
+    ))).toBe(true);
+  });
+
+  it('captures a bounded content-free trace for an exact image annotation retrieval', async () => {
+    seedDraftFlow(database, annotatedFlowDocument(), { title: '打样提案流程' });
+    const context = seedRun({
+      database,
+      sources: sources({ workspaceFlows: true }),
+      text: '打样流程里版类型应该怎么设置？',
+    });
+    const decision = focusedDecision('WORKSPACE_FLOW', context.sources, '查找打样流程中的版类型设置');
+    const adapter = adapters();
+
+    adapter.retriever.resetTrace?.(context.runId);
+    await adapter.retriever.retrieve(request(context, decision, 3));
+    const trace = adapter.retriever.consumeTrace?.(context.runId);
+
+    expect(trace?.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ projection: 'IMAGE_ANNOTATION', rank: 1, selected: true }),
+    ]));
+    expect(trace?.closure).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'OVERVIEW' }),
+      expect.objectContaining({ id: 'middle', kind: 'NODE' }),
+    ]));
+    expect(JSON.stringify(trace)).not.toContain(context.text);
+    expect(JSON.stringify(trace)).not.toContain('我们内部用来做版本区分');
+    expect(adapter.retriever.consumeTrace?.(context.runId)).toBeNull();
+  });
+
+  it('retrieves a later image annotation as its own leaf instead of relying on the image summary', async () => {
+    seedDraftFlow(database, annotatedFlowDocument(), { title: '打样提案流程' });
+    const context = seedRun({
+      database,
+      sources: sources({ workspaceFlows: true }),
+      text: '打样流程里希望日期及紧急度应该怎么填写？',
+    });
+    const decision = focusedDecision('WORKSPACE_FLOW', context.sources, '查找希望日期及紧急度的填写说明');
+
+    const evidence = await adapters().retriever.retrieve(request(context, decision, 3));
+
+    expect(evidence[0]).toMatchObject({
+      id: expect.stringMatching(/^flow-annotation-/),
+      source: 'WORKSPACE_FLOW',
+      excerpt: expect.stringContaining('希望日期及紧急度'),
+      locator: expect.objectContaining({ nodeId: 'annotated-image' }),
+    });
+  });
+
+  it('keeps an exact annotation hit within budget when the same guide has published history', async () => {
+    const document = annotatedFlowDocument();
+    const draft = seedDraftFlow(database, document, { guideId: 'guide-annotated-history', title: '打样提案流程' });
+    seedAdditionalPublishedFlow(database, document, {
+      guideId: draft.guideId,
+      version: 1,
+      versionId: 'version-annotated-history-1',
+      title: '打样提案流程',
+    });
+    seedAdditionalPublishedFlow(database, document, {
+      guideId: draft.guideId,
+      version: 2,
+      versionId: 'version-annotated-history-2',
+      title: '打样提案流程',
+    });
+    const context = seedRun({
+      database,
+      sources: sources({ workspaceFlows: true }),
+      text: '打样流程里应该怎么设置版类型？',
+    });
+    const decision = focusedDecision('WORKSPACE_FLOW', context.sources, '查找打样流程中的版类型设置');
+
+    const evidence = await adapters().retriever.retrieve(request(context, decision, 3));
+
+    expect(evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: 'WORKSPACE_FLOW',
+        excerpt: expect.stringContaining('版类型'),
+        locator: expect.objectContaining({ nodeId: 'annotated-image' }),
+      }),
+    ]));
+  });
+
+  it('does not expand a flow overview as if it were a real node', async () => {
+    seedDraftFlow(database, annotatedFlowDocument(), { title: '打样提案流程' });
+    const context = seedRun({
+      database,
+      sources: sources({ workspaceFlows: true }),
+      text: '打样流程是什么？',
+    });
+    const decision = focusedDecision('WORKSPACE_FLOW', context.sources, '查看打样流程概览');
+
+    const evidence = await adapters().retriever.retrieve(request(context, decision, 3));
+
+    expect(evidence.some((item) => (
+      item.locator.kind === 'WORKSPACE_FLOW' && item.locator.nodeId === 'middle'
+    ))).toBe(false);
+  });
+
   it('resolves and expands a selected flow node from a stored V1 snapshot', async () => {
     const document = threeNodeDocument();
     const flow = seedDraftFlow(database, document, { guideId: 'guide-legacy-v1' });
@@ -1047,6 +1190,38 @@ function seedPublishedFlow(database: DatabaseSync, document: CanvasDocument, opt
   return { guideId, snapshotId: snapshot.snapshotId, versionId };
 }
 
+function seedAdditionalPublishedFlow(
+  database: DatabaseSync,
+  document: CanvasDocument,
+  input: { guideId: string; version: number; versionId: string; title: string },
+): void {
+  database.prepare(
+    `INSERT INTO guide_versions (
+      id, guide_id, version, title, summary, tags_json, document_json,
+      search_text, published_by, published_at
+    ) VALUES (?, ?, ?, ?, '审批流程摘要', '["审批"]', ?, '打样 版类型', ?, ?)`,
+  ).run(
+    input.versionId,
+    input.guideId,
+    input.version,
+    input.title,
+    JSON.stringify(document),
+    'owner-1',
+    CREATED_AT,
+  );
+  syncGuideFlowSnapshot(database, {
+    workspaceId: 'workspace-1',
+    workspaceItemId: `item-${input.guideId}`,
+    guideId: input.guideId,
+    ownerId: 'owner-1',
+    title: input.title,
+    summary: '审批流程摘要',
+    tags: ['审批'],
+    origin: { kind: 'PUBLISHED', versionId: input.versionId, version: input.version },
+    document,
+  });
+}
+
 function replaceFlowSnapshotWithV1(
   database: DatabaseSync,
   snapshotId: string,
@@ -1086,6 +1261,38 @@ function seedGuide(
 
 function threeNodeDocument(): CanvasDocument {
   return flowDocument('审批复核');
+}
+
+function annotatedFlowDocument(): CanvasDocument {
+  const document = flowDocument('确认原料');
+  document.nodes.push({
+    id: 'annotated-image',
+    type: 'image',
+    position: { x: 720, y: 0 },
+    zIndex: 3,
+    attachment: { ownerNodeId: 'middle', order: 0 },
+    data: {
+      url: 'https://example.com/erp.png',
+      alt: 'ERP 操作界面截图',
+      caption: '进入ERP系统-> 打样系统-> 样板单界面',
+      annotations: [{
+        id: 'annotation-version-type',
+        order: 0,
+        title: '版类型',
+        body: '我们内部用来做版本区分及技术部绩效管理的专用字段。客人有时候哪怕不换款号，我们也需要重新做一个初样，并用不同款号进行标注。初样代表对于技术部来说是一个全新的版子，一般发生于客人修改原料、修改款式、修改组织、全身加丝等情况。修改样是在已有的版子上进行修改，属于局部的改动，例如改动附件。大货样用于客人已经确认样衣并准备下大货时，不管是否在工厂制作，都可以要求技术部按照样衣推全码。这个字段还需要结合用途判断客人的真实需求，修改样时提出全身加丝时版类型应为初样，版用途应为修改样。',
+        shape: 'POINT',
+        region: { x: 0.4, y: 0.25 },
+      }, {
+        id: 'annotation-delivery-date',
+        order: 7,
+        title: '希望日期及紧急度',
+        body: '希望日期应按客户确认的交样时间填写；如需加急，需同步确认物料与工序的可交付时间。',
+        shape: 'POINT',
+        region: { x: 0.6, y: 0.72 },
+      }],
+    },
+  });
+  return document;
 }
 
 function flowDocument(middleLabel: string): CanvasDocument {

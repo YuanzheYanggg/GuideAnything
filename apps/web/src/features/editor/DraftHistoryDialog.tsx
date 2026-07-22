@@ -1,6 +1,8 @@
 import type { GuideDraftHistorySnapshot } from '@guideanything/contracts';
 import { useEffect, useState } from 'react';
 
+import { EditorDialogSurface } from './EditorDialogSurface';
+
 export function DraftHistoryDialog({
   items,
   currentRevision,
@@ -44,9 +46,7 @@ export function DraftHistoryDialog({
     }
   };
 
-  return <div className="modal-backdrop" role="presentation">
-    <section className="reference-modal draft-history-dialog" role="dialog" aria-modal="true" aria-label="草稿历史">
-      <button className="modal-close" type="button" onClick={onClose} aria-label="关闭草稿历史">×</button>
+  return <EditorDialogSurface className="reference-modal draft-history-dialog" ariaLabel="草稿历史" closeLabel="关闭草稿历史" onClose={onClose}>
       <span className="eyebrow">SERVER DRAFT HISTORY</span>
       <h2>草稿历史</h2>
       <p>恢复会生成新的当前草稿，不会删除任何已有历史。</p>
@@ -58,7 +58,7 @@ export function DraftHistoryDialog({
           <div>
             <strong>revision {item.revision}</strong>
             {item.revision === currentRevision ? <span className="draft-history-current">当前版本</span> : null}
-            <p>{item.summary || '无摘要'}</p>
+            <p className="draft-history-change"><span className="draft-history-change-label">本版变更</span><span className="draft-history-change-text">{item.changeSummary}</span></p>
             <small>{formatSavedAt(item.savedAt)} · {item.savedBy.displayName}</small>
           </div>
           {item.revision !== currentRevision ? <button className="secondary-button" type="button" onClick={() => { setPendingRevision(item.revision); setRestoreError(''); }} aria-label={`恢复 revision ${item.revision}`}>恢复此版</button> : null}
@@ -67,14 +67,14 @@ export function DraftHistoryDialog({
       {pending ? <div className="draft-history-confirm" role="dialog" aria-modal="true" aria-label="确认恢复草稿">
         <h3>恢复 revision {pending.revision}？</h3>
         <p>它会成为新的当前草稿；当前版本与这份历史都会保留。</p>
+        <p className="draft-history-confirm-change"><strong>本版变更：</strong>{pending.changeSummary}</p>
         {restoreError ? <p className="error-message" role="alert">{restoreError}</p> : null}
         <div className="hierarchy-deletion-actions">
           <button className="secondary-button" type="button" onClick={() => setPendingRevision(null)} disabled={restoring}>取消</button>
           <button className="primary-button" type="button" onClick={() => void confirmRestore()} disabled={restoring} aria-label="确认恢复">{restoring ? '恢复中…' : '确认恢复'}</button>
         </div>
       </div> : null}
-    </section>
-  </div>;
+  </EditorDialogSurface>;
 }
 
 function formatSavedAt(value: string): string {

@@ -197,10 +197,14 @@ describe('database migrations', () => {
       'workspace_editorial_audit_events',
       'guide_digest_proposals',
       'guide_digest_audit_events',
+      'workspace_flow_regression_cases',
+      'workspace_flow_regression_runs',
+      'flow_annotation_health_issues',
+      'agent_retrieval_diagnostics',
     ]));
     expect(database.prepare(
       'SELECT version FROM schema_migrations ORDER BY version',
-    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }]);
+    ).all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }, { version: 6 }, { version: 7 }, { version: 8 }, { version: 9 }, { version: 10 }, { version: 11 }]);
 
     const indexesAndTriggers = database.prepare(
       "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_%'",
@@ -260,6 +264,8 @@ describe('database migrations', () => {
       'workspace_folders', 'workspace_resource_mounts',
       'guide_draft_revisions',
       'guide_digest_proposals', 'guide_digest_audit_events',
+      'workspace_flow_regression_cases', 'workspace_flow_regression_runs',
+      'flow_annotation_health_issues', 'agent_retrieval_diagnostics',
     ]) {
       expect(strictByTable.get(table), `${table} should be STRICT`).toBe(1);
     }

@@ -8,7 +8,8 @@ describe('CanvasCreationMenu', () => {
     const onCancel = vi.fn();
     render(<CanvasCreationMenu position={{ x: 120, y: 80 }} allowResources={false} onCreate={vi.fn()} onCancel={onCancel} />);
 
-    expect(screen.getByRole('menu', { name: '创建下一项' })).toBeVisible();
+    expect(screen.getByRole('menu', { name: '创建下一项' })).toHaveClass('border-glow', 'border-glow-accent', 'is-active');
+    expect(screen.getByRole('menu', { name: '创建下一项' }).querySelector('.animated-list')).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: '创建流程节点' })).toBeVisible();
     expect(screen.queryByRole('menuitem', { name: '创建说明资料' })).not.toBeInTheDocument();
     fireEvent.keyDown(window, { key: 'Escape' });

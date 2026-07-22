@@ -3,18 +3,20 @@ import type { CanvasNode, ImageAnnotation, ImageAnnotationSupplement } from '@gu
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 
 import { useMediaSource } from '../nodes/useMediaSource';
+import { EditorDialogSurface } from './EditorDialogSurface';
 
 type Tool = 'POINT' | 'RECT';
 
-export function ImageAnnotationEditor({ node, nodes, onChange, onUploadSupplement, onClose }: {
+export function ImageAnnotationEditor({ node, nodes, focusAnnotationId, onChange, onUploadSupplement, onClose }: {
   node: CanvasNode<'image'>;
   nodes: CanvasNode[];
+  focusAnnotationId?: string;
   onChange: (data: CanvasNode<'image'>['data']) => void;
   onUploadSupplement: (file: File) => Promise<{ assetId: string; url: string; alt: string }>;
   onClose: () => void;
 }) {
   const annotations = useMemo(() => normalizeAnnotationOrder(node.data.annotations ?? []), [node.data.annotations]);
-  const [selectedId, setSelectedId] = useState<string | null>(annotations[0]?.id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => preferredAnnotationId(annotations, focusAnnotationId));
   const [tool, setTool] = useState<Tool>('POINT');
   const [zoom, setZoom] = useState(2.5);
   const [titleDraft, setTitleDraft] = useState('');
@@ -34,6 +36,11 @@ export function ImageAnnotationEditor({ node, nodes, onChange, onUploadSupplemen
     setTitleDraft(selected?.title ?? '');
     setBodyDraft(selected?.body ?? '');
   }, [selected?.body, selected?.id, selected?.title]);
+
+  useEffect(() => {
+    const preferred = preferredAnnotationId(annotations, focusAnnotationId);
+    if (focusAnnotationId && preferred) setSelectedId(preferred);
+  }, [annotations, focusAnnotationId]);
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -118,9 +125,16 @@ export function ImageAnnotationEditor({ node, nodes, onChange, onUploadSupplemen
     create({ id: uniqueId('annotation'), order: annotations.length, title: '新标注', shape: 'RECT', region: { x, y, width, height } });
   };
 
-  return <div className="modal-backdrop annotation-editor-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="annotation-editor" role="dialog" aria-modal="true" aria-label="图片标注编辑器">
-      <header><div><span className="eyebrow">IMAGE WALKTHROUGH</span><h2>图片标注编辑器</h2></div><button ref={closeButtonRef} type="button" onClick={onClose} aria-label="关闭图片标注编辑器">×</button></header>
+  return <EditorDialogSurface
+    className="annotation-editor"
+    backdropClassName="annotation-editor-backdrop"
+    ariaLabel="图片标注编辑器"
+    closeLabel="关闭图片标注编辑器"
+    closeButtonRef={closeButtonRef}
+    closeOnBackdrop
+    onClose={onClose}
+  >
+      <header><div><span className="eyebrow">IMAGE WALKTHROUGH</span><h2>图片标注编辑器</h2></div></header>
       <div className="annotation-toolbar" role="toolbar" aria-label="标注工具">
         <button type="button" className={tool === 'POINT' ? 'active' : ''} aria-pressed={tool === 'POINT'} onClick={() => setTool('POINT')} aria-label="点标注">编号点</button>
         <button type="button" className={tool === 'RECT' ? 'active' : ''} aria-pressed={tool === 'RECT'} onClick={() => setTool('RECT')} aria-label="矩形标注">矩形区域</button>
@@ -177,12 +191,16 @@ export function ImageAnnotationEditor({ node, nodes, onChange, onUploadSupplemen
           </div> : null}
         </aside>
       </div>
-    </section>
-  </div>;
+  </EditorDialogSurface>;
 }
 
 function normalizedPoint(clientX: number, clientY: number, rect: DOMRect): { x: number; y: number } {
   return { x: clamp((clientX - rect.left) / rect.width), y: clamp((clientY - rect.top) / rect.height) };
+}
+
+function preferredAnnotationId(annotations: ImageAnnotation[], focusAnnotationId?: string): string | null {
+  if (focusAnnotationId && annotations.some((annotation) => annotation.id === focusAnnotationId)) return focusAnnotationId;
+  return annotations[0]?.id ?? null;
 }
 
 function markerStyle(annotation: ImageAnnotation): CSSProperties {

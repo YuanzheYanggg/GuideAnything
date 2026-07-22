@@ -17,6 +17,7 @@ export class AgentInvocationError extends Error {
   constructor(
     readonly code: string,
     readonly retryable: boolean,
+    readonly diagnostic?: string,
   ) {
     super('只读 Agent Runtime 调用失败');
     this.name = 'AgentInvocationError';
@@ -108,7 +109,13 @@ async function consumeTypedOutput<
       continue;
     }
     if (event.type === 'FAILED') {
-      throw new AgentInvocationError(event.payload.code, event.payload.retryable);
+      throw new AgentInvocationError(
+        event.payload.code,
+        event.payload.retryable,
+        event.payload.code === 'INVALID_ROUTE_DECISION'
+          ? safeRouteDiagnostic(event.payload.message)
+          : undefined,
+      );
     }
     if (event.type === 'COMPLETED') {
       if (output === undefined) throw new AgentInvocationError('BRIDGE_OUTPUT_MISSING', true);
@@ -124,4 +131,14 @@ async function consumeTypedOutput<
     throw new AgentInvocationError('BRIDGE_STREAM_INCOMPLETE', true);
   }
   return output;
+}
+
+function safeRouteDiagnostic(message: string): string | undefined {
+  const prefix = '结构化输出校验失败：';
+  if (!message.startsWith(prefix)) return undefined;
+  const diagnostic = message.slice(prefix.length).trim();
+  if (diagnostic.length === 0 || diagnostic.length > 320) return undefined;
+  return /^[A-Za-z0-9_$.-]+:[A-Za-z0-9_-]+(?:,\s*[A-Za-z0-9_$.-]+:[A-Za-z0-9_-]+)*$/u.test(diagnostic)
+    ? diagnostic
+    : undefined;
 }

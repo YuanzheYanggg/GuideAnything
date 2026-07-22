@@ -1,0 +1,32 @@
+- main [ref=e3]:
+  - region [ref=e4]:
+    - generic [ref=e5]: MULTIMODAL PROCESS LEARNING
+    - heading "GuideAnything" [level=1] [ref=e6]
+    - paragraph [ref=e7]: 把 ERP 操作、字段规则、图像与视频关键点，组织成一张可以复用和逐步学习的流程画布。
+    - generic "产品能力" [ref=e8]:
+      - generic [ref=e9]: 无限画布
+      - generic [ref=e10]: 发布检索
+      - generic [ref=e11]: 子指南复用
+      - generic [ref=e12]: 步骤教学
+  - region [ref=e13]:
+    - generic [ref=e14]:
+      - generic [ref=e15]: LOCAL DEMO
+      - group "外观" [ref=e16]:
+        - button "切换到系统" [ref=e17] [cursor=pointer]: 系统
+        - button "切换到浅色" [ref=e18] [cursor=pointer]: 浅色
+        - button "当前为深色" [pressed] [ref=e19] [cursor=pointer]: 深色
+    - generic [ref=e20]:
+      - heading "进入教学工作台" [level=2] [ref=e21]
+      - paragraph [ref=e22]: 使用预置角色体验作者、编辑者和学习者路径。
+    - generic [ref=e23]:
+      - generic [ref=e24]:
+        - text: 邮箱
+        - textbox "邮箱" [ref=e25]: author@guide.local
+      - generic [ref=e26]:
+        - text: 密码
+        - textbox "密码" [ref=e27]: Guide123!
+      - button "登录" [ref=e28] [cursor=pointer]
+    - generic "填入演示账号" [ref=e29]:
+      - button "使用作者账号" [ref=e30] [cursor=pointer]
+      - button "使用编辑者账号" [ref=e31] [cursor=pointer]
+      - button "使用学习者账号" [ref=e32] [cursor=pointer]

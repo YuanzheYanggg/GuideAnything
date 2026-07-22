@@ -93,12 +93,36 @@ export interface AgentRetrievalRequest {
 
 export interface AgentEvidenceRetriever {
   retrieve(request: AgentRetrievalRequest): Promise<readonly ValidatedEvidenceV1[]>;
+  /** Clears an in-memory trace before a fresh route-plan attempt. */
+  resetTrace?(runId: string): void;
+  /** Transfers the bounded trace to the committer exactly once. */
+  consumeTrace?(runId: string): AgentRetrievalTrace | null;
+  /** Releases a trace for cancelled or failed runs. */
+  discardTrace?(runId: string): void;
   isWorkspaceEvidenceSufficient?(request: {
     context: AgentRunExecutionContext;
     decision: RouteDecisionV1;
     evidence: readonly ValidatedEvidenceV1[];
     signal: AbortSignal;
   }): boolean | Promise<boolean>;
+}
+
+/**
+ * Minimal deterministic retrieval telemetry. It deliberately contains neither
+ * user/model text nor evidence content, so it can safely be persisted only for
+ * exceptional answers.
+ */
+export interface AgentRetrievalTrace {
+  candidates: readonly {
+    fragmentId: string;
+    projection: 'OVERVIEW' | 'NODE' | 'RESOURCE' | 'IMAGE_ANNOTATION' | 'OTHER';
+    rank: number;
+    selected: boolean;
+  }[];
+  closure: readonly {
+    id: string;
+    kind: 'OVERVIEW' | 'NODE' | 'RESOURCE';
+  }[];
 }
 
 export interface ResolvedAgentReference {
@@ -125,6 +149,7 @@ export interface CommitAgentOutputInput {
   context: AgentRunExecutionContext;
   answer: AgentCommittedAnswerV1;
   references: readonly ResolvedAgentReference[];
+  retrievalTrace?: AgentRetrievalTrace;
 }
 
 export interface AgentOutputCommitter {
@@ -340,6 +365,7 @@ export class AgentOrchestrator {
       this.#eventStore.appendFailure(runId, failure);
       return { status: 'FAILED' };
     } finally {
+      this.#retriever.discardTrace?.(runId);
       clearTimeout(runTimeout);
       externalSignal?.removeEventListener('abort', onExternalAbort);
       this.#activeRuns.delete(runId);
@@ -386,6 +412,7 @@ export class AgentOrchestrator {
     active: ActiveRun,
     context: AgentRunExecutionContext,
   ): Promise<{ status: 'COMPLETED'; messageId: string }> {
+    this.#retriever.resetTrace?.(context.runId);
     this.#appendPlan(active, context, 'PROVISIONAL', 'route.started', {
       intent: conciseText(context.text, 2_000),
     });
@@ -743,8 +770,14 @@ export class AgentOrchestrator {
     });
     assertCurrentPlan(active, context);
     active.committing = true;
+    const retrievalTrace = this.#retriever.consumeTrace?.(context.runId) ?? undefined;
     const persisted = await runBounded(
-      () => this.#outputCommitter.commit({ context, answer: committed, references }),
+      () => this.#outputCommitter.commit({
+        context,
+        answer: committed,
+        references,
+        ...(retrievalTrace ? { retrievalTrace } : {}),
+      }),
       active.runController.signal,
       this.#timeouts.runMs,
       new AgentOrchestrationError('COMMIT_TIMEOUT', '答案提交超过运行时限。', true),
@@ -773,8 +806,9 @@ export class AgentOrchestrator {
       role,
       trustedHarness: [
         ...this.#trustedHarness,
+        ROUTE_DECISION_CROSS_FIELD_RULES,
         role === 'ROUTER'
-          ? '分析任务难度并输出最小充分路线；小问题不得扩大检索范围。'
+          ? '分析任务难度并输出最小充分路线；小问题不得扩大检索范围。聚焦工作区流程问题涉及字段定义、图片标注、设置规则、多个步骤或异常链时，应将 budget.maxWorkspaceCandidates 设置为 6，并优先保留直接命中的片段。'
           : '复核初步路线的风险、来源与预算；只能收紧或给出有证据需要的并行计划。',
       ],
       retrievedContext: mediumDecision ? { initialRouteDecision: mediumDecision } : {},
@@ -871,6 +905,7 @@ export class AgentOrchestrator {
     stage: string,
     prompt: string,
   ): Promise<RouteDecisionV1> {
+    let repairDiagnostic: string | undefined;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const request = this.#request(
         active,
@@ -879,7 +914,7 @@ export class AgentOrchestrator {
         reasoningEffort,
         'ROUTE_DECISION',
         attempt === 0 ? stage : `${stage}-repair`,
-        attempt === 0 ? prompt : repairPrompt(prompt),
+        attempt === 0 ? prompt : routeRepairPrompt(prompt, repairDiagnostic),
       );
       try {
         return await runBounded(
@@ -892,7 +927,10 @@ export class AgentOrchestrator {
         if (isPhaseTimeout(error) || (attempt === 0 && isRepairableTypedOutput(error))) {
           await this.#cancelChild(request.runId);
         }
-        if (attempt === 0 && isRepairableTypedOutput(error)) continue;
+        if (attempt === 0 && isRepairableTypedOutput(error)) {
+          repairDiagnostic = error instanceof AgentInvocationError ? error.diagnostic : undefined;
+          continue;
+        }
         throw error;
       } finally {
         active.childIds.delete(request.runId);
@@ -1477,14 +1515,30 @@ async function settleWithin(operation: Promise<unknown>, timeoutMs: number): Pro
   }
 }
 
-function repairPrompt(prompt: string): string {
-  return `${prompt}\n\n结构修复：上一次输出未通过目标 schema。只重新输出一个严格匹配 outputKind 的 JSON 对象，不得增加解释或新证据。`;
+function repairPrompt(prompt: string, diagnostic?: string): string {
+  const detail = diagnostic
+    ? ` 已知失败路径（仅包含字段路径和校验类型）：${diagnostic}。`
+    : '';
+  return `${prompt}\n\n结构修复：上一次输出未通过目标 schema。${detail} 只重新输出一个严格匹配 outputKind 的 JSON 对象，不得增加解释或新证据。`;
 }
+
+function routeRepairPrompt(prompt: string, diagnostic?: string): string {
+  return `${repairPrompt(prompt, diagnostic)}\n\n${ROUTE_DECISION_CROSS_FIELD_RULES}`;
+}
+
+const ROUTE_DECISION_CROSS_FIELD_RULES = `RouteDecision 跨字段约束（JSON schema 不会表达这些约束，必须手动满足）：
+- DIRECT 路线：最多一个工作任务、不能有 REDUCE；executionMode=SEQUENTIAL；maxConcurrency=1、budget.maxConcurrency=1；budget.maxWorkers=0 或 1，并且 budget.useReducer=false。
+- FOCUSED 路线必须只有一个工作任务、不能有 REDUCE；executionMode=SEQUENTIAL；maxConcurrency=1、budget.maxConcurrency=1、budget.maxWorkers=1，并且 budget.useReducer=false。
+- COMPOSITE 路线必须有二至三个工作任务和一个 REDUCE；executionMode=PARALLEL；budget.maxWorkers 等于工作任务数；budget.useReducer=true；汇总任务必须依赖全部工作任务。
+- OPEN_RESEARCH 路线必须有二至三个工作任务和一个 REDUCE；budget.maxWorkers 等于工作任务数；budget.useReducer=true；汇总任务必须依赖全部工作任务。
+- 本轮 userRequest.sources 中为 true 的来源必须在 decision.sources 中保持 true，不能关闭本轮已启用的工作区来源；任务 kind 只能使用已启用的数据源。
+- 所有 tasks.id 必须唯一；dependsOn 只能指向其他 task、不能自依赖或成环；工作任务的 dependsOn 必须为空；maxConcurrency 不能超过 budget.maxConcurrency。`;
 
 function isRepairableTypedOutput(error: unknown): boolean {
   if (error instanceof z.ZodError) return true;
   if (error instanceof AgentInvocationError || error instanceof RuntimeClientError) {
-    return error.code === 'BRIDGE_OUTPUT_KIND_INVALID'
+    return error.code === 'INVALID_ROUTE_DECISION'
+      || error.code === 'BRIDGE_OUTPUT_KIND_INVALID'
       || error.code === 'BRIDGE_OUTPUT_MISSING'
       || error.code === 'BRIDGE_EVENT_INVALID';
   }

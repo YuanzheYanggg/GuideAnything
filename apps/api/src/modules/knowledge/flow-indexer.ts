@@ -12,6 +12,23 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { buildSearchText } from './search-text';
+import {
+  refreshActiveFlowRegressionCases,
+  runFlowAnnotationHealthChecks,
+} from '../flow-regressions/service';
+
+// V3 introduces one independently searchable fragment per image annotation.
+// V2 was briefly materialized without those leaves, so it must be rebuilt.
+const FLOW_INDEX_PROJECTION_VERSION = 3;
+
+interface FlowIndexFragment {
+  id: string;
+  heading: string;
+  content: string;
+  searchText: string;
+  locatorJson: string;
+  now: string;
+}
 
 export interface GuideFlowContext {
   workspaceId: string;
@@ -43,9 +60,14 @@ export function syncGuideFlowSnapshot(database: DatabaseSync, context: GuideFlow
       FlowKnowledgeSnapshotSchema.parse(JSON.parse(existing.snapshot_json)),
     );
     const materialized = database.prepare(
-      `SELECT 1 FROM knowledge_documents WHERE flow_snapshot_id = ?`,
-    ).get(existing.id);
-    if (!materialized) materializeExistingSnapshot(database, context, snapshot, checksum);
+      `SELECT id, metadata_json FROM knowledge_documents WHERE flow_snapshot_id = ?`,
+    ).get(existing.id) as { id: string; metadata_json: string } | undefined;
+    if (!materialized) {
+      materializeExistingSnapshot(database, context, snapshot, checksum);
+    } else if (!hasCurrentFlowIndexProjection(materialized.metadata_json)) {
+      materializeExistingSnapshot(database, context, snapshot, checksum, materialized.id);
+    }
+    refreshFlowAnnotationVerification(database, snapshot, context.ownerId);
     return snapshot;
   }
 
@@ -65,15 +87,7 @@ export function syncGuideFlowSnapshot(database: DatabaseSync, context: GuideFlow
   const documentId = randomUUID();
   const now = new Date().toISOString();
   const revision = flowRevision(context.origin);
-  const metadata = {
-    sourceKind: 'WORKSPACE_FLOW',
-    aliases: [],
-    tags: context.tags,
-    rawEvidenceAvailable: false,
-    guideId: context.guideId,
-    guideTitle: context.title,
-    origin: context.origin,
-  };
+  const metadata = flowDocumentMetadata(context);
   const fragments = flowFragments(snapshot, documentId, checksum, now);
 
   database.exec('BEGIN IMMEDIATE');
@@ -128,6 +142,7 @@ export function syncGuideFlowSnapshot(database: DatabaseSync, context: GuideFlow
     database.exec('ROLLBACK');
     throw error;
   }
+  refreshFlowAnnotationVerification(database, snapshot, context.ownerId);
   return snapshot;
 }
 
@@ -213,8 +228,12 @@ export function reconcileGuideFlowSnapshots(database: DatabaseSync): { indexed: 
        ON snapshot.guide_id = guide.id AND snapshot.origin_type = 'DRAFT' AND snapshot.revision = guide.revision
      LEFT JOIN knowledge_documents document ON document.flow_snapshot_id = snapshot.id
      WHERE guide.status != 'ARCHIVED' AND item.deleted_at IS NULL
-       AND (snapshot.id IS NULL OR document.id IS NULL)`,
-  ).all() as unknown as DraftReconcileRow[];
+       AND (
+         snapshot.id IS NULL
+         OR document.id IS NULL
+         OR COALESCE(json_extract(document.metadata_json, '$.flowIndexProjectionVersion'), 0) != ?
+       )`,
+  ).all(FLOW_INDEX_PROJECTION_VERSION) as unknown as DraftReconcileRow[];
   const publishedRows = database.prepare(
     `SELECT version.id AS version_id, version.guide_id, version.version, version.title,
             version.summary, version.tags_json, version.document_json,
@@ -226,8 +245,13 @@ export function reconcileGuideFlowSnapshots(database: DatabaseSync): { indexed: 
        ON snapshot.guide_id = version.guide_id AND snapshot.origin_type = 'PUBLISHED'
       AND snapshot.version_id = version.id AND snapshot.version = version.version
      LEFT JOIN knowledge_documents document ON document.flow_snapshot_id = snapshot.id
-     WHERE item.deleted_at IS NULL AND (snapshot.id IS NULL OR document.id IS NULL)`,
-  ).all() as unknown as PublishedReconcileRow[];
+     WHERE item.deleted_at IS NULL
+       AND (
+         snapshot.id IS NULL
+         OR document.id IS NULL
+         OR COALESCE(json_extract(document.metadata_json, '$.flowIndexProjectionVersion'), 0) != ?
+       )`,
+  ).all(FLOW_INDEX_PROJECTION_VERSION) as unknown as PublishedReconcileRow[];
   let indexed = 0;
   let failed = 0;
   const contexts: GuideFlowContext[] = [
@@ -271,16 +295,21 @@ function flowFragments(
   documentId: string,
   revision: string,
   now: string,
-): Array<{ id: string; heading: string; content: string; searchText: string; locatorJson: string; now: string }> {
+): FlowIndexFragment[] {
   const titleByNodeId = new Map(snapshot.nodes.map((node) => [node.id, node.title]));
   const flowRelations = snapshot.relations.filter((relation) => relation.kind === 'FLOW');
   const resourceById = new Map(snapshot.resources.map((resource) => [resource.id, resource]));
-  const result: Array<{ id: string; heading: string; content: string; searchText: string; locatorJson: string; now: string }> = [];
+  const result: FlowIndexFragment[] = [];
   const overviewTarget = snapshot.nodes.find((node) => node.isEntry)?.locator
     ?? snapshot.nodes[0]?.locator
     ?? snapshot.resources[0]?.locator;
   if (overviewTarget) {
-    const parts = [snapshot.title, snapshot.summary, ...snapshot.tags].filter(Boolean);
+    const parts = [
+      snapshot.title,
+      snapshot.summary,
+      ...snapshot.tags,
+      flowStructureOutline(snapshot, titleByNodeId, resourceById),
+    ].filter(Boolean);
     const id = flowOverviewFragmentId(snapshot.snapshotId);
     result.push({
       id,
@@ -329,7 +358,49 @@ function flowFragments(
       now,
     });
   }
-  snapshot.resources.forEach((resource) => result.push(flowResourceFragment(snapshot, resource, documentId, revision, now)));
+  snapshot.resources.forEach((resource) => result.push(
+    ...flowResourceFragments(snapshot, resource, documentId, revision, now),
+  ));
+  return result;
+}
+
+function flowResourceFragments(
+  snapshot: FlowKnowledgeSnapshotV2,
+  resource: FlowKnowledgeResourceV2,
+  documentId: string,
+  revision: string,
+  now: string,
+): FlowIndexFragment[] {
+  const result = [flowResourceFragment(snapshot, resource, documentId, revision, now)];
+  if (resource.kind !== 'IMAGE') return result;
+
+  const ownerTitles = flowResourceOwnerTitles(snapshot, resource.id);
+  for (const annotation of [...resource.annotations].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))) {
+    const parts = [
+      annotation.title,
+      annotation.body ?? '',
+      `所属资料：${resourceTitle(resource)}`,
+      ownerTitles.length > 0 ? `所属节点：${ownerTitles.join('、')}` : '',
+    ].filter(Boolean);
+    const content = parts.join('\n').slice(0, 100_000);
+    const id = flowAnnotationFragmentId(snapshot.snapshotId, resource.id, annotation.id);
+    result.push({
+      id,
+      heading: annotation.title,
+      content,
+      searchText: buildSearchText(parts),
+      locatorJson: JSON.stringify({
+        kind: 'WORKSPACE_FLOW',
+        ...resource.locator,
+        documentId,
+        revision,
+        fragmentId: id,
+        projection: 'IMAGE_ANNOTATION',
+        annotationId: annotation.id,
+      }),
+      now,
+    });
+  }
   return result;
 }
 
@@ -339,11 +410,11 @@ function flowResourceFragment(
   documentId: string,
   revision: string,
   now: string,
-) {
+): FlowIndexFragment {
   const parts = resource.kind === 'MARKDOWN'
     ? [resource.markdown]
     : resource.kind === 'IMAGE'
-      ? [resource.alt, resource.caption ?? '', ...resource.annotations.flatMap((annotation) => [annotation.title, annotation.body ?? ''])]
+      ? [resource.alt, resource.caption ?? '', ...resource.annotations.map((annotation) => `标注字段：${annotation.title}`)]
       : [resource.caption ?? '', ...resource.keypoints.map((keypoint) => keypoint.title)];
   const content = parts.filter(Boolean).join('\n').slice(0, 100_000);
   const id = flowFragmentId(snapshot.snapshotId, resource.id);
@@ -355,6 +426,36 @@ function flowResourceFragment(
     locatorJson: JSON.stringify({ kind: 'WORKSPACE_FLOW', ...resource.locator, documentId, revision, fragmentId: id }),
     now,
   };
+}
+
+function flowStructureOutline(
+  snapshot: FlowKnowledgeSnapshotV2,
+  titleByNodeId: ReadonlyMap<string, string>,
+  resourceById: ReadonlyMap<string, FlowKnowledgeResourceV2>,
+): string {
+  const steps = [...snapshot.learningPath]
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id))
+    .flatMap((step) => {
+      const title = step.targetNodeId
+        ? titleByNodeId.get(step.targetNodeId)
+        : step.targetResourceId
+          ? resourceTitle(resourceById.get(step.targetResourceId))
+          : undefined;
+      return title ? [`${step.order + 1}. ${title}`] : [];
+    })
+    .slice(0, 120);
+  return ['流程结构索引', ...steps].join('\n');
+}
+
+function flowResourceOwnerTitles(snapshot: FlowKnowledgeSnapshotV2, resourceId: string): string[] {
+  const titleByNodeId = new Map(snapshot.nodes.map((node) => [node.id, node.title]));
+  return [...new Set(snapshot.relations.flatMap((relation) => (
+    relation.kind === 'USES_RESOURCE' && relation.resourceId === resourceId
+      ? [relation.sourceNodeId]
+      : []
+  )))]
+    .sort()
+    .flatMap((nodeId) => titleByNodeId.get(nodeId) ? [titleByNodeId.get(nodeId)!] : []);
 }
 
 function resourceTitle(resource: FlowKnowledgeResourceV2 | undefined): string {
@@ -401,16 +502,14 @@ function materializeExistingSnapshot(
   context: GuideFlowContext,
   snapshot: FlowKnowledgeSnapshotV2,
   checksum: string,
+  existingDocumentId?: string,
 ): void {
   const sourceId = flowSourceId(context.guideId);
-  const documentId = randomUUID();
+  const documentId = existingDocumentId ?? randomUUID();
   const revision = flowRevision(context.origin);
   const now = new Date().toISOString();
   const fragments = flowFragments(snapshot, documentId, checksum, now);
-  const metadata = {
-    sourceKind: 'WORKSPACE_FLOW', aliases: [], tags: context.tags, rawEvidenceAvailable: false,
-    guideId: context.guideId, guideTitle: context.title, origin: context.origin,
-  };
+  const metadata = flowDocumentMetadata(context);
   database.exec('BEGIN IMMEDIATE');
   try {
     database.prepare(
@@ -421,15 +520,28 @@ function materializeExistingSnapshot(
       ON CONFLICT (id) DO UPDATE SET status = 'READY', revision = excluded.revision,
         config_json = excluded.config_json, updated_at = excluded.updated_at`,
     ).run(sourceId, context.workspaceId, context.ownerId, revision, JSON.stringify({ guideId: context.guideId }), now, now);
-    database.prepare(
-      `INSERT INTO knowledge_documents (
-        id, source_id, flow_snapshot_id, relative_locator, title, checksum, revision,
-        parse_status, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, ?)`,
-    ).run(
-      documentId, sourceId, snapshot.snapshotId, flowRelativeLocator(context.origin),
-      context.title, checksum, revision, JSON.stringify(metadata), now, now,
-    );
+    if (existingDocumentId) {
+      database.prepare(
+        `UPDATE knowledge_documents
+         SET source_id = ?, relative_locator = ?, title = ?, checksum = ?, revision = ?,
+             parse_status = 'READY', metadata_json = ?, updated_at = ?
+         WHERE id = ? AND flow_snapshot_id = ?`,
+      ).run(
+        sourceId, flowRelativeLocator(context.origin), context.title, checksum, revision,
+        JSON.stringify(metadata), now, documentId, snapshot.snapshotId,
+      );
+      database.prepare('DELETE FROM knowledge_fragments WHERE document_id = ?').run(documentId);
+    } else {
+      database.prepare(
+        `INSERT INTO knowledge_documents (
+          id, source_id, flow_snapshot_id, relative_locator, title, checksum, revision,
+          parse_status, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, ?)`,
+      ).run(
+        documentId, sourceId, snapshot.snapshotId, flowRelativeLocator(context.origin),
+        context.title, checksum, revision, JSON.stringify(metadata), now, now,
+      );
+    }
     const insert = database.prepare(
       `INSERT INTO knowledge_fragments (
         id, document_id, ordinal, title, heading, content, search_text,
@@ -447,12 +559,55 @@ function materializeExistingSnapshot(
   }
 }
 
+function refreshFlowAnnotationVerification(
+  database: DatabaseSync,
+  snapshot: FlowKnowledgeSnapshotV2,
+  ownerId: string,
+): void {
+  runFlowAnnotationHealthChecks(database, { snapshot, ownerId });
+  refreshActiveFlowRegressionCases(database, { snapshot, ownerId });
+}
+
+function flowDocumentMetadata(context: GuideFlowContext) {
+  return {
+    sourceKind: 'WORKSPACE_FLOW',
+    aliases: [],
+    tags: context.tags,
+    rawEvidenceAvailable: false,
+    guideId: context.guideId,
+    guideTitle: context.title,
+    origin: context.origin,
+    flowIndexProjectionVersion: FLOW_INDEX_PROJECTION_VERSION,
+  };
+}
+
+function hasCurrentFlowIndexProjection(metadataJson: string): boolean {
+  try {
+    const metadata = JSON.parse(metadataJson) as unknown;
+    return Boolean(
+      metadata
+      && typeof metadata === 'object'
+      && !Array.isArray(metadata)
+      && (metadata as Record<string, unknown>).flowIndexProjectionVersion === FLOW_INDEX_PROJECTION_VERSION,
+    );
+  } catch {
+    return false;
+  }
+}
+
 function flowSourceId(guideId: string): string {
   return `flow-source-${createHash('sha256').update(guideId).digest('hex').slice(0, 32)}`;
 }
 
 function flowFragmentId(snapshotId: string, nodeId: string): string {
   return `flow-fragment-${createHash('sha256').update(`${snapshotId}\u0000${nodeId}`).digest('hex').slice(0, 32)}`;
+}
+
+function flowAnnotationFragmentId(snapshotId: string, resourceId: string, annotationId: string): string {
+  return `flow-annotation-${createHash('sha256')
+    .update(`${snapshotId}\u0000${resourceId}\u0000${annotationId}`)
+    .digest('hex')
+    .slice(0, 32)}`;
 }
 
 function flowOverviewFragmentId(snapshotId: string): string {

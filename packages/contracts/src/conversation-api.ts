@@ -325,16 +325,22 @@ function isAllowedReferenceTarget(kind: z.infer<typeof ReferenceTargetKindV1Sche
   if (entries.some(([key]) => /^(?:token|authorization|bridgeToken|path|locator|storageKey)$/iu.test(key))) return false;
   const hasOnly = (allowed: readonly string[]) => entries.every(([key]) => allowed.includes(key));
   const hasExactlyOne = (key: string) => url.searchParams.getAll(key).length === 1 && Boolean(url.searchParams.get(key));
+  const hasOptionalOne = (key: string) => {
+    const values = url.searchParams.getAll(key);
+    return values.length <= 1 && (values.length === 0 || Boolean(values[0]));
+  };
 
   if (kind === 'PUBLISHED_FLOW_NODE') {
     return /^\/versions\/[^/]+\/learn$/u.test(url.pathname)
-      && hasOnly(['nodeId'])
-      && hasExactlyOne('nodeId');
+      && hasOnly(['nodeId', 'annotationId'])
+      && hasExactlyOne('nodeId')
+      && hasOptionalOne('annotationId');
   }
   if (kind === 'CURRENT_DRAFT_FLOW_NODE') {
     return /^\/guides\/[^/]+\/edit$/u.test(url.pathname)
-      && hasOnly(['nodeId'])
-      && hasExactlyOne('nodeId');
+      && hasOnly(['nodeId', 'annotationId'])
+      && hasExactlyOne('nodeId')
+      && hasOptionalOne('annotationId');
   }
   if (kind === 'SANTEXWELL_FRAGMENT') {
     return /^\/knowledge\/santexwell\/documents\/[^/]+$/u.test(url.pathname)

@@ -60,13 +60,33 @@ describe('read-only Agent runtime integration', () => {
     });
     expect(createdGuide.statusCode).toBe(201);
     const guideId = createdGuide.json().guide.id as string;
+    const document = sampleDocument('# 样衣复核\n质量复核员负责检查尺寸、工艺和最终放行。');
+    document.nodes.push({
+      id: 'integration-version-type-image',
+      type: 'image',
+      position: { x: 520, y: 0 },
+      zIndex: 2,
+      attachment: { ownerNodeId: 'start', order: 0 },
+      data: {
+        url: 'https://example.com/integration-version-type.png',
+        alt: '打样提案字段截图',
+        annotations: [{
+          id: 'version-type',
+          order: 0,
+          title: '版类型',
+          body: '初样用于新建版型，修改样用于局部修改。',
+          shape: 'POINT',
+          region: { x: 0.45, y: 0.35 },
+        }],
+      },
+    });
     const savedGuide = await app.inject({
       method: 'PATCH',
       url: `/api/guides/${guideId}`,
       headers,
       payload: {
         revision: 0,
-        document: sampleDocument('# 样衣复核\n质量复核员负责检查尺寸、工艺和最终放行。'),
+        document,
       },
     });
     expect(savedGuide.statusCode).toBe(200);
@@ -142,6 +162,84 @@ describe('read-only Agent runtime integration', () => {
         href: expect.stringContaining(`/guides/${guideId}/edit?nodeId=`),
       },
     });
+
+    const annotationConversation = await app.inject({
+      method: 'POST',
+      url: '/api/workspaces/integration-workspace/conversations',
+      headers,
+      payload: { title: '版类型如何设置' },
+    });
+    const annotationConversationId = annotationConversation.json().conversation.id as string;
+    const annotationAccepted = await app.inject({
+      method: 'POST',
+      url: `/api/workspaces/integration-workspace/conversations/${annotationConversationId}/messages`,
+      headers,
+      payload: {
+        clientMessageId: 'integration-message-version-type',
+        text: '打样流程中，版类型应该怎么设置？',
+        sources: {
+          workspaceFlows: true,
+          workspaceDocuments: false,
+          sessionAttachments: false,
+          santexwell: false,
+        },
+        attachmentIds: [],
+      },
+    });
+    expect(annotationAccepted.statusCode).toBe(202);
+    const annotationRunId = annotationAccepted.json().run.id as string;
+    await waitForTerminalRun(database, annotationRunId);
+    const annotationDetail = await app.inject({
+      method: 'GET',
+      url: `/api/workspaces/integration-workspace/conversations/${annotationConversationId}`,
+      headers,
+    });
+    const annotationAssistant = annotationDetail.json().messages.find((message: { role: string }) => message.role === 'ASSISTANT');
+    const annotationCitation = annotationAssistant.answer.citations.find((citation: { excerpt: string }) => (
+      citation.excerpt.includes('初样用于新建版型')
+    ));
+    expect(annotationCitation).toBeDefined();
+    if (!annotationCitation) throw new Error('missing image annotation citation');
+
+    const annotationReference = await app.inject({
+      method: 'GET',
+      url: `/api/references/${encodeURIComponent(annotationCitation.referenceId as string)}`,
+      headers,
+    });
+    expect(annotationReference.statusCode).toBe(200);
+    expect(annotationReference.json()).toMatchObject({
+      status: 'VALID',
+      target: {
+        kind: 'CURRENT_DRAFT_FLOW_NODE',
+        href: `/guides/${guideId}/edit?nodeId=integration-version-type-image&annotationId=version-type`,
+      },
+    });
+
+    const pinned = await app.inject({
+      method: 'POST',
+      url: `/api/references/${encodeURIComponent(annotationCitation.referenceId as string)}/flow-regression-cases`,
+      headers,
+    });
+    expect(pinned.statusCode).toBe(201);
+    expect(pinned.json().case).toMatchObject({
+      resourceNodeId: 'integration-version-type-image',
+      annotationId: 'version-type',
+      lastRetrievalVerification: 'PASS',
+    });
+    const cases = await app.inject({
+      method: 'GET',
+      url: `/api/guides/${guideId}/flow-regression-cases`,
+      headers,
+    });
+    expect(cases.statusCode).toBe(200);
+    expect(cases.json().items[0]).toMatchObject({
+      resourceNodeId: 'integration-version-type-image',
+      annotationId: 'version-type',
+      lastRetrievalVerification: 'PASS',
+    });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM knowledge_sources WHERE id LIKE '%regression%'",
+    ).get()).toEqual({ count: 0 });
   });
 });
 

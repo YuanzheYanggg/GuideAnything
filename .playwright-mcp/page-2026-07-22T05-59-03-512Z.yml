@@ -1,0 +1,553 @@
+- main [ref=f1e3]:
+  - generic [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - button "返回资料库" [ref=f1e6] [cursor=pointer]
+      - generic [ref=f1e9]:
+        - textbox "指南标题" [disabled] [ref=f1e10]: 打样提案流程
+        - generic [ref=f1e11]: 已发布 v2 · 已保存
+      - region "指南信息" [ref=f1e12]:
+        - generic [ref=f1e13]:
+          - generic [ref=f1e14]: GUIDE DETAILS
+          - generic [ref=f1e15]:
+            - generic [ref=f1e16]:
+              - generic [ref=f1e17]: 摘要
+              - button "查看摘要" [disabled] [ref=f1e20]
+            - generic [ref=f1e23]:
+              - generic [ref=f1e24]:
+                - generic [ref=f1e25]: 标签
+                - button "编辑标签" [disabled] [ref=f1e28]: 编辑
+              - generic "指南标签" [ref=f1e31]:
+                - generic [ref=f1e32]: ERP
+                - generic [ref=f1e33]: 原料
+                - generic [ref=f1e34]: 打样
+            - button "生成指南总览" [disabled] [ref=f1e35]:
+              - generic [ref=f1e39]:
+                - strong [ref=f1e40]: 生成指南总览
+                - generic [ref=f1e41]: 提炼流程重点与标签建议
+      - generic "指南操作" [ref=f1e44]:
+        - group "状态与诊断" [ref=f1e45]:
+          - generic [ref=f1e46]: 状态
+          - group [ref=f1e49]:
+            - generic "回归题（1）" [ref=f1e50] [cursor=pointer]
+        - group "外观设置" [ref=f1e51]:
+          - generic [ref=f1e52]: 外观
+          - group "外观" [ref=f1e53]:
+            - button "切换到系统" [ref=f1e54] [cursor=pointer]: 系统
+            - button "切换到浅色" [ref=f1e55] [cursor=pointer]: 浅色
+            - button "当前为深色" [pressed] [ref=f1e56] [cursor=pointer]: 深色
+        - group "版本操作" [ref=f1e57]:
+          - generic [ref=f1e58]: 版本
+          - generic [ref=f1e61]:
+            - button "草稿历史" [disabled] [ref=f1e62]
+            - button "保存草稿" [disabled] [ref=f1e65]
+        - group "主操作" [ref=f1e68]:
+          - button "发布指南" [disabled] [ref=f1e69]
+    - generic "画布工具栏" [ref=f1e72]:
+      - group "添加节点" [ref=f1e73]:
+        - generic [ref=f1e74]:
+          - generic [ref=f1e75]: 节点
+          - generic [ref=f1e77]:
+            - button "添加开始节点" [disabled] [ref=f1e78]:
+              - generic [ref=f1e81]: 开始
+            - button "添加流程节点" [disabled] [ref=f1e82]:
+              - generic [ref=f1e85]: 流程
+            - button "添加判断节点" [disabled] [ref=f1e86]:
+              - generic [ref=f1e89]: 判断
+            - button "添加数据节点" [disabled] [ref=f1e90]:
+              - generic [ref=f1e93]: 数据
+            - button "添加 Markdown 节点" [disabled] [ref=f1e94]:
+              - generic [ref=f1e97]: Markdown
+            - button "添加图片节点" [disabled] [ref=f1e98]:
+              - generic [ref=f1e101]: 图片
+            - button "添加视频节点" [disabled] [ref=f1e102]:
+              - generic [ref=f1e105]: 视频
+            - button "插入子指南" [disabled] [ref=f1e106]:
+              - generic [ref=f1e109]: 子指南
+      - group "编辑画布" [ref=f1e111]:
+        - generic [ref=f1e112]:
+          - generic [ref=f1e113]: 编辑
+          - generic [ref=f1e115]:
+            - button "撤销" [disabled] [ref=f1e116]
+            - button "重做" [disabled] [ref=f1e120]
+            - button "复制选中节点" [disabled] [ref=f1e124]:
+              - generic [ref=f1e127]: 复制
+            - button "粘贴节点" [disabled] [ref=f1e128]:
+              - generic [ref=f1e131]: 粘贴
+            - button "左对齐选中节点" [disabled] [ref=f1e132]:
+              - generic [ref=f1e135]: 左对齐
+            - button "预览自动整理" [disabled] [ref=f1e136]:
+              - generic [ref=f1e139]: 自动整理
+            - button "删除选中项" [disabled] [ref=f1e140]:
+              - generic [ref=f1e143]: 删除
+    - generic [ref=f1e144]:
+      - complementary:
+        - generic:
+          - generic:
+            - generic: FLOW STRUCTURE
+            - strong: 业务流程
+            - generic: 11 个教学步骤
+        - generic:
+          - generic:
+            - generic:
+              - button:
+                - generic: 业务阶段
+                - strong: "3"
+                - generic: 管理 ›
+            - generic:
+              - button:
+                - generic: 责任泳道
+                - strong: "3"
+                - generic: 管理 ›
+          - tree:
+            - treeitem [expanded]:
+              - button [expanded]:
+                - generic: 客人提案阶段
+                - generic: "7"
+                - generic: ⌄
+              - group:
+                - generic:
+                  - button:
+                    - generic: "1"
+                    - generic: 收到客人提案需求，可以是邮件或者微信
+                - generic:
+                  - button:
+                    - generic: "2"
+                    - generic: 操作步骤
+                - generic:
+                  - button:
+                    - generic: "2.1"
+                    - generic: 操作步骤
+                - generic:
+                  - button:
+                    - generic: 2.1.1
+                    - generic: 操作步骤
+                - generic:
+                  - button:
+                    - generic: 2.1.2
+                    - generic: 操作步骤
+                - generic:
+                  - button:
+                    - generic: 2.1.2.1
+                    - generic: 操作步骤
+                - generic:
+                  - button:
+                    - generic: "3"
+                    - generic: 确认原料
+                  - generic:
+                    - button:
+                      - generic: ›
+                      - generic: 资料附录 · 3
+            - treeitem [expanded]:
+              - button [expanded]:
+                - generic: 供应商，原辅料采购
+                - generic: "0"
+                - generic: ⌄
+              - group:
+                - paragraph: 还没有流程节点
+            - treeitem [expanded]:
+              - button [expanded]:
+                - generic: 打样阶段
+                - generic: "0"
+                - generic: ⌄
+              - group:
+                - paragraph: 还没有流程节点
+            - treeitem [expanded]:
+              - button [expanded]:
+                - generic: 未分阶段
+                - generic: "1"
+                - generic: ⌄
+              - group:
+                - generic:
+                  - button:
+                    - generic: "4"
+                    - generic: 操作步骤
+            - treeitem:
+              - generic:
+                - text: 未挂靠资料
+                - generic: "0"
+              - group:
+                - paragraph: 所有资料都已挂靠
+      - region "无限画布编辑区" [ref=f1e145]:
+        - button "展开业务流程" [ref=f1e146] [cursor=pointer]
+        - application [ref=f1e149]:
+          - generic [ref=f1e151]:
+            - generic:
+              - generic:
+                - img:
+                  - img "Edge from start-c1439a96-00f6-45c5-9ff0-b70cf2feba52 to process-ebd3393e-887b-4ad9-a7c2-89d425738685" [ref=f1e489]
+                - img:
+                  - img "Edge from process-ebd3393e-887b-4ad9-a7c2-89d425738685 to process-1f230e50-6992-48b7-8d8c-42e8be1deb52" [ref=f1e490]
+                - img:
+                  - img "Edge from process-1f230e50-6992-48b7-8d8c-42e8be1deb52 to process-76f6be48-cdea-4146-8774-d4aff52e90a0" [ref=f1e491]
+                - img:
+                  - img "Edge from process-1f230e50-6992-48b7-8d8c-42e8be1deb52 to process-2096fe4b-9066-4247-9930-bdbff2b8620c" [ref=f1e492]
+                - img:
+                  - img "Edge from process-1f230e50-6992-48b7-8d8c-42e8be1deb52 to process-c68130c6-0366-4d00-a623-ccd83b24ed0a" [ref=f1e493]
+                - img:
+                  - img "Edge from ref:subguide-0e2045d7-e7f1-4c29-a293-f1c502f2dca0:start-c1439a96-00f6-45c5-9ff0-b70cf2feba52 to ref:subguide-0e2045d7-e7f1-4c29-a293-f1c502f2dca0:process-05934e20-56e1-4702-84b7-6e71f7b90736" [ref=f1e494]
+                - img:
+                  - img "Edge from ref:subguide-0e2045d7-e7f1-4c29-a293-f1c502f2dca0:process-05934e20-56e1-4702-84b7-6e71f7b90736 to ref:subguide-0e2045d7-e7f1-4c29-a293-f1c502f2dca0:markdown-7ea2a63e-117b-48da-b8a7-52bcc07bb068" [ref=f1e495]
+                - img:
+                  - img "Edge from ref:subguide-0e2045d7-e7f1-4c29-a293-f1c502f2dca0:process-05934e20-56e1-4702-84b7-6e71f7b90736 to ref:subguide-0e2045d7-e7f1-4c29-a293-f1c502f2dca0:image-67f4685b-8f4f-4b33-8101-ec653a84408c" [ref=f1e496]
+                - img:
+                  - img "Edge from process-05934e20-56e1-4702-84b7-6e71f7b90736 to markdown-7ea2a63e-117b-48da-b8a7-52bcc07bb068":
+                    - generic [ref=f1e174]: 资料 ×3
+              - generic:
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e178]
+                    - generic "终点连接面 TOP" [ref=f1e179]
+                    - generic "起点连接面 RIGHT" [ref=f1e180]
+                    - generic "终点连接面 RIGHT" [ref=f1e181]
+                    - generic "起点连接面 BOTTOM" [ref=f1e182]
+                    - generic "终点连接面 BOTTOM" [ref=f1e183]
+                    - generic "起点连接面 LEFT" [ref=f1e184]
+                    - generic "终点连接面 LEFT" [ref=f1e185]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: START · 1
+                          - strong: 收到客人提案需求，可以是邮件或者微信
+                        - generic:
+                          - button "编辑收到客人提案需求，可以是邮件或者微信 · 节点明细"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e196]
+                    - generic "终点连接面 TOP" [ref=f1e197]
+                    - generic "起点连接面 RIGHT" [ref=f1e198]
+                    - generic "终点连接面 RIGHT" [ref=f1e199]
+                    - generic "起点连接面 BOTTOM" [ref=f1e200]
+                    - generic "终点连接面 BOTTOM" [ref=f1e201]
+                    - generic "起点连接面 LEFT" [ref=f1e202]
+                    - generic "终点连接面 LEFT" [ref=f1e203]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: PROCESS · 3
+                          - strong: 确认原料
+                        - generic:
+                          - button "编辑确认原料 · 节点明细":
+                            - generic:
+                              - list:
+                                - listitem: 确认原料的供应商
+                          - button "详情"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e218]
+                    - generic "终点连接面 TOP" [ref=f1e219]
+                    - generic "起点连接面 RIGHT" [ref=f1e220]
+                    - generic "终点连接面 RIGHT" [ref=f1e221]
+                    - generic "起点连接面 BOTTOM" [ref=f1e222]
+                    - generic "终点连接面 BOTTOM" [ref=f1e223]
+                    - generic "起点连接面 LEFT" [ref=f1e224]
+                    - generic "终点连接面 LEFT" [ref=f1e225]
+                    - generic:
+                      - generic:
+                        - generic: MARKDOWN
+                        - generic:
+                          - heading "操作说明" [level=2]
+                          - paragraph: 在这里填写 ERP 操作步骤和字段规则。
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e235]
+                    - generic "终点连接面 TOP" [ref=f1e236]
+                    - generic "起点连接面 RIGHT" [ref=f1e237]
+                    - generic "终点连接面 RIGHT" [ref=f1e238]
+                    - generic "起点连接面 BOTTOM" [ref=f1e239]
+                    - generic "终点连接面 BOTTOM" [ref=f1e240]
+                    - generic "起点连接面 LEFT" [ref=f1e241]
+                    - generic "终点连接面 LEFT" [ref=f1e242]
+                    - generic:
+                      - generic:
+                        - generic: IMAGE
+                        - img "ERP 操作界面截图"
+                        - paragraph: 进入ERP系统-> 打样系统-> 样板单界面
+                        - generic: 8 个标注 · 0 个关联资料
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e252]
+                    - generic "终点连接面 TOP" [ref=f1e253]
+                    - generic "起点连接面 RIGHT" [ref=f1e254]
+                    - generic "终点连接面 RIGHT" [ref=f1e255]
+                    - generic "起点连接面 BOTTOM" [ref=f1e256]
+                    - generic "终点连接面 BOTTOM" [ref=f1e257]
+                    - generic "起点连接面 LEFT" [ref=f1e258]
+                    - generic "终点连接面 LEFT" [ref=f1e259]
+                    - generic:
+                      - generic:
+                        - generic: VIDEO
+                        - generic:
+                          - generic "ERP 操作演示"
+                          - paragraph: ERP 操作演示
+                          - generic:
+                            - button "跳转到 00:01": 00:01打开菜单
+                            - button "跳转到 00:10": 00:10新选择
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e272]
+                    - generic "终点连接面 TOP" [ref=f1e273]
+                    - generic "起点连接面 RIGHT" [ref=f1e274]
+                    - generic "终点连接面 RIGHT" [ref=f1e275]
+                    - generic "起点连接面 BOTTOM" [ref=f1e276]
+                    - generic "终点连接面 BOTTOM" [ref=f1e277]
+                    - generic "起点连接面 LEFT" [ref=f1e278]
+                    - generic "终点连接面 LEFT" [ref=f1e279]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: PROCESS · 2
+                          - strong: 操作步骤
+                        - generic:
+                          - button "编辑操作步骤 · 节点明细"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e290]
+                    - generic "终点连接面 TOP" [ref=f1e291]
+                    - generic "起点连接面 RIGHT" [ref=f1e292]
+                    - generic "终点连接面 RIGHT" [ref=f1e293]
+                    - generic "起点连接面 BOTTOM" [ref=f1e294]
+                    - generic "终点连接面 BOTTOM" [ref=f1e295]
+                    - generic "起点连接面 LEFT" [ref=f1e296]
+                    - generic "终点连接面 LEFT" [ref=f1e297]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: PROCESS · 4
+                          - strong: 操作步骤
+                        - generic:
+                          - button "编辑操作步骤 · 节点明细"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e308]
+                    - generic "终点连接面 TOP" [ref=f1e309]
+                    - generic "起点连接面 RIGHT" [ref=f1e310]
+                    - generic "终点连接面 RIGHT" [ref=f1e311]
+                    - generic "起点连接面 BOTTOM" [ref=f1e312]
+                    - generic "终点连接面 BOTTOM" [ref=f1e313]
+                    - generic "起点连接面 LEFT" [ref=f1e314]
+                    - generic "终点连接面 LEFT" [ref=f1e315]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: PROCESS · 2.1
+                          - strong: 操作步骤
+                        - generic:
+                          - button "编辑操作步骤 · 节点明细"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e326]
+                    - generic "终点连接面 TOP" [ref=f1e327]
+                    - generic "起点连接面 RIGHT" [ref=f1e328]
+                    - generic "终点连接面 RIGHT" [ref=f1e329]
+                    - generic "起点连接面 BOTTOM" [ref=f1e330]
+                    - generic "终点连接面 BOTTOM" [ref=f1e331]
+                    - generic "起点连接面 LEFT" [ref=f1e332]
+                    - generic "终点连接面 LEFT" [ref=f1e333]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: PROCESS · 2.1.1
+                          - strong: 操作步骤
+                        - generic:
+                          - button "编辑操作步骤 · 节点明细"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e344]
+                    - generic "终点连接面 TOP" [ref=f1e345]
+                    - generic "起点连接面 RIGHT" [ref=f1e346]
+                    - generic "终点连接面 RIGHT" [ref=f1e347]
+                    - generic "起点连接面 BOTTOM" [ref=f1e348]
+                    - generic "终点连接面 BOTTOM" [ref=f1e349]
+                    - generic "起点连接面 LEFT" [ref=f1e350]
+                    - generic "终点连接面 LEFT" [ref=f1e351]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: PROCESS · 2.1.2
+                          - strong: 操作步骤
+                        - generic:
+                          - button "编辑操作步骤 · 节点明细"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e362]
+                    - generic "终点连接面 TOP" [ref=f1e363]
+                    - generic "起点连接面 RIGHT" [ref=f1e364]
+                    - generic "终点连接面 RIGHT" [ref=f1e365]
+                    - generic "起点连接面 BOTTOM" [ref=f1e366]
+                    - generic "终点连接面 BOTTOM" [ref=f1e367]
+                    - generic "起点连接面 LEFT" [ref=f1e368]
+                    - generic "终点连接面 LEFT" [ref=f1e369]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: PROCESS · 2.1.3
+                          - strong: 操作步骤
+                        - generic:
+                          - button "编辑操作步骤 · 节点明细"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e380]
+                    - generic "终点连接面 TOP" [ref=f1e381]
+                    - generic "起点连接面 RIGHT" [ref=f1e382]
+                    - generic "终点连接面 RIGHT" [ref=f1e383]
+                    - generic "起点连接面 BOTTOM" [ref=f1e384]
+                    - generic "终点连接面 BOTTOM" [ref=f1e385]
+                    - generic "起点连接面 LEFT" [ref=f1e386]
+                    - generic "终点连接面 LEFT" [ref=f1e387]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: START
+                          - strong: 收到客人提案需求，可以是邮件或者微信
+                        - generic:
+                          - button "编辑收到客人提案需求，可以是邮件或者微信 · 节点明细"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e398]
+                    - generic "终点连接面 TOP" [ref=f1e399]
+                    - generic "起点连接面 RIGHT" [ref=f1e400]
+                    - generic "终点连接面 RIGHT" [ref=f1e401]
+                    - generic "起点连接面 BOTTOM" [ref=f1e402]
+                    - generic "终点连接面 BOTTOM" [ref=f1e403]
+                    - generic "起点连接面 LEFT" [ref=f1e404]
+                    - generic "终点连接面 LEFT" [ref=f1e405]
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic: PROCESS
+                          - strong: 确认原料
+                        - generic:
+                          - button "编辑确认原料 · 节点明细":
+                            - generic:
+                              - list:
+                                - listitem: 确认原料的供应商
+                          - button "详情"
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e420]
+                    - generic "终点连接面 TOP" [ref=f1e421]
+                    - generic "起点连接面 RIGHT" [ref=f1e422]
+                    - generic "终点连接面 RIGHT" [ref=f1e423]
+                    - generic "起点连接面 BOTTOM" [ref=f1e424]
+                    - generic "终点连接面 BOTTOM" [ref=f1e425]
+                    - generic "起点连接面 LEFT" [ref=f1e426]
+                    - generic "终点连接面 LEFT" [ref=f1e427]
+                    - generic:
+                      - generic:
+                        - generic: MARKDOWN
+                        - generic:
+                          - heading "操作说明" [level=2]
+                          - paragraph: 在这里填写 ERP 操作步骤和字段规则。
+                    - generic "输出端口"
+                - group:
+                  - generic:
+                    - generic "输入端口"
+                    - generic "起点连接面 TOP" [ref=f1e437]
+                    - generic "终点连接面 TOP" [ref=f1e438]
+                    - generic "起点连接面 RIGHT" [ref=f1e439]
+                    - generic "终点连接面 RIGHT" [ref=f1e440]
+                    - generic "起点连接面 BOTTOM" [ref=f1e441]
+                    - generic "终点连接面 BOTTOM" [ref=f1e442]
+                    - generic "起点连接面 LEFT" [ref=f1e443]
+                    - generic "终点连接面 LEFT" [ref=f1e444]
+                    - generic:
+                      - generic:
+                        - generic: IMAGE
+                        - img "ERP 操作界面截图"
+                        - paragraph: 点击右侧属性面板上传真实截图。
+                        - generic: 8 个标注 · 0 个关联资料
+                    - generic "输出端口"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: 业务
+                    - emphasis: 责任
+                - generic:
+                  - generic:
+                    - generic: 工艺员
+                    - emphasis: 责任
+                - generic:
+                  - generic:
+                    - generic: 制版师
+                    - emphasis: 责任
+                - generic:
+                  - generic:
+                    - generic: 未分配责任
+                    - emphasis: 未分配
+                - generic:
+                  - generic: 资料附录 · 3
+                  - button "隐藏全部资料" [ref=f1e452] [cursor=pointer]
+                - generic: 客人提案阶段
+                - generic: 供应商，原辅料采购
+                - generic: 打样阶段
+                - generic: 未分阶段
+          - img "Mini Map" [ref=f1e456]
+          - generic "Control Panel" [ref=f1e472]:
+            - button "Zoom In" [ref=f1e473] [cursor=pointer]
+            - button "Zoom Out" [ref=f1e476] [cursor=pointer]
+            - button "Fit View" [ref=f1e479] [cursor=pointer]
+          - link "React Flow attribution" [ref=f1e483] [cursor=pointer]:
+            - /url: https://reactflow.dev/attribution
+            - text: React Flow
+      - complementary "节点属性" [ref=f1e485]:
+        - dialog [ref=f1e497]:
+          - button "关闭自动整理预览" [active] [ref=f1e498] [cursor=pointer]
+          - generic [ref=f1e505]:
+            - generic [ref=f1e506]: LAYOUT PREVIEW
+            - heading "自动整理预览" [level=2] [ref=f1e507]
+          - paragraph [ref=f1e508]: 先审阅新的流程位置，确认后才会写入草稿。当前节点内容、阶段和泳道不会被改变。
+          - generic [ref=f1e509]:
+            - generic [ref=f1e510]: 整理规则
+            - generic [ref=f1e511]:
+              - generic [ref=f1e512]: 阶段从上到下
+              - generic [ref=f1e515]: 子节点向右展开
+          - generic "整理结果" [ref=f1e518]:
+            - generic [ref=f1e519]:
+              - generic [ref=f1e522]: 主流程
+              - strong [ref=f1e523]: "8"
+            - generic [ref=f1e524]:
+              - generic [ref=f1e527]: 阶段
+              - strong [ref=f1e528]: "3"
+            - generic [ref=f1e529]:
+              - generic [ref=f1e532]: 泳道
+              - strong [ref=f1e533]: "3"
+            - generic [ref=f1e534]:
+              - generic [ref=f1e537]: 资料
+              - strong [ref=f1e538]: "3"
+          - status "整理诊断" [ref=f1e539]:
+            - generic [ref=f1e540]: 诊断
+            - generic [ref=f1e543]:
+              - generic [ref=f1e544]: 孤立节点 0
+              - generic [ref=f1e545]: 循环 0
+              - generic [ref=f1e546]: 回流 0
+              - generic [ref=f1e547]: 避障 0
+          - generic [ref=f1e548]:
+            - button "取消自动整理" [ref=f1e549] [cursor=pointer]: 取消
+            - button "应用自动整理" [ref=f1e550] [cursor=pointer]

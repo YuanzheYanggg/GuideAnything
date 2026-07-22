@@ -4,20 +4,33 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useMediaSource } from '../nodes/useMediaSource';
 
-export function ImageAnnotationPlayer({ source, data, initialIndex, isTargetValid, onOpenTarget, onOpenSupplement }: {
+export function ImageAnnotationPlayer({ source, data, initialIndex, initialAnnotationId, isTargetValid, onOpenTarget, onOpenSupplement }: {
   source: string;
   data: CanvasNode<'image'>['data'];
   initialIndex?: number;
+  initialAnnotationId?: string;
   isTargetValid: (targetNodeId: string) => boolean;
   onOpenTarget: (targetNodeId: string, annotationIndex: number) => void;
   onOpenSupplement?: (supplement: ImageAnnotationSupplement, annotationIndex: number) => void;
 }) {
   const annotations = useMemo(() => normalizeAnnotationOrder(data.annotations ?? []), [data.annotations]);
-  const [activeIndex, setActiveIndex] = useState<number | null>(initialIndex ?? null);
+  const initialAnnotationIndex = useMemo(() => {
+    if (initialAnnotationId !== undefined) {
+      const index = annotations.findIndex((annotation) => annotation.id === initialAnnotationId);
+      return index >= 0 ? index : null;
+    }
+    return initialIndex !== undefined && initialIndex >= 0 && initialIndex < annotations.length ? initialIndex : null;
+  }, [annotations, initialAnnotationId, initialIndex]);
+  const [activeIndex, setActiveIndex] = useState<number | null>(() => initialAnnotationIndex);
   const [autoplay, setAutoplay] = useState(false);
   const reducedMotion = useReducedMotion();
   const active = activeIndex === null ? null : annotations[activeIndex] ?? null;
   const camera = active ? cameraForAnnotation(active) : { centerX: 0.5, centerY: 0.5, zoom: 1 };
+
+  useEffect(() => {
+    setActiveIndex(initialAnnotationIndex);
+    setAutoplay(false);
+  }, [initialAnnotationIndex]);
 
   useEffect(() => {
     if (!autoplay || activeIndex === null) return undefined;

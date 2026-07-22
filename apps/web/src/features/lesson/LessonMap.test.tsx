@@ -2,7 +2,7 @@ import type { CanvasDocument } from '@guideanything/contracts';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { LessonMap } from './LessonMap';
+import { LessonMap, lessonDocumentForDisplay, toLessonFlowEdges } from './LessonMap';
 
 vi.mock('@xyflow/react', async () => {
   const React = await import('react');
@@ -69,6 +69,23 @@ const documentWithManualAnchors: CanvasDocument = {
 };
 
 describe('LessonMap', () => {
+  it('keeps hidden resources in the source document but removes them from the published map projection', () => {
+    const document: CanvasDocument = {
+      ...documentWithStagesAndNoLanes,
+      nodes: [
+        ...documentWithStagesAndNoLanes.nodes,
+        { id: 'hidden-resource', type: 'markdown', visibility: 'HIDDEN', position: { x: 320, y: 0 }, zIndex: 1, data: { markdown: '不应出现在学习地图' } },
+      ],
+      edges: [{ id: 'hidden-edge', source: 'process-1', target: 'hidden-resource' }],
+    };
+    const displayDocument = lessonDocumentForDisplay(document);
+
+    expect(document.nodes.find((node) => node.id === 'hidden-resource')).not.toHaveProperty('hidden');
+    expect(displayDocument.nodes.find((node) => node.id === 'hidden-resource')).toMatchObject({ hidden: true, visibility: 'HIDDEN' });
+    expect(displayDocument.edges).toEqual([]);
+    expect(toLessonFlowEdges(document)).toEqual([]);
+  });
+
   it('renders configured stages behind the read-only map without inventing a lane', () => {
     render(<LessonMap document={documentWithStagesAndNoLanes} onSelectNode={vi.fn()} />);
 

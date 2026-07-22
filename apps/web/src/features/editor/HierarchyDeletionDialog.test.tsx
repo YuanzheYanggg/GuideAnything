@@ -10,7 +10,9 @@ describe('HierarchyDeletionDialog', () => {
     const user = userEvent.setup();
     render(<HierarchyDeletionDialog kind="stage" title="订单录入" affectedNodeCount={2} onConfirm={onConfirm} onCancel={vi.fn()} />);
 
-    expect(screen.getByRole('dialog', { name: '删除业务阶段' })).toHaveTextContent('将解除 2 个流程节点的归属；节点与连线会保留。');
+    const dialog = screen.getByRole('dialog', { name: '删除业务阶段' });
+    expect(dialog).toHaveClass('editor-dialog-surface');
+    expect(dialog).toHaveTextContent('将解除 2 个流程节点的归属；节点与连线会保留。');
     await user.click(screen.getByRole('button', { name: '确认删除订单录入' }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });

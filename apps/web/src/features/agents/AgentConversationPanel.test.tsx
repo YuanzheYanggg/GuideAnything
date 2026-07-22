@@ -72,6 +72,82 @@ describe('AgentConversationPanel', () => {
     }));
   });
 
+  it('shows a pin action only for an eligible image-annotation citation and creates one case', async () => {
+    const user = userEvent.setup();
+    const annotatedAnswer: AgentCommittedAnswerV1 = {
+      ...committedAnswer,
+      citations: [{
+        referenceId: 'reference-annotation',
+        href: '/guides/guide-1/edit?nodeId=image-1&annotationId=version-type',
+        source: 'WORKSPACE_FLOW',
+        title: '版类型',
+        excerpt: '初样用于新建版型。',
+      }],
+    };
+    const mock = api({
+      listWorkspace: vi.fn().mockResolvedValue([conversation('WORKSPACE')]),
+      getWorkspace: vi.fn().mockResolvedValue({
+        ...detail('WORKSPACE'),
+        messages: [{
+          id: 'assistant-annotation',
+          role: 'ASSISTANT',
+          runId: 'run-1',
+          answer: annotatedAnswer,
+          createdAt: '2026-07-21T00:00:00.000Z',
+        }],
+      }),
+      getFlowRegressionReferenceEligibility: vi.fn().mockResolvedValue({
+        eligible: true,
+        guideId: 'guide-1',
+        resourceNodeId: 'image-1',
+        annotationId: 'version-type',
+        expectedAgentStatus: 'SUPPORTED',
+      }),
+      createFlowRegressionCase: vi.fn().mockResolvedValue(regressionCase()),
+    });
+    renderPanel(mock, { kind: 'WORKSPACE', workspaceId: 'workspace-1' }, '/workspaces/workspace-1/agents?conversation=conversation-1');
+
+    await user.click(await screen.findByRole('button', { name: '固定为回归题' }));
+
+    expect(mock.createFlowRegressionCase).toHaveBeenCalledWith('reference-annotation');
+    expect(await screen.findByText('已固定为回归题')).toBeVisible();
+  });
+
+  it('does not render a pin action when the citation is not eligible for the current viewer', async () => {
+    const annotatedAnswer: AgentCommittedAnswerV1 = {
+      ...committedAnswer,
+      citations: [{
+        referenceId: 'reference-not-editable',
+        href: '/guides/guide-1/edit?nodeId=image-1&annotationId=version-type',
+        source: 'WORKSPACE_FLOW',
+        title: '版类型',
+        excerpt: '初样用于新建版型。',
+      }],
+    };
+    const mock = api({
+      listWorkspace: vi.fn().mockResolvedValue([conversation('WORKSPACE')]),
+      getWorkspace: vi.fn().mockResolvedValue({
+        ...detail('WORKSPACE'),
+        messages: [{
+          id: 'assistant-not-editable',
+          role: 'ASSISTANT',
+          runId: 'run-1',
+          answer: annotatedAnswer,
+          createdAt: '2026-07-21T00:00:00.000Z',
+        }],
+      }),
+      getFlowRegressionReferenceEligibility: vi.fn().mockResolvedValue({
+        eligible: false,
+        reasonCode: 'GUIDE_ACCESS_REQUIRED',
+      }),
+    });
+    renderPanel(mock, { kind: 'WORKSPACE', workspaceId: 'workspace-1' }, '/workspaces/workspace-1/agents?conversation=conversation-1');
+
+    await screen.findByText('版类型');
+    await waitFor(() => expect(mock.getFlowRegressionReferenceEligibility).toHaveBeenCalledWith('reference-not-editable'));
+    expect(screen.queryByRole('button', { name: '固定为回归题' })).not.toBeInTheDocument();
+  });
+
   it('uploads a private attachment and binds it explicitly to the next workspace message', async () => {
     const user = userEvent.setup();
     const mock = api({
@@ -483,7 +559,29 @@ function api(overrides: Partial<AgentApi> = {}): AgentApi {
     streamRun: vi.fn(() => stream([])),
     cancelRun: vi.fn().mockResolvedValue({ ...run(), status: 'CANCELLED', completedAt: '2026-07-15T00:00:03.000Z' }),
     steerRun: vi.fn().mockResolvedValue({ ...run(), planVersion: 2 }),
+    getFlowRegressionReferenceEligibility: vi.fn().mockResolvedValue({
+      eligible: false,
+      reasonCode: 'NOT_IMAGE_ANNOTATION_REFERENCE',
+    }),
+    createFlowRegressionCase: vi.fn(),
     ...overrides,
+  };
+}
+
+function regressionCase() {
+  return {
+    id: 'case-annotation',
+    guideId: 'guide-1',
+    resourceNodeId: 'image-1',
+    annotationId: 'version-type',
+    question: '版类型如何设置？',
+    expectedAgentStatus: 'SUPPORTED' as const,
+    status: 'ACTIVE' as const,
+    createdAt: '2026-07-21T00:00:00.000Z',
+    updatedAt: '2026-07-21T00:00:00.000Z',
+    lastVerifiedSnapshotId: null,
+    lastRetrievalVerification: null,
+    lastAgentVerification: null,
   };
 }
 

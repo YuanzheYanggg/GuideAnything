@@ -11,6 +11,7 @@ import { registerAuthRoutes } from './modules/auth/routes';
 import { registerConversationAttachmentRoutes } from './modules/conversation-attachments/routes';
 import { registerConversationRoutes, type ConversationRouteRuntime } from './modules/conversations/routes';
 import { registerWorkspaceEditorialRoutes } from './modules/editorial/routes';
+import { registerFlowRegressionRoutes } from './modules/flow-regressions/routes';
 import { registerGuideRoutes } from './modules/guides/routes';
 import { registerMediaRoutes } from './modules/media/routes';
 import { registerKnowledgeRoutes } from './modules/knowledge/routes';
@@ -73,6 +74,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     );
   }
   await registerGuideRoutes(app, options.database, options.guideDigestRuntime);
+  await registerFlowRegressionRoutes(app, options.database, options.agentRuntime);
   await registerWorkspaceEditorialRoutes(app, options.database);
   await registerKnowledgeRoutes(app, options.database, options.uploadDir ?? resolve('data/uploads'));
   await registerConversationAttachmentRoutes(

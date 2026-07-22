@@ -17,7 +17,13 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import type { CanonicalFrontmatter, ParsedMarkdownFragment, ParsedWikiLink } from './markdown';
 import { getWorkspacePermission, listMountedResourceWorkspaceIds } from '../workspaces/repository';
-import { buildSearchText, compileFtsQuery, isSingleCjkQuery, normalizeKnowledgeText } from './search-text';
+import {
+  buildSearchText,
+  buildSearchTokens,
+  compileFtsQuery,
+  isSingleCjkQuery,
+  normalizeKnowledgeText,
+} from './search-text';
 import { sanitizeVaultControlledList, sanitizeVaultControlledText } from './vault-text';
 
 export const SANTEXWELL_SOURCE_ID = 'source-santexwell-vault';
@@ -657,7 +663,8 @@ function ftsCandidates(database: DatabaseSync, query: string, scope: KnowledgeSe
     `SELECT d.id, d.source_id, d.relative_locator, d.title, d.checksum, d.revision,
             d.parse_status, d.metadata_json, d.created_at, d.updated_at,
             s.kind AS source_kind, s.workspace_id, s.conversation_id,
-            f.fragment_id, f.heading, f.content, bm25(knowledge_fragment_search) AS rank
+            f.fragment_id, f.heading, f.content, fragment.internal_locator_json,
+            bm25(knowledge_fragment_search) AS rank
      FROM knowledge_fragment_search f
      JOIN knowledge_fragments fragment ON fragment.id = f.fragment_id
      JOIN knowledge_documents d ON d.id = fragment.document_id
@@ -684,7 +691,7 @@ function singleCharacterCandidates(
     `SELECT d.id, d.source_id, d.relative_locator, d.title, d.checksum, d.revision,
             d.parse_status, d.metadata_json, d.created_at, d.updated_at,
             s.kind AS source_kind, s.workspace_id, s.conversation_id,
-            f.id AS fragment_id, f.heading, f.content, 0.0 AS rank
+            f.id AS fragment_id, f.heading, f.content, f.internal_locator_json, 0.0 AS rank
      FROM knowledge_documents d
      JOIN knowledge_sources s ON s.id = d.source_id
      JOIN knowledge_fragments f ON f.document_id = d.id AND f.ordinal = 0
@@ -765,15 +772,23 @@ function sqlCandidateScope(scope: KnowledgeSearchScope): {
     const currentWorkspaceDraftAccess = scope.workspaceId
       ? `
             OR (
-              s.workspace_id = ?
+              authorized_snapshot.origin_type = 'DRAFT'
+              AND authorized_snapshot.revision = authorized_guide.revision
+              AND s.workspace_id = ?
               AND (
                 authorized_guide.owner_id = ?
                 OR authorized_collaborator.user_id IS NOT NULL
               )
             )`
       : `
-            OR authorized_guide.owner_id = ?
-            OR authorized_collaborator.user_id IS NOT NULL`;
+            OR (
+              authorized_snapshot.origin_type = 'DRAFT'
+              AND authorized_snapshot.revision = authorized_guide.revision
+              AND (
+                authorized_guide.owner_id = ?
+                OR authorized_collaborator.user_id IS NOT NULL
+              )
+            )`;
     predicates.push(`(
       s.kind <> 'WORKSPACE_FLOW'
       OR EXISTS (
@@ -913,7 +928,11 @@ function canReadFlow(database: DatabaseSync, documentId: string, scope: Knowledg
   if (!source?.workspace_id || !canReadWorkspaceEvidence(database, source.workspace_id, scope)) return false;
   const canReadDraft = source.workspace_id === scope.workspaceId;
   const draftAccess = canReadDraft
-    ? 'OR guide.owner_id = ? OR collaborator.user_id IS NOT NULL'
+    ? `OR (
+         snapshot.origin_type = 'DRAFT'
+         AND snapshot.revision = guide.revision
+         AND (guide.owner_id = ? OR collaborator.user_id IS NOT NULL)
+       )`
     : '';
   const parameters = canReadDraft
     ? [scope.userId, documentId, scope.userId]
@@ -959,6 +978,8 @@ interface SearchCandidate {
   titleRank: number;
   evidenceRank: number;
   sourceRank: number;
+  annotationFieldRank: number;
+  fragmentMatchRank: number;
   lexicalRank: number;
 }
 
@@ -978,6 +999,14 @@ function toSearchCandidate(row: SearchRow, normalizedQuery: string): SearchCandi
     : row.content;
   if (!publicTitle) return null;
   const title = normalizeKnowledgeText(publicTitle);
+  const normalizedHeading = normalizeKnowledgeText(publicHeading ?? '');
+  const normalizedContent = normalizeKnowledgeText(publicContent);
+  const locator = safeObject(row.internal_locator_json);
+  const queryTokens = metadata.sourceKind === 'WORKSPACE_FLOW'
+    ? buildSearchTokens(normalizedQuery)
+    : [];
+  const headingMatchCount = queryTokens.filter((token) => normalizedHeading.includes(token)).length;
+  const contentMatchCount = queryTokens.filter((token) => normalizedContent.includes(token)).length;
   const aliases = publicAliases.map(normalizeKnowledgeText);
   const exactTitle = title === normalizedQuery;
   const exactAlias = aliases.includes(normalizedQuery);
@@ -1014,6 +1043,17 @@ function toSearchCandidate(row: SearchRow, normalizedQuery: string): SearchCandi
     titleRank: exactTitle ? 3 : exactAlias ? 2 : prefix ? 1 : 0,
     evidenceRank: evidenceRole === 'SUPPORT' ? 2 : evidenceRole === 'DISCOVERY' ? 1 : 0,
     sourceRank: bucketRank * 100 + (metadata.sourceProfile?.attention ?? 0),
+    // A workflow question that names an image field should reach that exact
+    // annotation leaf before the workflow's broad overview/resource fragments.
+    // Require the full (non-trivial) annotation heading to occur in the query,
+    // so generic wording never gets an annotation-only preference.
+    annotationFieldRank: metadata.sourceKind === 'WORKSPACE_FLOW'
+      && locator.projection === 'IMAGE_ANNOTATION'
+      && [...normalizedHeading].length >= 2
+      && normalizedQuery.includes(normalizedHeading)
+      ? 1
+      : 0,
+    fragmentMatchRank: contentMatchCount * 10 + headingMatchCount,
     lexicalRank: Number.isFinite(row.rank) ? -row.rank : 0,
   };
 }
@@ -1022,6 +1062,8 @@ function compareCandidates(left: SearchCandidate, right: SearchCandidate): numbe
   return right.titleRank - left.titleRank
     || right.evidenceRank - left.evidenceRank
     || right.sourceRank - left.sourceRank
+    || right.annotationFieldRank - left.annotationFieldRank
+    || right.fragmentMatchRank - left.fragmentMatchRank
     || right.lexicalRank - left.lexicalRank
     || left.hit.documentId.localeCompare(right.hit.documentId);
 }
@@ -1153,5 +1195,6 @@ interface SearchRow extends DatabaseDocumentRow {
   fragment_id: string;
   heading: string | null;
   content: string;
+  internal_locator_json: string;
   rank: number;
 }

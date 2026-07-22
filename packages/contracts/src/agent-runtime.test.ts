@@ -8,6 +8,7 @@ import {
   BridgeEventV1Schema,
   BridgeRequestV1Schema,
   CitationV1Schema,
+  InternalEvidenceLocatorV1Schema,
   PublicRoutePlanV1Schema,
   PublicTaskFindingV1Schema,
   RouteBudgetV1Schema,
@@ -201,7 +202,7 @@ describe('agent runtime contracts', () => {
       { ...focused, budget: { ...focused.budget, maxConcurrency: 2 }, executionMode: 'PARALLEL', maxConcurrency: 2 },
       { ...focused, budget: { ...focused.budget, allowRaw: true } },
       { ...focused, budget: { ...focused.budget, useReducer: true } },
-      { ...focused, budget: { ...focused.budget, maxWorkspaceCandidates: 4 } },
+      { ...focused, budget: { ...focused.budget, maxWorkspaceCandidates: 7 } },
       { ...focused, budget: { ...focused.budget, maxVaultClusters: 2 } },
       { ...focused, budget: { ...focused.budget, maxVaultDigests: 3 } },
       { ...composite, budget: { ...composite.budget, maxWorkers: 4 } },
@@ -306,6 +307,34 @@ describe('agent runtime contracts', () => {
     expect(CitationV1Schema.safeParse({
       ...citation,
       relativePath: 'wiki_v2/订单.md',
+    }).success).toBe(false);
+  });
+
+  it('accepts an optional bounded annotation target only on workspace flow evidence', () => {
+    const annotation = InternalEvidenceLocatorV1Schema.parse({
+      kind: 'WORKSPACE_FLOW',
+      guideId: 'guide-1',
+      snapshotId: 'snapshot-1',
+      nodeId: 'image-resource-1',
+      annotationId: 'version-type',
+    });
+
+    expect(annotation).toMatchObject({
+      kind: 'WORKSPACE_FLOW',
+      nodeId: 'image-resource-1',
+      annotationId: 'version-type',
+    });
+    expect(InternalEvidenceLocatorV1Schema.safeParse({
+      ...annotation,
+      annotationId: '',
+    }).success).toBe(false);
+    expect(InternalEvidenceLocatorV1Schema.safeParse({
+      kind: 'WORKSPACE_DOCUMENT',
+      workspaceId: 'workspace-1',
+      sourceItemId: 'source-item-1',
+      documentId: 'document-1',
+      revision: 'revision-1',
+      annotationId: 'version-type',
     }).success).toBe(false);
   });
 

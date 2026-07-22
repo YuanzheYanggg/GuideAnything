@@ -11,9 +11,16 @@ import { NodeDetailPresentationProvider } from './NodeDetailPresentation';
 import { SubguideNode } from './SubguideNode';
 import { VideoNode } from './VideoNode';
 
+const { nodeChromeProps } = vi.hoisted(() => ({ nodeChromeProps: { height: undefined as number | undefined } }));
+
 vi.mock('./NodeChrome', async () => {
   const React = await import('react');
-  return { NodeChrome: ({ children }: { children: React.ReactNode }) => React.createElement('div', null, children) };
+  return {
+    NodeChrome: ({ children, height }: { children: React.ReactNode; height?: number }) => {
+      nodeChromeProps.height = height;
+      return React.createElement('div', null, children);
+    },
+  };
 });
 
 function props(id: string, type: string, data: Record<string, unknown>, selected = true): NodeProps {
@@ -21,6 +28,17 @@ function props(id: string, type: string, data: Record<string, unknown>, selected
 }
 
 describe('inline node text integration', () => {
+  it('does not feed React Flow measured height back into flow-node content', () => {
+    nodeChromeProps.height = undefined;
+    render(
+      <NodeDetailPresentationProvider value={{ expandedNodeIds: new Set(), onOpenEditor: vi.fn(), onToggleExpanded: vi.fn() }}>
+        <FlowNode {...props('process-1', 'process', { label: '收到订单' }, false)} />
+      </NodeDetailPresentationProvider>,
+    );
+
+    expect(nodeChromeProps.height).toBeUndefined();
+  });
+
   it('keeps flow titles inline while requesting a dialog for details', async () => {
     const user = userEvent.setup();
     const onOpenEditor = vi.fn();
@@ -66,6 +84,24 @@ describe('inline node text integration', () => {
 
     expect(screen.getByRole('button', { name: '详情' })).toBeVisible();
     expect(screen.queryByRole('button', { name: '收起' })).not.toBeInTheDocument();
+  });
+
+  it('does not repeat the swimlane inside a flow node', () => {
+    render(
+      <NodeDetailPresentationProvider value={{ expandedNodeIds: new Set(), onOpenEditor: vi.fn(), onToggleExpanded: vi.fn() }}>
+        <FlowNode {...props('process-1', 'process', {
+          label: '确认原料',
+          description: '核对供应商与交期',
+          shape: 'process',
+          responsibility: { title: '供应商、原辅料采购与质量确认协调职责', kind: 'ROLE' },
+        })} />
+      </NodeDetailPresentationProvider>,
+    );
+
+    expect(screen.queryByText('泳道', { selector: '.node-responsibility-label' })).not.toBeInTheDocument();
+    expect(screen.queryByText('供应商、原辅料采购与质量确认协调职责')).not.toBeInTheDocument();
+    expect(screen.getByText('确认原料').closest('.flow-node-header')).toBeInTheDocument();
+    expect(screen.getByTestId('flow-description-process-1').closest('.flow-node-content')).toBeInTheDocument();
   });
 
   it('renders expanded flow details as sanitized Markdown', () => {

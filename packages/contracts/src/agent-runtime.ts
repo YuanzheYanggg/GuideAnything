@@ -252,8 +252,8 @@ export const RouteDecisionV1Schema = z.object({
     if (decision.budget.allowRaw) {
       context.addIssue({ code: 'custom', path: ['budget', 'allowRaw'], message: 'FOCUSED 路线不能读取原始资料' });
     }
-    if (decision.budget.maxWorkspaceCandidates > 3) {
-      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkspaceCandidates'], message: 'FOCUSED 路线最多检查三个工作区候选项' });
+    if (decision.budget.maxWorkspaceCandidates > 6) {
+      context.addIssue({ code: 'custom', path: ['budget', 'maxWorkspaceCandidates'], message: 'FOCUSED 路线最多检查六个工作区候选项' });
     }
     if (decision.budget.maxFlowHops > 2) {
       context.addIssue({ code: 'custom', path: ['budget', 'maxFlowHops'], message: 'FOCUSED 路线最多遍历两跳流程' });
@@ -325,6 +325,7 @@ function validateReducerTopology(
 const WorkspaceFlowLocatorV1Schema = z.object({
   kind: z.literal('WORKSPACE_FLOW'),
   ...FlowLocatorV1Schema.shape,
+  annotationId: IdV1Schema.optional(),
 }).strict();
 
 const WorkspaceDocumentLocatorV1Schema = z.object({

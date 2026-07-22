@@ -60,9 +60,11 @@ export function compileFlowKnowledgeSnapshotV2(
   const primary = document.nodes.filter(isPrimaryNode);
   const resourcesWithOrder = document.nodes
     .map((node, order) => ({ node, order }))
-    .filter((item): item is { node: CanvasNode<'markdown' | 'image' | 'video'>; order: number } => isResourceNode(item.node));
+    .filter((item): item is { node: CanvasNode<'markdown' | 'image' | 'video'>; order: number } => isVisibleResourceNode(item.node));
   const primaryIds = new Set(primary.map((node) => node.id));
   const resourceIds = new Set(resourcesWithOrder.map(({ node }) => node.id));
+  const allResourceIds = new Set(document.nodes.filter(isAuthorResourceNode).map((node) => node.id));
+  const hiddenResourceIds = new Set([...allResourceIds].filter((id) => !resourceIds.has(id)));
   const addressableIds = new Set([...primaryIds, ...resourceIds]);
   const diagnostics = v2DiagnosticsSets();
   document.nodes.forEach((node) => {
@@ -75,8 +77,8 @@ export function compileFlowKnowledgeSnapshotV2(
   const resources = resourcesWithOrder
     .map(({ node, order }) => projectResource(node, order, addressableIds, input.guideId, input.snapshotId))
     .sort((left, right) => left.order - right.order || compareId(left.id, right.id));
-  const relations = compileV2Relations(document, primary, resourcesWithOrder, primaryIds, resourceIds, diagnostics);
-  const learningPath = compileLearningPath(steps, primaryIds, resourceIds, diagnostics);
+  const relations = compileV2Relations(document, primary, resourcesWithOrder, primaryIds, resourceIds, hiddenResourceIds, diagnostics);
+  const learningPath = compileLearningPath(steps, primaryIds, resourceIds, hiddenResourceIds, diagnostics);
   const usedResourceIds = new Set(relations.flatMap((relation) => relation.kind === 'USES_RESOURCE' ? [relation.resourceId] : []));
 
   return FlowKnowledgeSnapshotV2Schema.parse({
@@ -139,8 +141,12 @@ function projectLane(lane: NonNullable<CanvasDocument['lanes']>[number]): FlowKn
   };
 }
 
-function isResourceNode(node: CanvasNode): node is CanvasNode<'markdown' | 'image' | 'video'> {
+function isAuthorResourceNode(node: CanvasNode): node is CanvasNode<'markdown' | 'image' | 'video'> {
   return isContentNode(node) && node.source === undefined;
+}
+
+function isVisibleResourceNode(node: CanvasNode): node is CanvasNode<'markdown' | 'image' | 'video'> {
+  return isAuthorResourceNode(node) && node.visibility !== 'HIDDEN';
 }
 
 function projectNode(
@@ -251,6 +257,7 @@ function compileV2Relations(
   resources: Array<{ node: CanvasNode<'markdown' | 'image' | 'video'>; order: number }>,
   primaryIds: Set<string>,
   resourceIds: Set<string>,
+  hiddenResourceIds: Set<string>,
   diagnostics: V2DiagnosticsSets,
 ): FlowKnowledgeRelationV2[] {
   const primaryById = new Map(primary.map((node) => [node.id, node]));
@@ -259,6 +266,7 @@ function compileV2Relations(
   const continuationsByEdgeId = collectContinuations(primary);
   document.edges.forEach((edge) => {
     if (!isSemanticV2Edge(edge, continuationsByEdgeId)) return;
+    if (hiddenResourceIds.has(edge.source) || hiddenResourceIds.has(edge.target)) return;
     const sourceIsPrimary = primaryIds.has(edge.source);
     const targetIsPrimary = primaryIds.has(edge.target);
     const sourceIsResource = resourceIds.has(edge.source);
@@ -304,7 +312,7 @@ function compileV2Relations(
       });
     }
     if (ownerId && !primaryIds.has(ownerId)) diagnostics.invalidResourceRelationIds.add(ownerId);
-    resourceReferencesForNode(node, primaryIds, resourceIds, diagnostics).forEach((relation) => addV2Relation(relationsById, relation));
+    resourceReferencesForNode(node, primaryIds, resourceIds, hiddenResourceIds, diagnostics).forEach((relation) => addV2Relation(relationsById, relation));
   });
 
   return [...relationsById.values()].sort(compareV2Relation);
@@ -319,6 +327,7 @@ function resourceReferencesForNode(
   node: CanvasNode<'markdown' | 'image' | 'video'>,
   primaryIds: Set<string>,
   resourceIds: Set<string>,
+  hiddenResourceIds: Set<string>,
   diagnostics: V2DiagnosticsSets,
 ): FlowKnowledgeRelationV2[] {
   const references = node.type === 'image'
@@ -328,6 +337,7 @@ function resourceReferencesForNode(
       : [];
   return references.flatMap<FlowKnowledgeRelationV2>(({ id, targetId }) => {
     if (!targetId) return [];
+    if (hiddenResourceIds.has(targetId)) return [];
     if (primaryIds.has(targetId)) {
       return [{
         kind: 'RESOURCE_REFERENCE' as const,
@@ -353,6 +363,7 @@ function compileLearningPath(
   steps: LessonStep[],
   primaryIds: Set<string>,
   resourceIds: Set<string>,
+  hiddenResourceIds: Set<string>,
   diagnostics: V2DiagnosticsSets,
 ): FlowKnowledgeLearningStepV2[] {
   return steps
@@ -360,6 +371,7 @@ function compileLearningPath(
     .sort((left, right) => left.step.order - right.step.order || left.sourceOrder - right.sourceOrder || compareId(left.step.id, right.step.id))
     .flatMap<FlowKnowledgeLearningStepV2>(({ step }) => {
       if (primaryIds.has(step.nodeId)) return [{ id: step.id, order: step.order, targetNodeId: step.nodeId }];
+      if (hiddenResourceIds.has(step.nodeId)) return [];
       if (resourceIds.has(step.nodeId)) return [{ id: step.id, order: step.order, targetResourceId: step.nodeId }];
       diagnostics.invalidLearningTargetIds.add(step.nodeId);
       return [];
@@ -429,7 +441,7 @@ export function compileFlowKnowledgeSnapshotV1(
   const { incomingById, outgoingById, adjacencyById } = buildLogicalAdjacency(primaryIds, primaryById, logicalEdges);
   const content = document.nodes
     .map((node, order) => ({ node, order }))
-    .filter((item): item is { node: CanvasNode<'markdown' | 'image' | 'video'>; order: number } => isContentNode(item.node));
+    .filter((item): item is { node: CanvasNode<'markdown' | 'image' | 'video'>; order: number } => isVisibleResourceNode(item.node));
   const addressableIds = new Set([...primaryIds, ...content.map(({ node }) => node.id)]);
   const { attachmentsByParent, unattachedResources } = collectAttachments(
     content,

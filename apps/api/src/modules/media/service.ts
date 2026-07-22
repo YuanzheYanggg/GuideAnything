@@ -21,6 +21,7 @@ const rules: Record<string, MediaRule> = {
   'image/gif': { kind: 'IMAGE', extension: '.gif', maxBytes: 10 * MiB, signature: (b) => ['GIF87a', 'GIF89a'].includes(b.subarray(0, 6).toString('ascii')) },
   'image/webp': { kind: 'IMAGE', extension: '.webp', maxBytes: 10 * MiB, signature: (b) => b.subarray(0, 4).toString('ascii') === 'RIFF' && b.subarray(8, 12).toString('ascii') === 'WEBP' },
   'video/mp4': { kind: 'VIDEO', extension: '.mp4', maxBytes: 200 * MiB, signature: (b) => b.subarray(4, 8).toString('ascii') === 'ftyp' },
+  'video/quicktime': { kind: 'VIDEO', extension: '.mov', maxBytes: 200 * MiB, signature: (b) => b.subarray(4, 8).toString('ascii') === 'ftyp' },
   'video/webm': { kind: 'VIDEO', extension: '.webm', maxBytes: 200 * MiB, signature: (b) => b.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3])) },
 };
 
@@ -51,7 +52,7 @@ export async function storeMedia(
   file: MultipartFile,
 ): Promise<MediaAsset> {
   const rule = rules[file.mimetype];
-  if (!rule) throw httpError(415, 'UNSUPPORTED_MEDIA_TYPE', '仅支持 JPEG、PNG、WebP、GIF、MP4 和 WebM');
+  if (!rule) throw httpError(415, 'UNSUPPORTED_MEDIA_TYPE', '仅支持 JPEG、PNG、WebP、GIF、MP4、MOV 和 WebM');
   const bytes = await readWithLimit(file, rule.maxBytes);
   if (!rule.signature(bytes)) {
     throw httpError(415, 'MEDIA_SIGNATURE_MISMATCH', '文件内容与声明的媒体类型不一致');
@@ -111,4 +112,3 @@ async function readWithLimit(file: MultipartFile, maximum: number): Promise<Buff
   if (size === 0) throw httpError(400, 'EMPTY_MEDIA', '上传文件不能为空');
   return Buffer.concat(chunks, size);
 }
-

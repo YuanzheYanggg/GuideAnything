@@ -42,6 +42,10 @@ const migrations = [
     version: 10,
     sql: readFileSync(new URL('./migrations/0010_guide_digest_renderer_identity.sql', import.meta.url), 'utf8'),
   },
+  {
+    version: 11,
+    sql: readFileSync(new URL('./migrations/0011_flow_annotation_regression.sql', import.meta.url), 'utf8'),
+  },
 ] as const;
 
 export function migrateDatabase(database: DatabaseSync): void {

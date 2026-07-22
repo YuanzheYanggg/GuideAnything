@@ -52,6 +52,18 @@ describe('ImageAnnotationPlayer', () => {
     expect(screen.getByRole('button', { name: '关联资料已失效' })).toBeDisabled();
   });
 
+  it('focuses a valid deep-linked annotation ID and leaves an unknown ID inactive', () => {
+    const { rerender } = render(<ImageAnnotationPlayer source={data.url} data={data} initialAnnotationId="second" isTargetValid={() => true} onOpenTarget={vi.fn()} />);
+
+    expect(screen.getByRole('heading', { name: '订单区域' })).toBeVisible();
+    expect(screen.getByText('讲解 2 / 2')).toBeVisible();
+
+    rerender(<ImageAnnotationPlayer source={data.url} data={data} initialAnnotationId="missing" isTargetValid={() => true} onOpenTarget={vi.fn()} />);
+    expect(screen.queryByRole('heading', { name: '客户字段' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '订单区域' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '开始图片讲解' })).toBeVisible();
+  });
+
   it('opens an active annotation supplement and keeps the legacy point camera fallback', async () => {
     const user = userEvent.setup();
     const onOpenSupplement = vi.fn();

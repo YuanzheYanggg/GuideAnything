@@ -15,6 +15,13 @@ describe('workspace query bundle', () => {
     expect(instructions.join('\n')).not.toContain('Santexwell');
   });
 
+  it('treats a focused field leaf and its server-supplied structural context as sufficient evidence', () => {
+    const instructions = loadWorkspaceQueryInstructions(workspaceContext(), focusedDecision(), flowTask());
+
+    expect(instructions.join('\n')).toContain('结构闭包');
+    expect(instructions.join('\n')).toContain('不得仅因缺少整张流程图的摘要而声明资料缺口');
+  });
+
   it('has a stable content-derived revision and is not selected for an external task', () => {
     expect(WORKSPACE_QUERY_BUNDLE.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(loadWorkspaceQueryInstructions(workspaceContext(), focusedDecision(), {

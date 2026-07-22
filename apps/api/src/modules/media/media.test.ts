@@ -59,6 +59,18 @@ describe('media upload and read', () => {
     expect(spoofed.json().code).toBe('MEDIA_SIGNATURE_MISMATCH');
   });
 
+  it('stores an authenticated QuickTime MOV video under a generated name', async () => {
+    const mov = Buffer.concat([Buffer.alloc(4), Buffer.from('ftyp'), Buffer.from('qt  '), Buffer.from('demo')]);
+    const upload = await uploadFile('erp-demo.mov', 'video/quicktime', mov);
+
+    expect(upload.statusCode).toBe(201);
+    expect(upload.json().asset).toMatchObject({ kind: 'VIDEO', mimeType: 'video/quicktime', size: mov.length, originalName: 'erp-demo.mov' });
+    const assetId = upload.json().asset.id as string;
+    const row = context.database.prepare('SELECT storage_path FROM media_assets WHERE id = ?').get(assetId) as { storage_path: string };
+    expect(row.storage_path).toMatch(/\.mov$/);
+    expect(readFileSync(row.storage_path)).toEqual(mov);
+  });
+
   it('rejects images larger than 10 MiB and unauthenticated uploads', async () => {
     const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const oversized = Buffer.concat([pngHeader, Buffer.alloc(10 * 1024 * 1024)]);
@@ -76,6 +88,10 @@ describe('media upload and read', () => {
   });
 
   async function upload(filename: string, mimeType: string, bytes: Buffer) {
+    return uploadFile(filename, mimeType, bytes);
+  }
+
+  async function uploadFile(filename: string, mimeType: string, bytes: Buffer) {
     return context.app.inject({
       method: 'POST',
       url: '/api/media',

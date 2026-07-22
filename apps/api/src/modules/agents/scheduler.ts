@@ -29,7 +29,7 @@ const HARD_LIMITS: Record<RouteDecisionV1['route'], Omit<RouteBudgetV1, 'maxWork
     useReducer: false,
   },
   FOCUSED: {
-    maxWorkspaceCandidates: 3,
+    maxWorkspaceCandidates: 6,
     maxFlowHops: 2,
     maxVaultClusters: 1,
     maxVaultDigests: 2,

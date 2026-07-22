@@ -224,6 +224,67 @@ describe('private artifact and opaque reference routes', () => {
     expect(stale.json()).toMatchObject({ status: 'INVALID', reasonCode: 'STALE' });
   });
 
+  it('opens an exact current draft image annotation and rejects a missing annotation target', async () => {
+    seedRun('conversation-annotation-flow', 'run-annotation-flow', context.userIds.author, 'WORKSPACE', 'workspace-artifacts');
+    const document = sampleDocument();
+    document.nodes.push({
+      id: 'annotated-image',
+      type: 'image',
+      position: { x: 520, y: 0 },
+      zIndex: 2,
+      attachment: { ownerNodeId: 'start', order: 0 },
+      data: {
+        url: 'https://example.com/annotated.png',
+        alt: '打样字段截图',
+        annotations: [{
+          id: 'version-type',
+          order: 0,
+          title: '版类型',
+          body: '初样用于新建版型。',
+          shape: 'POINT',
+          region: { x: 0.35, y: 0.45 },
+        }],
+      },
+    });
+    context.database.prepare(
+      `INSERT INTO guides (
+        id, owner_id, title, summary, tags_json, status, visibility, revision,
+        draft_document, created_at, updated_at
+      ) VALUES ('guide-annotation-flow', ?, '打样流程', '', '[]', 'DRAFT', 'INTERNAL', 0, ?, ?, ?)`,
+    ).run(context.userIds.author, JSON.stringify(document), now, now);
+    context.database.prepare(
+      `INSERT INTO workspace_items (
+        id, workspace_id, kind, entity_id, title, summary, created_by, created_at, updated_at
+      ) VALUES ('guide-annotation-item', 'workspace-artifacts', 'GUIDE', 'guide-annotation-flow',
+                '打样流程', '', ?, ?, ?)`,
+    ).run(context.userIds.author, now, now);
+    const snapshot = syncGuideFlowSnapshot(context.database, {
+      workspaceId: 'workspace-artifacts', workspaceItemId: 'guide-annotation-item', guideId: 'guide-annotation-flow',
+      ownerId: context.userIds.author, title: '打样流程', summary: '', tags: [],
+      origin: { kind: 'DRAFT', revision: 0 }, document,
+    });
+    const image = snapshot.resources.find((resource) => resource.id === 'annotated-image');
+    if (!image || image.kind !== 'IMAGE') throw new Error('测试快照缺少图片资源');
+
+    seedCitation('reference-flow-annotation', 'run-annotation-flow', 'WORKSPACE_FLOW', {
+      kind: 'WORKSPACE_FLOW', ...image.locator, annotationId: 'version-type',
+    }, snapshot.snapshotId);
+    const valid = await resolve('reference-flow-annotation', context.tokens.author);
+    expect(valid.json()).toMatchObject({
+      status: 'VALID', source: 'WORKSPACE_FLOW',
+      target: {
+        kind: 'CURRENT_DRAFT_FLOW_NODE',
+        href: '/guides/guide-annotation-flow/edit?nodeId=annotated-image&annotationId=version-type',
+      },
+    });
+
+    seedCitation('reference-flow-annotation-missing', 'run-annotation-flow', 'WORKSPACE_FLOW', {
+      kind: 'WORKSPACE_FLOW', ...image.locator, annotationId: 'missing-annotation',
+    }, snapshot.snapshotId);
+    const missing = await resolve('reference-flow-annotation-missing', context.tokens.author);
+    expect(missing.json()).toMatchObject({ status: 'INVALID', reasonCode: 'STALE' });
+  });
+
   function seedRun(
     conversationId: string,
     runId: string,

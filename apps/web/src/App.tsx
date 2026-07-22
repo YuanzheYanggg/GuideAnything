@@ -115,6 +115,7 @@ function AppContent() {
     const { guideId } = useParams();
     const [searchParams] = useSearchParams();
     const focusNodeId = searchParams.get('nodeId');
+    const focusAnnotationId = safeFocusId(searchParams.get('annotationId'));
     if (!guideId) return <Navigate to="/library" replace />;
     return <Suspense fallback={<LoadingState label="正在载入画布编辑器…" />}>
       <GuideEditor
@@ -122,6 +123,7 @@ function AppContent() {
         api={editorApi}
         personalApi={personalApi}
         {...(focusNodeId ? { focusNodeId } : {})}
+        {...(focusAnnotationId ? { focusAnnotationId } : {})}
         onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))}
       />
     </Suspense>;
@@ -132,6 +134,7 @@ function AppContent() {
     const { versionId } = useParams();
     const [searchParams] = useSearchParams();
     const focusNodeId = searchParams.get('nodeId');
+    const focusAnnotationId = safeFocusId(searchParams.get('annotationId'));
     if (!versionId) return <Navigate to="/library" replace />;
     return <Suspense fallback={<LoadingState label="正在载入教学模式…" />}>
       <LessonPage
@@ -139,6 +142,7 @@ function AppContent() {
         api={{ getVersion: editorApi.getVersion }}
         personalApi={personalApi}
         {...(focusNodeId ? { focusNodeId } : {})}
+        {...(focusAnnotationId ? { focusAnnotationId } : {})}
         onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))}
       />
     </Suspense>;
@@ -147,6 +151,10 @@ function AppContent() {
 
 export function safeReturnTo(value: string | null | undefined): string {
   return value?.startsWith('/') && !value.startsWith('//') ? value : '/library';
+}
+
+function safeFocusId(value: string | null): string | null {
+  return value && value.length <= 200 ? value : null;
 }
 
 export function withReturnTo(path: string, returnTo: string): string {

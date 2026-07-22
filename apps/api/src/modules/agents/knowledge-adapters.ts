@@ -25,9 +25,11 @@ import {
 } from '../knowledge/repository';
 import { listMountedResourceWorkspaceIds } from '../workspaces/repository';
 import { sanitizeVaultControlledText } from '../knowledge/vault-text';
+import { resolveFlowAnnotationTarget } from '../flow-regressions/targets';
 import type { AgentKnowledgeAdapters } from './assembly';
 import type {
   AgentRetrievalRequest,
+  AgentRetrievalTrace,
   AgentRetrievalTask,
   AgentRunExecutionContext,
   ResolvedAgentReference,
@@ -36,11 +38,20 @@ import type {
 const PUBLIC_EXCERPT_LENGTH = 600;
 const ACTIVE_RUN_STATUSES = new Set(['QUEUED', 'ROUTING', 'RUNNING', 'VALIDATING']);
 const READABLE_SOURCE_STATUSES = new Set(['READY', 'STALE']);
+const MAX_RETRIEVAL_TRACE_ITEMS = 50;
 
 export interface DatabaseAgentKnowledgeAdapterOptions {
   database: DatabaseSync;
   now?: () => Date;
   createReferenceId?: () => string;
+}
+
+type RetrievalTraceCandidate = AgentRetrievalTrace['candidates'][number];
+type RetrievalTraceClosure = AgentRetrievalTrace['closure'][number];
+
+interface MutableRetrievalTrace {
+  candidates: RetrievalTraceCandidate[];
+  closure: RetrievalTraceClosure[];
 }
 
 /**
@@ -53,16 +64,33 @@ export function createDatabaseAgentKnowledgeAdapters(
 ): AgentKnowledgeAdapters {
   const now = options.now ?? (() => new Date());
   const createReferenceId = options.createReferenceId ?? randomUUID;
+  const retrievalTraces = new Map<string, MutableRetrievalTrace>();
 
   const retriever: AgentKnowledgeAdapters['retriever'] = {
+    resetTrace(runId) {
+      retrievalTraces.set(runId, emptyRetrievalTrace());
+    },
+
+    consumeTrace(runId) {
+      const trace = retrievalTraces.get(runId);
+      retrievalTraces.delete(runId);
+      return trace ? frozenRetrievalTrace(trace) : null;
+    },
+
+    discardTrace(runId) {
+      retrievalTraces.delete(runId);
+    },
+
     async retrieve(request) {
       abortIfNeeded(request.signal);
       assertRetrievalRequest(options.database, request, now());
+      const trace = retrievalTraceFor(retrievalTraces, request.context.runId);
       if (request.maxCandidates === 0) return [];
 
       const evidence: ValidatedEvidenceV1[] = [];
       const seen = new Set<string>();
       const appendRecord = (record: EvidenceRecord, locator: Record<string, unknown>): boolean => {
+        recordTraceCandidate(options.database, trace, record);
         if (evidence.length >= request.maxCandidates || seen.has(record.fragment_id)) return false;
         if (recordSourceKind(record) !== request.task.kind) return false;
         if (
@@ -72,13 +100,14 @@ export function createDatabaseAgentKnowledgeAdapters(
         const canonical = canonicalEvidence(options.database, request.context, record, locator, now());
         seen.add(canonical.id);
         evidence.push(canonical);
+        markTraceCandidateSelected(trace, canonical.id);
         return true;
       };
 
       for (const record of selectedRecords(options.database, request, request.maxCandidates)) {
         appendRecord(record, record.locator);
         if (request.task.kind === 'WORKSPACE_FLOW') {
-          expandFlowEvidence(options.database, request, evidence, seen, appendRecord);
+          expandFlowEvidence(options.database, request, evidence, seen, appendRecord, trace);
         }
         if (evidence.length >= request.maxCandidates) break;
       }
@@ -101,7 +130,7 @@ export function createDatabaseAgentKnowledgeAdapters(
           }
           appendRecord(record, record.locator);
           if (request.task.kind === 'WORKSPACE_FLOW') {
-            expandFlowEvidence(options.database, request, evidence, seen, appendRecord);
+            expandFlowEvidence(options.database, request, evidence, seen, appendRecord, trace);
           }
           if (evidence.length >= request.maxCandidates) break;
         }
@@ -299,6 +328,84 @@ export function retrievalQuery(request: AgentRetrievalRequest): string {
     .slice(0, 20_000);
 }
 
+function emptyRetrievalTrace(): MutableRetrievalTrace {
+  return { candidates: [], closure: [] };
+}
+
+function retrievalTraceFor(
+  traces: Map<string, MutableRetrievalTrace>,
+  runId: string,
+): MutableRetrievalTrace {
+  const existing = traces.get(runId);
+  if (existing) return existing;
+  if (traces.size >= 100) {
+    const oldestRunId = traces.keys().next().value;
+    if (typeof oldestRunId === 'string') traces.delete(oldestRunId);
+  }
+  const trace = emptyRetrievalTrace();
+  traces.set(runId, trace);
+  return trace;
+}
+
+function frozenRetrievalTrace(trace: MutableRetrievalTrace): AgentRetrievalTrace {
+  return {
+    candidates: trace.candidates.map((candidate) => ({ ...candidate })),
+    closure: trace.closure.map((item) => ({ ...item })),
+  };
+}
+
+function recordTraceCandidate(
+  database: DatabaseSync,
+  trace: MutableRetrievalTrace,
+  record: EvidenceRecord,
+): void {
+  if (trace.candidates.some((candidate) => candidate.fragmentId === record.fragment_id)) return;
+  if (trace.candidates.length >= MAX_RETRIEVAL_TRACE_ITEMS) return;
+  trace.candidates.push({
+    fragmentId: record.fragment_id,
+    projection: traceProjection(database, record),
+    rank: trace.candidates.length + 1,
+    selected: false,
+  });
+}
+
+function markTraceCandidateSelected(trace: MutableRetrievalTrace, fragmentId: string): void {
+  const candidate = trace.candidates.find((item) => item.fragmentId === fragmentId);
+  if (candidate) candidate.selected = true;
+}
+
+function recordTraceClosure(trace: MutableRetrievalTrace, item: RetrievalTraceClosure): void {
+  if (trace.closure.length >= MAX_RETRIEVAL_TRACE_ITEMS) return;
+  if (trace.closure.some((existing) => existing.id === item.id && existing.kind === item.kind)) return;
+  trace.closure.push({ ...item });
+}
+
+function traceProjection(
+  database: DatabaseSync,
+  record: EvidenceRecord,
+): RetrievalTraceCandidate['projection'] {
+  const projection = record.locator.projection;
+  if (projection === 'OVERVIEW') return 'OVERVIEW';
+  if (projection === 'IMAGE_ANNOTATION') return 'IMAGE_ANNOTATION';
+  if (record.source_kind !== 'WORKSPACE_FLOW' || !record.flow_snapshot_id) return 'OTHER';
+  const nodeId = record.locator.nodeId;
+  if (typeof nodeId !== 'string' || !nodeId) return 'OTHER';
+  const row = database.prepare(
+    'SELECT snapshot_json FROM flow_knowledge_snapshots WHERE id = ?',
+  ).get(record.flow_snapshot_id) as { snapshot_json: string } | undefined;
+  if (!row) return 'OTHER';
+  try {
+    const snapshot = normalizeFlowKnowledgeSnapshot(
+      FlowKnowledgeSnapshotSchema.parse(JSON.parse(row.snapshot_json)),
+    );
+    if (snapshot.resources.some((resource) => resource.id === nodeId)) return 'RESOURCE';
+    if (snapshot.nodes.some((node) => node.id === nodeId)) return 'NODE';
+  } catch {
+    return 'OTHER';
+  }
+  return 'OTHER';
+}
+
 function leadingVaultSubject(value: string): string | null {
   const question = value.normalize('NFKC').trim()
     .replace(/^(?:请问|请|麻烦|帮我|想了解|关于)\s*/u, '');
@@ -314,11 +421,14 @@ function expandFlowEvidence(
   evidence: ValidatedEvidenceV1[],
   seen: Set<string>,
   appendRecord: (record: EvidenceRecord, locator: Record<string, unknown>) => boolean,
+  trace: MutableRetrievalTrace,
 ): void {
   if (request.maxFlowHops === 0 || evidence.length >= request.maxCandidates) return;
   const seeds = evidence.filter((item) => item.locator.kind === 'WORKSPACE_FLOW');
   for (const seed of seeds) {
     if (seed.locator.kind !== 'WORKSPACE_FLOW') continue;
+    const sourceRecord = loadEvidenceRecord(database, seed.id);
+    if (sourceRecord?.locator.projection === 'OVERVIEW') continue;
     const locator = seed.locator;
     const row = database.prepare(
       `SELECT snapshot_json FROM flow_knowledge_snapshots WHERE id = ? AND guide_id = ?`,
@@ -328,13 +438,53 @@ function expandFlowEvidence(
       FlowKnowledgeSnapshotSchema.parse(JSON.parse(row.snapshot_json)),
     );
     const node = snapshot.nodes.find((item) => item.id === locator.nodeId);
+    const resource = snapshot.resources.find((item) => item.id === locator.nodeId);
+    if (!node && !resource) continue;
+
+    if (resource) {
+      // A generic image/resource summary can be a legitimate match for a broad
+      // flow query. Only a dedicated annotation leaf proves that the user is
+      // asking about a field inside that resource, so only that projection may
+      // open the resource → owner-node structural closure.
+      if (sourceRecord?.locator.projection !== 'IMAGE_ANNOTATION') continue;
+      const overview = loadFlowOverviewRecord(database, snapshot.snapshotId);
+      if (overview && !seen.has(overview.fragment_id) && appendRecord(overview, overview.locator)) {
+        recordTraceClosure(trace, { id: snapshot.snapshotId, kind: 'OVERVIEW' });
+      }
+      if (evidence.length >= request.maxCandidates) return;
+
+      const anchorNodeIds = flowResourceAnchorNodeIds(snapshot, resource.id);
+      for (const nodeId of anchorNodeIds) {
+        if (evidence.length >= request.maxCandidates) return;
+        const record = loadSelectedFlowRecord(database, snapshot.snapshotId, nodeId);
+        if (!record || seen.has(record.fragment_id)) continue;
+        if (appendRecord(record, record.locator)) {
+          recordTraceClosure(trace, { id: nodeId, kind: 'NODE' });
+        }
+      }
+      for (const nodeId of anchorNodeIds) {
+        const neighborIds = flowNeighborIds(snapshot, nodeId, request.maxFlowHops);
+        for (const neighborId of neighborIds) {
+          if (evidence.length >= request.maxCandidates) return;
+          const record = loadSelectedFlowRecord(database, snapshot.snapshotId, neighborId);
+          if (!record || seen.has(record.fragment_id)) continue;
+          if (appendRecord(record, record.locator)) {
+            recordTraceClosure(trace, { id: neighborId, kind: 'NODE' });
+          }
+        }
+      }
+      continue;
+    }
+
     if (!node) continue;
     const neighborIds = flowNeighborIds(snapshot, node.id, request.maxFlowHops);
     for (const nodeId of neighborIds) {
       if (evidence.length >= request.maxCandidates) return;
       const record = loadSelectedFlowRecord(database, snapshot.snapshotId, nodeId);
       if (!record || seen.has(record.fragment_id)) continue;
-      appendRecord(record, record.locator);
+      if (appendRecord(record, record.locator)) {
+        recordTraceClosure(trace, { id: nodeId, kind: 'NODE' });
+      }
     }
   }
 }
@@ -503,12 +653,23 @@ function authoritativeFlowLocator(
   const snapshot = normalizeFlowKnowledgeSnapshot(
     FlowKnowledgeSnapshotSchema.parse(JSON.parse(row.snapshot_json)),
   );
-  const locator = findFlowLocator(snapshot, nodeId);
+  const annotationId = record.locator.projection === 'IMAGE_ANNOTATION'
+    ? stringField(record.locator, 'annotationId')
+    : undefined;
+  const locator = annotationId
+    ? resolveFlowAnnotationTarget(snapshot, nodeId, annotationId).resource.locator
+    : findFlowLocator(snapshot, nodeId);
   if (!locator || locator.guideId !== guideId || locator.snapshotId !== snapshotId) {
     throw new Error('流程节点 locator 不存在或已经变化');
   }
-  const authoritative = { kind: 'WORKSPACE_FLOW' as const, ...locator };
-  assertLocatorFields(untrustedLocator, authoritative, ['kind', 'guideId', 'snapshotId', 'nodeId']);
+  const authoritative = {
+    kind: 'WORKSPACE_FLOW' as const,
+    ...locator,
+    ...(annotationId ? { annotationId } : {}),
+  };
+  assertLocatorFields(untrustedLocator, authoritative, [
+    'kind', 'guideId', 'snapshotId', 'nodeId', ...(annotationId ? ['annotationId'] : []),
+  ]);
   return InternalEvidenceLocatorV1Schema.parse(authoritative);
 }
 
@@ -539,6 +700,18 @@ function flowNeighborIds(
     .filter((id) => id !== nodeId && !oneHopSet.has(id))
     .sort();
   return [...oneHop, ...twoHop];
+}
+
+function flowResourceAnchorNodeIds(snapshot: FlowKnowledgeSnapshotV2, resourceId: string): string[] {
+  return [...new Set(snapshot.relations.flatMap((relation) => {
+    if (relation.kind === 'USES_RESOURCE' && relation.resourceId === resourceId) {
+      return [relation.sourceNodeId];
+    }
+    if (relation.kind === 'RESOURCE_REFERENCE' && relation.sourceResourceId === resourceId && relation.targetNodeId) {
+      return [relation.targetNodeId];
+    }
+    return [];
+  }))].sort();
 }
 
 function requireFreshContext(
@@ -732,6 +905,18 @@ function loadSelectedFlowRecord(
        AND json_extract(fragment.internal_locator_json, '$.projection') IS NULL
      ORDER BY fragment.ordinal LIMIT 1`,
   ).get(snapshotId, nodeId) as { id: string } | undefined;
+  return row ? loadEvidenceRecord(database, row.id) : null;
+}
+
+function loadFlowOverviewRecord(database: DatabaseSync, snapshotId: string): EvidenceRecord | null {
+  const row = database.prepare(
+    `SELECT fragment.id
+     FROM knowledge_fragments AS fragment
+     JOIN knowledge_documents AS document ON document.id = fragment.document_id
+     WHERE document.flow_snapshot_id = ?
+       AND json_extract(fragment.internal_locator_json, '$.projection') = 'OVERVIEW'
+     ORDER BY fragment.ordinal LIMIT 1`,
+  ).get(snapshotId) as { id: string } | undefined;
   return row ? loadEvidenceRecord(database, row.id) : null;
 }
 

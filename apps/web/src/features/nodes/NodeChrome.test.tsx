@@ -13,12 +13,16 @@ vi.mock('@xyflow/react', () => ({
 }));
 
 describe('nodeChromeStyle', () => {
-  it('fills a React Flow node that has explicit resized dimensions', () => {
-    expect(nodeChromeStyle(1060, 748)).toEqual({ width: '100%', height: '100%' });
+  it('uses a saved height as a minimum so node content remains inside its own card', () => {
+    expect(nodeChromeStyle(1060, 748)).toEqual({ width: '100%', minHeight: 748 });
   });
 
   it('leaves an unmeasured node at its default CSS dimensions', () => {
     expect(nodeChromeStyle(undefined, undefined)).toEqual({});
+  });
+
+  it('keeps the inner card width-bound when its height is content-driven', () => {
+    expect(nodeChromeStyle(240, undefined)).toEqual({ width: '100%' });
   });
 
   it('keeps the saved width but releases temporary expanded detail height', () => {
@@ -35,6 +39,13 @@ describe('nodeHandleConfig', () => {
 });
 
 describe('NodeChrome delete action', () => {
+  it('composes the node content with the shared React Bits glow and spotlight surfaces', () => {
+    const { container } = render(<NodeChrome nodeId="decision-1" selected tone="decision"><strong>判断节点</strong></NodeChrome>);
+
+    expect(container.querySelector('.canvas-node-glow')).toHaveClass('border-glow', 'is-active', 'border-glow-warning');
+    expect(container.querySelector('.canvas-node-surface')).toHaveClass('card-spotlight');
+  });
+
   it('keeps the default resize chrome hidden for a selected node', () => {
     render(<NodeChrome nodeId="process-1" selected tone="process"><strong>节点</strong></NodeChrome>);
 
@@ -80,6 +91,16 @@ describe('NodeChrome delete action', () => {
     expect(updateNodeInternals).toHaveBeenCalledWith('process-1');
   });
 
+  it('refreshes React Flow geometry when selection changes the node content height', () => {
+    updateNodeInternals.mockClear();
+    const { rerender } = render(<NodeChrome nodeId="process-1" tone="process"><strong>节点</strong></NodeChrome>);
+
+    rerender(<NodeChrome nodeId="process-1" selected tone="process"><strong>节点</strong><span>双击添加节点明细</span></NodeChrome>);
+    rerender(<NodeChrome nodeId="process-1" tone="process"><strong>节点</strong></NodeChrome>);
+
+    expect(updateNodeInternals).toHaveBeenCalledTimes(3);
+  });
+
   it('keeps continuous surfaces inside the node so a reconnect endpoint remains clickable', () => {
     render(<NodeChrome nodeId="process-1" tone="process"><strong>节点</strong></NodeChrome>);
 
@@ -98,6 +119,7 @@ describe('NodeChrome delete action', () => {
     const button = screen.getByRole('button', { name: '删除节点' });
     expect(button).toHaveClass('canvas-node-delete', 'nodrag', 'nopan', 'nowheel');
     expect(button).toHaveAttribute('tabindex', '0');
+    expect(button.querySelector('.canvas-node-delete-icon')).toBeInTheDocument();
     fireEvent.pointerDown(button);
     fireEvent.click(button);
 
@@ -122,5 +144,40 @@ describe('NodeChrome delete action', () => {
     );
 
     expect(screen.queryByRole('button', { name: '删除节点' })).not.toBeInTheDocument();
+  });
+
+  it('shows an eye button for a selected visible resource and forwards its id', () => {
+    const onToggleResourceVisibility = vi.fn();
+    render(
+      <NodeActionProvider onToggleResourceVisibility={onToggleResourceVisibility}>
+        <NodeChrome nodeId="resource-1" selected tone="markdown" resourceVisibility="VISIBLE"><strong>资料</strong></NodeChrome>
+      </NodeActionProvider>,
+    );
+
+    const button = screen.getByRole('button', { name: '隐藏资料' });
+    expect(button).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.pointerDown(button);
+    fireEvent.click(button);
+
+    expect(onToggleResourceVisibility).toHaveBeenCalledWith('resource-1');
+  });
+
+  it('uses the restore label for a hidden resource and does not show the control on flow nodes', () => {
+    const onToggleResourceVisibility = vi.fn();
+    const { rerender } = render(
+      <NodeActionProvider onToggleResourceVisibility={onToggleResourceVisibility}>
+        <NodeChrome nodeId="resource-1" selected tone="image" resourceVisibility="HIDDEN"><strong>资料</strong></NodeChrome>
+      </NodeActionProvider>,
+    );
+
+    expect(screen.getByRole('button', { name: '显示资料' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('已隐藏')).toBeInTheDocument();
+    rerender(
+      <NodeActionProvider onToggleResourceVisibility={onToggleResourceVisibility}>
+        <NodeChrome nodeId="process-1" selected tone="process"><strong>流程</strong></NodeChrome>
+      </NodeActionProvider>,
+    );
+    expect(screen.queryByRole('button', { name: '隐藏资料' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '显示资料' })).not.toBeInTheDocument();
   });
 });

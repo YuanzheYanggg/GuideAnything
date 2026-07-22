@@ -44,8 +44,12 @@ describe('AgentOrchestrator', () => {
     ]);
     expect(new Set(runtime.requests.map((request) => request.runId)).size).toBe(2);
     expect(runtime.requests.every((request) => request.runId !== 'public-run-1')).toBe(true);
+    const routerRequest = runtime.requests.find((request) => request.role === 'ROUTER');
+    expect(routerRequest?.prompt).toContain('budget.maxWorkspaceCandidates 设置为 6');
     const workerRequest = runtime.requests.find((request) => request.role === 'FOCUSED_WORKER');
     expect(workerRequest?.prompt).toContain('选中上下文优先');
+    expect(workerRequest?.prompt).toContain('结构闭包');
+    expect(workerRequest?.prompt).toContain('不得仅因缺少整张流程图的摘要而声明资料缺口');
     expect(workerRequest?.prompt).not.toContain('测试用 Santexwell 只读 QA Harness。');
     expect(events.items.find((item) => item.type === 'plan.committed')).toMatchObject({
       payload: {
@@ -62,6 +66,50 @@ describe('AgentOrchestrator', () => {
     ]);
     expect(JSON.stringify(events.items)).not.toContain('PRIVATE CHAIN OF THOUGHT');
     expect(committer.commit).toHaveBeenCalledOnce();
+  });
+
+  it('hands a consumed bounded retrieval trace to the output committer and clears it afterwards', async () => {
+    const flowEvidence = evidence('flow-traced', 'WORKSPACE_FLOW');
+    const runtime = new ScriptedRuntime([
+      routeScript(focusedDecision()),
+      answerScript(answer([flowEvidence])),
+    ]);
+    const trace = {
+      candidates: [{ fragmentId: 'flow-traced', projection: 'NODE' as const, rank: 1, selected: true }],
+      closure: [{ id: 'approve', kind: 'NODE' as const }],
+    };
+    const retriever: AgentEvidenceRetriever = {
+      ...retrieverFrom({ WORKSPACE_FLOW: [flowEvidence] }),
+      resetTrace: vi.fn(),
+      consumeTrace: vi.fn(() => trace),
+      discardTrace: vi.fn(),
+    };
+    const committer = recordingCommitter();
+
+    await createOrchestrator({ runtime, retriever, committer }).execute('public-run-trace');
+
+    expect(retriever.resetTrace).toHaveBeenCalledWith('public-run-trace');
+    expect(retriever.consumeTrace).toHaveBeenCalledWith('public-run-trace');
+    expect(committer.commit).toHaveBeenCalledWith(expect.objectContaining({ retrievalTrace: trace }));
+    expect(retriever.discardTrace).toHaveBeenCalledWith('public-run-trace');
+  });
+
+  it('passes the expanded focused workspace budget to retrieval', async () => {
+    const flowEvidence = evidence('flow-expanded-budget', 'WORKSPACE_FLOW');
+    const decision = {
+      ...focusedDecision(),
+      budget: { ...focusedDecision().budget, maxWorkspaceCandidates: 6 },
+    };
+    const runtime = new ScriptedRuntime([
+      routeScript(decision),
+      answerScript(answer([flowEvidence])),
+    ]);
+    const retriever = retrieverFrom({ WORKSPACE_FLOW: [flowEvidence] });
+
+    const result = await createOrchestrator({ runtime, retriever }).execute('public-run-expanded-budget');
+
+    expect(result.status).toBe('COMPLETED');
+    expect(vi.mocked(retriever.retrieve).mock.calls[0]?.[0]).toMatchObject({ maxCandidates: 6 });
   });
 
   it('skips the model router and every retrieval source for a deterministic no-evidence greeting', async () => {
@@ -432,7 +480,32 @@ describe('AgentOrchestrator', () => {
 
     expect(result.status).toBe('COMPLETED');
     expect(runtime.requests.filter((request) => request.role === 'ROUTER')).toHaveLength(2);
+    expect(runtime.requests[0]?.prompt).toContain('不能关闭本轮已启用的工作区来源');
     expect(runtime.requests[1]?.prompt).toContain('结构修复');
+  });
+
+  it('repairs an INVALID_ROUTE_DECISION returned by the bridge exactly once', async () => {
+    const flowEvidence = evidence('bridge-route-repaired', 'WORKSPACE_FLOW');
+    const diagnostic = '结构化输出校验失败：tasks.0.kind:custom, budget.maxWorkers:custom';
+    const runtime = new ScriptedRuntime([
+      failedScript('INVALID_ROUTE_DECISION', false, diagnostic),
+      routeScript(focusedDecision()),
+      answerScript(answer([flowEvidence])),
+    ]);
+    const result = await createOrchestrator({
+      runtime,
+      retriever: retrieverFrom({ WORKSPACE_FLOW: [flowEvidence] }),
+    }).execute('public-run-bridge-repair');
+
+    expect(result.status).toBe('COMPLETED');
+    expect(runtime.requests.filter((request) => request.role === 'ROUTER')).toHaveLength(2);
+    expect(runtime.requests[1]?.prompt).toContain('结构修复');
+    expect(runtime.requests[1]?.prompt).toContain('tasks.0.kind:custom');
+    expect(runtime.requests[1]?.prompt).toContain('FOCUSED 路线必须只有一个工作任务');
+    expect(runtime.requests[1]?.prompt).toContain('COMPOSITE 路线必须有二至三个工作任务');
+    expect(runtime.requests[1]?.prompt).toContain('不能关闭本轮已启用的工作区来源');
+    expect(runtime.requests[1]?.prompt).toContain('工作任务的 dependsOn 必须为空');
+    expect(runtime.requests[1]?.prompt).not.toContain('PRIVATE_ROUTE_OUTPUT');
   });
 
   it('rejects flow feedback when the resolver changes its evidence locator', async () => {
@@ -748,9 +821,13 @@ function invalidRouteScript(): RuntimeScript {
   };
 }
 
-function failedScript(code: string): RuntimeScript {
+function failedScript(
+  code: string,
+  retryable = true,
+  message = '子任务暂时不可用。',
+): RuntimeScript {
   return async function* failed(request) {
-    yield event(request, 1, 'FAILED', { code, message: '子任务暂时不可用。', retryable: true });
+    yield event(request, 1, 'FAILED', { code, message, retryable });
   };
 }
 

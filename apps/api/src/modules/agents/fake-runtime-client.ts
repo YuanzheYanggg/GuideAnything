@@ -184,7 +184,7 @@ function routeDecision(
     budget: {
       maxWorkers: workerKinds.length,
       maxConcurrency: concurrency,
-      maxWorkspaceCandidates: usesWorkspace ? (broad ? 12 : 3) : 0,
+      maxWorkspaceCandidates: usesWorkspace ? (broad ? 12 : 6) : 0,
       maxFlowHops: sources.workspaceFlows ? 2 : 0,
       maxVaultClusters: sources.santexwell ? 1 : 0,
       maxVaultDigests: sources.santexwell ? 2 : 0,
