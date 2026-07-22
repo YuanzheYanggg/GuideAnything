@@ -28,6 +28,7 @@ import { WorkspaceShell } from './features/workspace/WorkspaceShell';
 import { apiClient } from './lib/api';
 
 const GuideEditor = lazy(() => import('./features/editor/GuideEditor').then((module) => ({ default: module.GuideEditor })));
+const GuidePdfExportPage = lazy(() => import('./features/export/GuidePdfExportPage').then((module) => ({ default: module.GuidePdfExportPage })));
 const LessonPage = lazy(() => import('./features/lesson/LessonPage').then((module) => ({ default: module.LessonPage })));
 
 export function App() {
@@ -84,6 +85,7 @@ function AppContent() {
       <Route path="/workspaces/:workspaceId/artifacts" element={<WorkspaceArtifactsPage api={artifactsApi} />} />
     </Route>
     <Route path="/references/:referenceId" element={<ReferencePage api={artifactsApi} />} />
+    <Route path="/guides/:guideId/export/pdf" element={<GuidePdfExportRoute />} />
     <Route path="/guides/:guideId/edit" element={<GuideEditorRoute />} />
     <Route path="/versions/:versionId/learn" element={<LessonRoute />} />
     <Route path="*" element={<Navigate to="/library" replace />} />
@@ -124,6 +126,21 @@ function AppContent() {
         personalApi={personalApi}
         {...(focusNodeId ? { focusNodeId } : {})}
         {...(focusAnnotationId ? { focusAnnotationId } : {})}
+        onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))}
+        onExport={() => navigate(withReturnTo(`/guides/${encodeURIComponent(guideId)}/export/pdf`, `/guides/${encodeURIComponent(guideId)}/edit`))}
+      />
+    </Suspense>;
+  }
+
+  function GuidePdfExportRoute() {
+    const navigate = useNavigate();
+    const { guideId } = useParams();
+    const [searchParams] = useSearchParams();
+    if (!guideId) return <Navigate to="/library" replace />;
+    return <Suspense fallback={<LoadingState label="正在准备 PDF 导出…" />}>
+      <GuidePdfExportPage
+        guideId={guideId}
+        api={{ getGuide: editorApi.getGuide, mediaObjectUrl: (path) => apiClient.mediaObjectUrl(path) }}
         onBack={() => navigate(safeReturnTo(searchParams.get('returnTo')))}
       />
     </Suspense>;

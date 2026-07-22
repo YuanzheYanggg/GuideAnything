@@ -1723,6 +1723,10 @@ a.favorite-resource-item:hover { border-color: rgb(73 137 230 / .46); background
 
 /* Printable guide export: intentionally isolated from the editable canvas styles. */
 .pdf-export-shell { min-height: 100vh; background: var(--ga-bg); }
+.pdf-export-toolbar { position: sticky; top: 0; z-index: 5; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 16px; align-items: center; min-height: 64px; padding: 0 24px; border-bottom: 1px solid var(--ga-border); background: var(--ga-surface); box-shadow: 0 8px 24px rgb(20 22 28 / .06); backdrop-filter: var(--ga-blur); -webkit-backdrop-filter: var(--ga-blur); }
+.pdf-export-toolbar-title { display: grid; min-width: 0; gap: 1px; color: var(--ga-text); font-size: .92rem; font-weight: 750; }
+.pdf-export-toolbar-title > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-export-toolbar > .primary-button { min-height: 38px; }
 .pdf-export-document { max-width: 1180px; margin: 0 auto; padding: 24px; }
 .pdf-export-page { break-after: page; break-inside: avoid; min-height: 720px; padding: 30px; border: 1px solid var(--ga-border); border-radius: 20px; background: var(--ga-surface-solid); box-shadow: 0 18px 48px rgb(20 22 28 / .08); }
 .pdf-export-page:last-child { break-after: auto; }
@@ -1794,6 +1798,7 @@ a.favorite-resource-item:hover { border-color: rgb(73 137 230 / .46); background
 
 @page { size: A4 landscape; margin: 12mm; }
 @media print {
+  .pdf-export-toolbar { display: none !important; }
   .pdf-export-shell { background: white; }
   .pdf-export-document { max-width: none; padding: 0; }
   .pdf-export-page { min-height: 0; border: 0; border-radius: 0; padding: 0; box-shadow: none; }

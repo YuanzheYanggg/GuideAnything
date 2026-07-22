@@ -8,6 +8,10 @@ import type { KnowledgeApi } from './features/knowledge/types';
 import { ApiClient } from './lib/api';
 import { mockAuthenticatedWorkspaceApi } from './test/workspace-api-mocks';
 
+vi.mock('./features/export/GuidePdfExportPage', () => ({
+  GuidePdfExportPage: ({ guideId, onBack }: { guideId: string; onBack: () => void }) => <main data-testid="mock-pdf-export-route"><h1>PDF 导出 {guideId}</h1><button type="button" onClick={onBack}>返回测试</button></main>,
+}));
+
 const workspace = {
   id: 'workspace-materials',
   slug: 'materials',
@@ -111,6 +115,18 @@ describe('App routes', () => {
     expect(safeReturnTo('//evil.example/path')).toBe('/library');
     expect(safeReturnTo('https://evil.example/path')).toBe('/library');
     expect(withReturnTo('/guides/guide-1/edit', '/library')).toBe('/guides/guide-1/edit?returnTo=%2Flibrary');
+  });
+
+  it('opens the authenticated PDF export route and applies the safe return path', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', '/guides/guide-1/export/pdf?returnTo=//evil.example/path');
+    mockAuthenticatedWorkspaceApi({ workspaces: [] });
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'PDF 导出 guide-1' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '返回测试' }));
+    expect(window.location.pathname).toBe('/library');
   });
 });
 

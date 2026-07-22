@@ -157,7 +157,7 @@ type PendingImageReplacement = {
   annotationCount: number;
 };
 
-export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnotationId, onBack }: { guideId: string; api: EditorApi; personalApi?: PersonalApi; focusNodeId?: string; focusAnnotationId?: string; onBack: () => void }) {
+export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnotationId, onBack, onExport }: { guideId: string; api: EditorApi; personalApi?: PersonalApi; focusNodeId?: string; focusAnnotationId?: string; onBack: () => void; onExport?: () => void }) {
   const [guide, setGuide] = useState<GuideDraftDetail | null>(null);
   const [document, setDocument] = useState<CanvasDocument | null>(null);
   const [flowNodes, setFlowNodes] = useState<Node[]>([]);
@@ -1036,6 +1036,17 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     throw new Error('草稿仍有未保存修改，无法生成指南总览');
   }, []);
 
+  const openPdfExport = useCallback(async () => {
+    if (!onExport || layoutPreview) return;
+    try {
+      const saved = await flushPendingSave();
+      if (!saved) throw new Error('草稿尚未保存，无法导出 PDF');
+      onExport();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法导出 PDF');
+    }
+  }, [flushPendingSave, layoutPreview, onExport]);
+
   const openDigest = useCallback(async () => {
     if (!guide || layoutPreview) return;
     setSummaryOpen(false);
@@ -1457,6 +1468,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
           </div>
         </div>
         <div className="editor-action-group editor-action-group--primary" role="group" aria-label="主操作">
+          <button className="editor-action-button editor-export-button" type="button" onClick={() => void openPdfExport()} disabled={Boolean(layoutPreview) || !onExport} aria-label="导出 PDF">导出 PDF</button>
           <button className="primary-button editor-publish-button" type="button" onClick={() => void publish()} disabled={Boolean(layoutPreview)} aria-label="发布指南"><UploadSimple size={18} weight="bold" aria-hidden="true" />发布指南</button>
         </div>
       </div>

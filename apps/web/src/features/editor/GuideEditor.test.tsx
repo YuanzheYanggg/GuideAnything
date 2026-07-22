@@ -168,6 +168,31 @@ describe('GuideEditor', () => {
     expect(screen.getByRole('group', { name: '主操作' })).toContainElement(screen.getByRole('button', { name: '发布指南' }));
   });
 
+  it('saves pending edits before opening the PDF export', async () => {
+    const api = createApi();
+    const onExport = vi.fn();
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} onExport={onExport} />);
+
+    fireEvent.change(await openSummaryEditor(), { target: { value: '导出前的最新摘要' } });
+    fireEvent.click(screen.getByRole('button', { name: '导出 PDF' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalledWith('guide-host', 0, expect.objectContaining({ summary: '导出前的最新摘要' })));
+    await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not open the PDF export when the save gate fails', async () => {
+    const api = createApi();
+    const onExport = vi.fn();
+    (api.saveGuide as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('导出前保存被拒绝'));
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} onExport={onExport} />);
+
+    fireEvent.change(await openSummaryEditor(), { target: { value: '未保存摘要' } });
+    fireEvent.click(screen.getByRole('button', { name: '导出 PDF' }));
+
+    await waitFor(() => expect(screen.getAllByText('导出前保存被拒绝').length).toBeGreaterThan(0));
+    expect(onExport).not.toHaveBeenCalled();
+  });
+
   it('keeps compact regression controls in the editor header instead of a standalone QA page', async () => {
     const user = userEvent.setup();
     const api = createApi({ document: imageDocumentWithAnnotation() });
