@@ -92,7 +92,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .error-message { color: var(--ga-danger); background: var(--ga-danger-soft); border: 1px solid color-mix(in srgb, var(--ga-danger) 36%, transparent); border-radius: 10px; padding: 10px 12px; }
 
 .appearance-toggle { display: inline-flex; gap: 2px; align-items: center; padding: 3px; border: 1px solid var(--ga-border); border-radius: 12px; background: var(--ga-surface); backdrop-filter: var(--ga-blur); -webkit-backdrop-filter: var(--ga-blur); }
-.appearance-toggle button { min-height: 30px; border: 0; border-radius: 9px; padding: 0 9px; color: var(--ga-text-secondary); background: transparent; font-size: .72rem; font-weight: 600; transition: background-color var(--ga-fast), color var(--ga-fast), box-shadow var(--ga-fast); }
+.appearance-toggle button { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 30px; border: 0; border-radius: 9px; padding: 0 9px; color: var(--ga-text-secondary); background: transparent; font-size: .72rem; font-weight: 600; white-space: nowrap; transition: background-color var(--ga-fast), color var(--ga-fast), box-shadow var(--ga-fast); }
 .appearance-toggle button:hover { color: var(--ga-text); background: var(--ga-accent-soft); }
 .appearance-toggle button.is-selected { color: var(--ga-text); background: var(--ga-surface-strong); box-shadow: 0 1px 4px rgb(20 22 28 / .1); }
 .appearance-toggle button:focus-visible { outline: 2px solid var(--ga-accent); outline-offset: 2px; }
@@ -171,7 +171,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 /* Canvas editor */
 .editor-page { --editor-header-height: 104px; --editor-toolbar-height: 48px; height: 100vh; min-height: 0; overflow: hidden; background: var(--ga-bg); }
 .editor-page-content { min-height: 0; height: 100%; display: grid; grid-template-rows: var(--editor-header-height) var(--editor-toolbar-height) minmax(0, 1fr); overflow: hidden; }
-.editor-header { position: relative; isolation: isolate; display: grid; grid-template-columns: auto minmax(168px, .48fr) minmax(420px, 1fr) minmax(0, 1.1fr); align-items: center; gap: 14px; overflow: hidden; padding: 9px 16px; border-bottom: 1px solid var(--ga-border); color: var(--ga-text); background: var(--ga-surface); backdrop-filter: var(--ga-blur); -webkit-backdrop-filter: var(--ga-blur); }
+.editor-header { position: relative; isolation: isolate; display: grid; grid-template-columns: auto minmax(168px, .48fr) minmax(420px, 1fr) minmax(max-content, 1.1fr); align-items: center; gap: 14px; overflow: hidden; padding: 9px 16px; border-bottom: 1px solid var(--ga-border); color: var(--ga-text); background: var(--ga-surface); backdrop-filter: var(--ga-blur); -webkit-backdrop-filter: var(--ga-blur); }
 .editor-header::before, .editor-header::after { position: absolute; z-index: 0; inset: -60%; pointer-events: none; content: ""; }
 .editor-header::before { background: radial-gradient(circle at 14% 32%, color-mix(in srgb, var(--ga-accent) 24%, transparent), transparent 25%), radial-gradient(circle at 63% 0%, rgb(119 92 255 / .15), transparent 24%), radial-gradient(circle at 92% 100%, color-mix(in srgb, var(--ga-accent) 18%, transparent), transparent 30%); filter: blur(30px); opacity: .9; animation: editor-header-aurora 18s ease-in-out infinite alternate; }
 .editor-header::after { inset: -20% -50%; background: linear-gradient(112deg, transparent 32%, rgb(255 255 255 / .08) 48%, transparent 64%); transform: translateX(-22%); animation: editor-header-sheen 12s ease-in-out infinite; }
@@ -251,7 +251,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .shiny-text { display: inline-block; color: var(--ga-text-secondary); background: linear-gradient(120deg, var(--ga-text-secondary) 35%, var(--ga-text) 50%, var(--ga-text-secondary) 65%); background-size: 200% auto; background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; animation: shiny-text-sweep 5s linear infinite; }
 .shiny-text.disabled { animation: none; }
 .editor-actions { display: flex; gap: 8px; align-items: stretch; justify-content: flex-end; min-width: 0; }
-.editor-action-group { display: grid; gap: 4px; min-width: 0; padding: 5px; border: 1px solid color-mix(in srgb, var(--ga-border) 88%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--ga-surface) 72%, transparent); box-shadow: inset 0 1px 0 rgb(255 255 255 / .06); backdrop-filter: blur(16px) saturate(145%); -webkit-backdrop-filter: blur(16px) saturate(145%); }
+.editor-action-group { display: grid; flex: 0 0 auto; gap: 4px; min-width: 0; padding: 5px; border: 1px solid color-mix(in srgb, var(--ga-border) 88%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--ga-surface) 72%, transparent); box-shadow: inset 0 1px 0 rgb(255 255 255 / .06); backdrop-filter: blur(16px) saturate(145%); -webkit-backdrop-filter: blur(16px) saturate(145%); }
 .editor-action-group--primary { display: block; padding: 0; border-color: transparent; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .editor-action-group-label { display: inline-flex; align-items: center; gap: 4px; min-height: 13px; padding-inline: 5px; color: var(--ga-text-tertiary); font-size: .62rem; font-weight: 750; letter-spacing: .06em; }
 .editor-action-group .flow-regression-panel { align-self: stretch; }
@@ -309,6 +309,10 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .toolbar-divider { width: 1px; height: 22px; margin: 0 3px; background: var(--ga-border); }
 .editor-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; overflow: hidden; }
 .canvas-shell { position: relative; min-width: 0; min-height: 0; background: var(--ga-bg); }
+/* During route editing the selected edge must remain reachable above node cards. Normal viewing keeps React Flow's default stacking order. */
+.canvas-shell.is-route-editing .react-flow__edges { z-index: 4; }
+.canvas-shell.is-route-editing .react-flow__nodes { z-index: 3; }
+.canvas-shell.is-route-editing .react-flow__edgeupdater { pointer-events: all; }
 .inspector { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 18px; border-left: 1px solid var(--ga-border); background: var(--ga-surface); backdrop-filter: var(--ga-blur); -webkit-backdrop-filter: var(--ga-blur); }
 .inspector > div, .node-inspector { display: grid; gap: 12px; }
 .inspector hr { margin: 18px 0; border: 0; border-top: 1px solid var(--ga-border); }
@@ -523,7 +527,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .lesson-empty strong { color: var(--ga-text); font-size: 1.5rem; font-weight: 650; }
 .lesson-empty p { margin: 0; }
 
-@media (max-width: 1024px) {
+@media (max-width: 1360px) {
   .editor-page { --editor-header-height: 220px; }
   .editor-header { grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto minmax(80px, 1fr) auto; }
   .editor-title { grid-column: 2; grid-row: 1; }

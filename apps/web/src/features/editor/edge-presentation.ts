@@ -39,8 +39,21 @@ export function edgePresentationForPathStyle(
 
 export function resetEdgeRoutePresentation(presentation: EdgePresentation | undefined): EdgePresentation | undefined {
   if (!presentation) return undefined;
-  const { routeMode: _routeMode, waypoints: _waypoints, ...automaticPresentation } = presentation;
-  return Object.keys(automaticPresentation).length > 0 ? automaticPresentation : undefined;
+  const {
+    routeMode: _routeMode,
+    waypoints: _waypoints,
+    sourceAnchor,
+    sourceAnchorMode,
+    targetAnchor,
+    targetAnchorMode,
+    ...automaticPresentation
+  } = presentation;
+  const restoredPresentation: EdgePresentation = {
+    ...automaticPresentation,
+    ...(sourceAnchor && sourceAnchorMode !== 'auto' ? { sourceAnchor, ...(sourceAnchorMode ? { sourceAnchorMode } : {}) } : {}),
+    ...(targetAnchor && targetAnchorMode !== 'auto' ? { targetAnchor, ...(targetAnchorMode ? { targetAnchorMode } : {}) } : {}),
+  };
+  return Object.keys(restoredPresentation).length > 0 ? restoredPresentation : undefined;
 }
 
 function edgeStrokeColor(color: EdgePresentation['color']): string {

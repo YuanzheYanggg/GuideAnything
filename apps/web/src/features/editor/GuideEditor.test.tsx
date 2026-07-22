@@ -2063,7 +2063,7 @@ describe('GuideEditor', () => {
     fireEvent.pointerDown(handle, { clientX: 420, clientY: 52, pointerId: 1, button: 0 });
     fireEvent.pointerMove(window, { clientX: 420, clientY: 132, pointerId: 1, buttons: 1 });
 
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('手动路线被节点阻挡'));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('手动路线被节点阻挡：障碍'));
   });
 
   it('keeps edge endpoints fixed while saving a manually dragged route segment', async () => {
@@ -2088,6 +2088,7 @@ describe('GuideEditor', () => {
     act(() => reactFlowCallbacks.onEdgeClick?.({} as MouseEvent, reactFlowCallbacks.edges[0]!));
     await user.click(screen.getByRole('button', { name: '编辑走向' }));
     expect(screen.queryByRole('toolbar', { name: '连线样式' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('无限画布编辑区')).toHaveClass('is-route-editing');
     expect(reactFlowCallbacks.edges[0]?.data).toMatchObject({
       route: { points: [{ x: 240, y: 52 }, { x: 360, y: 52 }] },
     });
@@ -2109,6 +2110,40 @@ describe('GuideEditor', () => {
       targetAnchor: { side: 'LEFT', offset: 0.5 },
     }));
     expect(savedEdge?.presentation).not.toHaveProperty('routing');
+  });
+
+  it('snapshots automatic endpoint ports when a route enters manual editing', async () => {
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, size: { width: 240, height: 104 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'process-a', type: 'process', position: { x: 360, y: 0 }, size: { width: 240, height: 104 }, zIndex: 1, data: { label: '处理', shape: 'process' } },
+      ],
+      edges: [{ id: 'business', source: 'start', target: 'process-a' }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: ['process-a'],
+    };
+    const api = createApi({ document });
+    render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    act(() => reactFlowCallbacks.onEdgeClick?.({} as MouseEvent, reactFlowCallbacks.edges[0]!));
+    await user.click(screen.getByRole('button', { name: '编辑走向' }));
+    const segment = screen.getByRole('button', { name: '拖动连线节点 1' });
+    fireEvent.pointerDown(segment, { clientX: 300, clientY: 52, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 300, clientY: 173, pointerId: 1, buttons: 1 });
+    fireEvent.pointerUp(window, { clientX: 300, clientY: 173, pointerId: 1, button: 0 });
+    await user.click(screen.getByRole('button', { name: '保存草稿' }));
+
+    await waitFor(() => expect(api.saveGuide).toHaveBeenCalled());
+    const saved = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.at(-1)![2].document as CanvasDocument;
+    expect(saved.edges[0]?.presentation).toEqual(expect.objectContaining({
+      routeMode: 'manual',
+      sourceAnchor: { side: 'RIGHT', offset: 0.5 },
+      sourceAnchorMode: 'auto',
+      targetAnchor: { side: 'LEFT', offset: 0.5 },
+      targetAnchorMode: 'auto',
+    }));
   });
 
   it('deletes a selected business edge with Delete', async () => {

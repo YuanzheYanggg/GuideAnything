@@ -79,6 +79,7 @@ export interface RoutingReport {
   avoidedEdgeIds: string[];
   collisionEdgeIds: string[];
   manualConflictEdgeIds: string[];
+  manualConflictNodeIdsByEdgeId: Map<string, string[]>;
 }
 
 export interface RoutingResult {
@@ -117,7 +118,6 @@ interface RouteStyleContext {
   targetPort: RoutePort;
   obstacles: NodeRect[];
   directPath: Point[];
-  manual: boolean;
 }
 
 interface RouteOrder {
@@ -147,6 +147,7 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
   const avoidedEdgeIds: string[] = [];
   const collisionEdgeIds: string[] = [];
   const manualConflictEdgeIds: string[] = [];
+  const manualConflictNodeIdsByEdgeId = new Map<string, string[]>();
   const backEdgeIds: string[] = [];
   const offsetCountByChannel = new Map<string, number>();
   const styleContextByEdgeId = new Map<string, RouteStyleContext>();
@@ -213,7 +214,10 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
     const manualPoints = edge.presentation?.routeMode === 'manual' && edge.presentation.waypoints?.length
       ? compact([sourcePort.point, ...edge.presentation.waypoints, targetPort.point])
       : undefined;
-    const manualBlocked = manualPoints ? !isOrthogonal(manualPoints) || routeBlocked(manualPoints) : false;
+    const manualBlockedNodeIds = manualPoints
+      ? blockedNodeIdsForRoute(manualPoints, obstacles, kind, source, target, sourcePort, targetPort)
+      : [];
+    const manualBlocked = manualPoints ? !isOrthogonal(manualPoints) || manualBlockedNodeIds.length > 0 : false;
     const hasAdjustedForwardPorts = kind === 'FORWARD'
       && (!samePort(sourcePort, source, fallbackSides.source) || !samePort(targetPort, target, fallbackSides.target));
     const elbowPoints = () => usesDisplayedPorts || hasAdjustedForwardPorts
@@ -228,7 +232,10 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
     if (manualPoints && !manualBlocked) {
       points = manualPoints;
     } else {
-      if (manualPoints && manualBlocked) manualConflictEdgeIds.push(edge.id);
+      if (manualPoints && manualBlocked) {
+        manualConflictEdgeIds.push(edge.id);
+        manualConflictNodeIdsByEdgeId.set(edge.id, manualBlockedNodeIds);
+      }
       points = chooseShortestRoute(clearElbowCandidates) ?? elbowCandidates[0]!;
     }
     if ((!manualPoints || manualBlocked) && clearElbowCandidates.length === 0) {
@@ -277,7 +284,6 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
       targetPort,
       obstacles,
       directPath,
-      manual: Boolean(manualPoints && !manualBlocked),
     });
   });
 
@@ -285,7 +291,6 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
   routesByEdgeId.forEach((route, edgeId) => {
     const context = styleContextByEdgeId.get(edgeId);
     if (!context) return;
-    const hasBridge = (route.bridges?.length ?? 0) > 0;
     const routeBlocked = (candidatePoints: Point[]) => routeBlockedByNodes(
       candidatePoints,
       context.obstacles,
@@ -296,10 +301,12 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
       context.targetPort,
     );
     const smoothSegments = smoothSegmentsForRoute(route.points, route.sourceSide, route.targetSide);
-    route.directPathSafe = !context.manual && !hasBridge && !routeBlocked(route.directPath);
+    // A bridge is an edge-vs-edge decoration for the orthogonal renderer. It
+    // is not a node collision and must not silently turn a selected diagonal
+    // or smooth visual style back into the canonical elbow route.
+    route.directPathSafe = !routeBlocked(route.directPath);
     route.smoothSegments = smoothSegments;
     route.smoothPathSafe = smoothSegments.length > 0
-      && !hasBridge
       && !sampledCurveBlockedByNodes(
         sampleCubicSegments(smoothSegments),
         context.obstacles,
@@ -310,7 +317,10 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
       );
   });
 
-  return { routesByEdgeId, report: { backEdgeIds, avoidedEdgeIds, collisionEdgeIds, manualConflictEdgeIds } };
+  return {
+    routesByEdgeId,
+    report: { backEdgeIds, avoidedEdgeIds, collisionEdgeIds, manualConflictEdgeIds, manualConflictNodeIdsByEdgeId },
+  };
 }
 
 function routeBlockedByNodes(
@@ -322,9 +332,26 @@ function routeBlockedByNodes(
   sourcePort: RoutePort,
   targetPort: RoutePort,
 ): boolean {
-  return routeIntersects(candidatePoints, obstacles)
-    || (!isLocalDownstreamGap(candidatePoints, kind, sourcePort, targetPort)
-      && routeIntersectsEndpointNodes(candidatePoints, source, target, sourcePort, targetPort));
+  return blockedNodeIdsForRoute(candidatePoints, obstacles, kind, source, target, sourcePort, targetPort).length > 0;
+}
+
+function blockedNodeIdsForRoute(
+  candidatePoints: Point[],
+  obstacles: NodeRect[],
+  kind: RouteKind,
+  source: NodeRect,
+  target: NodeRect,
+  sourcePort: RoutePort,
+  targetPort: RoutePort,
+): string[] {
+  const blockedIds = obstacles
+    .filter((rect) => routeIntersects(candidatePoints, [rect]))
+    .map((rect) => rect.id);
+  if (!isLocalDownstreamGap(candidatePoints, kind, sourcePort, targetPort)) {
+    if (routeIntersectsEndpointNode(candidatePoints, source, source, target, sourcePort, targetPort)) blockedIds.push(source.id);
+    if (routeIntersectsEndpointNode(candidatePoints, target, source, target, sourcePort, targetPort)) blockedIds.push(target.id);
+  }
+  return [...new Set(blockedIds)];
 }
 
 function sampledCurveBlockedByNodes(
@@ -993,7 +1020,7 @@ function isManualEndpointAnchor(edge: CanvasEdge, endpoint: 'source' | 'target')
   const anchor = endpoint === 'source' ? presentation?.sourceAnchor : presentation?.targetAnchor;
   if (!anchor) return false;
   const mode = endpoint === 'source' ? presentation?.sourceAnchorMode : presentation?.targetAnchorMode;
-  return mode !== 'auto';
+  return presentation?.routeMode === 'manual' || mode !== 'auto';
 }
 
 function isSameLaneDownstreamContinuation(
@@ -1343,8 +1370,9 @@ function routeIntersects(points: Point[], obstacles: NodeRect[]): boolean {
   return points.slice(1).some((point, index) => obstacles.some((rect) => segmentIntersects(points[index]!, point, rect)));
 }
 
-function routeIntersectsEndpointNodes(
+function routeIntersectsEndpointNode(
   points: Point[],
+  rect: NodeRect,
   source: NodeRect,
   target: NodeRect,
   sourcePort: RoutePort,
@@ -1358,12 +1386,10 @@ function routeIntersectsEndpointNodes(
     && !pointInsideNode(beforeTargetApproach, target));
   return segments.some((finish, index) => {
     const start = points[index]!;
-    return [source, target].some((rect) => {
-      if (rect.id === source.id && index === 0 && segmentLeavesPort(start, finish, sourcePort)) return false;
-      if (rect.id === target.id && index === segments.length - 1 && segmentApproachesPort(start, finish, targetPort)) return false;
-      if (rect.id === target.id && index === segments.length - 2 && hasSafeTargetApproach) return false;
-      return segmentIntersects(start, finish, rect);
-    });
+    if (rect.id === source.id && index === 0 && segmentLeavesPort(start, finish, sourcePort)) return false;
+    if (rect.id === target.id && index === segments.length - 1 && segmentApproachesPort(start, finish, targetPort)) return false;
+    if (rect.id === target.id && index === segments.length - 2 && hasSafeTargetApproach) return false;
+    return segmentIntersects(start, finish, rect);
   });
 }
 

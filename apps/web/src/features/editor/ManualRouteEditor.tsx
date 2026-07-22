@@ -11,6 +11,7 @@ import { BorderGlow } from '../../components/reactbits/BorderGlow';
 type ManualRouteEditorProps = {
   points: Point[];
   conflict: boolean;
+  conflictMessage?: string;
   onMoveSegment: (segmentIndex: number, coordinate: number) => void;
   onFinishSegment?: (segmentIndex: number, coordinate: number) => void;
   screenToFlowPosition: (point: { x: number; y: number }) => Point;
@@ -20,6 +21,7 @@ type ManualRouteEditorProps = {
 export function ManualRouteEditor({
   points,
   conflict,
+  conflictMessage,
   onMoveSegment,
   onFinishSegment,
   screenToFlowPosition,
@@ -90,7 +92,7 @@ export function ManualRouteEditor({
     <div className="manual-route-editor" aria-label="编辑连线走向">
       {conflict ? (
         <BorderGlow className="manual-route-editor__status-shell" active tone="warning">
-          <div className="manual-route-editor__status" role="status">手动路线被节点阻挡</div>
+          <div className="manual-route-editor__status" role="status">{conflictMessage ?? '手动路线被节点阻挡'}</div>
         </BorderGlow>
       ) : null}
       {segments.map((segment, displayIndex) => {

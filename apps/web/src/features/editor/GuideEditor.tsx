@@ -1,4 +1,4 @@
-import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgePresentation, FlowLane, FlowStage, GuideDraftHistorySnapshot, GuideReferenceUpdate, GuideVersionSnapshot } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgeAnchorMode, EdgePresentation, FlowLane, FlowStage, GuideDraftHistorySnapshot, GuideReferenceUpdate, GuideVersionSnapshot } from '@guideanything/contracts';
 import { CanvasDocumentSchema } from '@guideanything/contracts';
 import { defaultCanvasNodeSize, deriveSemanticFlow, duplicateSelection, expandSubguide, getStageBounds, hasSemanticFlow, HistoryStack, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, movePrimaryNodeToStage, moveRouteSegment, reconcileSubguideEdges, renumberSemanticFlow, replaceSubguideReference, routeCanvasEdges, setSubguideExpanded, snapNodeForStraightRoute, translateStageNodes, type HierarchyLayoutResult, type NodeAlignmentSnap, type OrthogonalRoute, type Point } from '@guideanything/canvas-core';
 import {
@@ -144,7 +144,23 @@ type PendingReconnect = {
 type ManualRouteDraft = {
   edgeId: string;
   points: Point[];
+  sourceAnchor: EdgeAnchor;
+  sourceAnchorMode: EdgeAnchorMode;
+  targetAnchor: EdgeAnchor;
+  targetAnchorMode: EdgeAnchorMode;
 };
+
+function manualRoutePresentation(presentation: EdgePresentation | undefined, draft: ManualRouteDraft): EdgePresentation {
+  return {
+    ...presentation,
+    routeMode: 'manual',
+    waypoints: draft.points.slice(1, -1),
+    sourceAnchor: draft.sourceAnchor,
+    sourceAnchorMode: draft.sourceAnchorMode,
+    targetAnchor: draft.targetAnchor,
+    targetAnchorMode: draft.targetAnchorMode,
+  };
+}
 
 type StageDrag = {
   stageId: string;
@@ -392,12 +408,23 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     return {
       ...renderedDocument,
       edges: renderedDocument.edges.map((edge) => edge.id === manualRouteDraft.edgeId
-        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual' as const, waypoints: manualRouteDraft.points.slice(1, -1) } }
+        ? { ...edge, presentation: manualRoutePresentation(edge.presentation, manualRouteDraft) }
         : edge),
     };
   }, [manualRouteDraft, renderedDocument]);
   const manualDraftRouting = useMemo(() => manualRouteDocument ? routeCanvasEdges(manualRouteDocument) : null, [manualRouteDocument]);
   const manualDraftConflict = Boolean(manualRouteDraft && manualDraftRouting?.report.manualConflictEdgeIds.includes(manualRouteDraft.edgeId));
+  const manualDraftConflictNodeLabels = manualRouteDraft && manualDraftRouting
+    ? (manualDraftRouting.report.manualConflictNodeIdsByEdgeId.get(manualRouteDraft.edgeId) ?? [])
+      .map((nodeId) => renderedDocument?.nodes.find((node) => node.id === nodeId))
+      .filter((node): node is CanvasNode => Boolean(node))
+      .map(nodeLabel)
+    : [];
+  const manualDraftConflictMessage = manualDraftConflict
+    ? manualDraftConflictNodeLabels.length > 0
+      ? `手动路线被节点阻挡：${manualDraftConflictNodeLabels.join('、')}`
+      : '手动路线被节点阻挡：请把当前线段移到节点外侧'
+    : undefined;
   const flowEdges = useMemo(() => renderedDocument ? [
     ...renderedDocument.edges.filter((edge) => edge.semantic?.kind !== 'RESOURCE_REFERENCE').map((edge) => {
       const route = routing?.routesByEdgeId.get(edge.id);
@@ -746,7 +773,18 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     if (!selected || !isEditableBusinessEdge(document, selected)) return;
     const route = routing?.routesByEdgeId.get(selectedEdgeId);
     if (!route) return;
-    setManualRouteDraft({ edgeId: selectedEdgeId, points: route.points.map((point) => ({ ...point })) });
+    setManualRouteDraft({
+      edgeId: selectedEdgeId,
+      points: route.points.map((point) => ({ ...point })),
+      sourceAnchor: { ...route.sourceAnchor },
+      sourceAnchorMode: selected.presentation?.sourceAnchor
+        ? selected.presentation.sourceAnchorMode ?? 'manual'
+        : 'auto',
+      targetAnchor: { ...route.targetAnchor },
+      targetAnchorMode: selected.presentation?.targetAnchor
+        ? selected.presentation.targetAnchorMode ?? 'manual'
+        : 'auto',
+    });
   }, [document, layoutPreview, routing, selectedEdgeId]);
 
   const moveManualRouteSegment = useCallback((segmentIndex: number, coordinate: number) => {
@@ -767,10 +805,10 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     commit({
       ...document,
       edges: document.edges.map((edge) => edge.id === selected.id
-        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual', waypoints: nextPoints.slice(1, -1) } }
+        ? { ...edge, presentation: manualRoutePresentation(edge.presentation, { ...manualRouteDraft, points: nextPoints }) }
         : edge),
     });
-    setManualRouteDraft({ edgeId: selected.id, points: nextPoints });
+    setManualRouteDraft({ ...manualRouteDraft, edgeId: selected.id, points: nextPoints });
   }, [commit, document, layoutPreview, manualDraftConflict, manualRouteDraft, routing]);
 
   const cancelManualRouteEdit = useCallback(() => {
@@ -784,7 +822,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
     commit({
       ...document,
       edges: document.edges.map((edge) => edge.id === selected.id
-        ? { ...edge, presentation: { ...edge.presentation, routeMode: 'manual', waypoints: manualRouteDraft.points.slice(1, -1) } }
+        ? { ...edge, presentation: manualRoutePresentation(edge.presentation, manualRouteDraft) }
         : edge),
     });
     setManualRouteDraft(null);
@@ -1496,7 +1534,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
       <div className="hierarchy-panel-shell" aria-hidden={!hierarchyOpen}>
         <HierarchyPanel document={document} selectedIds={selectedIds} onSelect={selectAndFocus} onAddStage={addStage} onUpdateStage={updateStage} onMoveStage={moveStage} onReorderStage={reorderStage} onRequestDeleteStage={(id) => requestHierarchyDeletion('stage', id)} onAddLane={addLane} onUpdateLane={updateLane} onMoveLane={moveLane} onReorderLane={reorderLane} onRequestDeleteLane={(id) => requestHierarchyDeletion('lane', id)} editingLocked={Boolean(layoutPreview)} />
       </div>
-      <section className="canvas-shell" aria-label="无限画布编辑区">
+      <section className={`canvas-shell${manualRouteDraft ? ' is-route-editing' : ''}`} aria-label="无限画布编辑区">
         <button className="hierarchy-panel-toggle" type="button" aria-label={hierarchyOpen ? '收起业务流程' : '展开业务流程'} aria-pressed={hierarchyOpen} onClick={() => setHierarchyOpen((current) => !current)}>
           {hierarchyOpen ? <CaretLeft size={22} weight="bold" aria-hidden="true" /> : <CaretRight size={22} weight="bold" aria-hidden="true" />}
         </button>
@@ -1601,6 +1639,7 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
           {!layoutPreview && manualRouteDraft && flowInstance ? <ManualRouteEditor
             points={manualRouteDraft.points}
             conflict={manualDraftConflict}
+            {...(manualDraftConflictMessage ? { conflictMessage: manualDraftConflictMessage } : {})}
             onMoveSegment={moveManualRouteSegment}
             onFinishSegment={finishManualRouteSegment}
             screenToFlowPosition={(point) => flowInstance.screenToFlowPosition(point)}

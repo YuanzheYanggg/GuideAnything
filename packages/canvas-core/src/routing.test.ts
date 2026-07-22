@@ -248,12 +248,13 @@ describe('orthogonal edge routing', () => {
       { ...process('vertical-target', 250, 300, 'stage', 'lane'), size: { width: 100, height: 100 } },
     ];
     const result = routeCanvasEdges(document(nodes, [
-      edge('horizontal', 'horizontal-source', 'horizontal-target'),
+      edge('horizontal', 'horizontal-source', 'horizontal-target', { presentation: { pathStyle: 'diagonal' } }),
       edge('vertical', 'vertical-source', 'vertical-target', { sourceHandle: 'out', targetHandle: 'in' }),
     ]));
 
     expect(result.routesByEdgeId.get('horizontal')!.points).toEqual([{ x: 100, y: 50 }, { x: 400, y: 50 }]);
     expect(result.routesByEdgeId.get('horizontal')!.bridges).toEqual([{ x: 300, y: 50 }]);
+    expect(result.routesByEdgeId.get('horizontal')!.directPathSafe).toBe(true);
     expect(result.routesByEdgeId.get('vertical')!.bridges).toEqual([]);
   });
 
@@ -593,6 +594,7 @@ describe('orthogonal edge routing', () => {
     ));
 
     expect(result.report.manualConflictEdgeIds).toEqual(['conflict']);
+    expect(result.report.manualConflictNodeIdsByEdgeId.get('conflict')).toEqual(['blocker']);
     expect(result.report.collisionEdgeIds).toEqual([]);
     expect(result.routesByEdgeId.get('conflict')!.collision).toBe(false);
   });
@@ -665,6 +667,21 @@ describe('orthogonal edge routing', () => {
     expect(route.pathStyle).toBe('smooth');
     expect(route.points.slice(1, -1)).toEqual(waypoints);
     expectOrthogonal(route.points);
+  });
+
+  it('keeps a valid manual diagonal style safe when its direct path has no node collision', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 400, 0)],
+      [edge('manual-diagonal', 'source', 'target', {
+        presentation: {
+          pathStyle: 'diagonal',
+          routeMode: 'manual',
+          waypoints: [{ x: 224, y: 180 }, { x: 376, y: 180 }],
+        },
+      })],
+    ));
+
+    expect(result.routesByEdgeId.get('manual-diagonal')!.directPathSafe).toBe(true);
   });
 
   it('marks a diagonal visual preference unsafe when its direct path crosses a node', () => {

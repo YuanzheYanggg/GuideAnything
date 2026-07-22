@@ -59,6 +59,18 @@ describe('edge presentation helpers', () => {
     });
   });
 
+  it('removes route-edit snapshots while preserving explicit visual presentation', () => {
+    expect(resetEdgeRoutePresentation({
+      pathStyle: 'diagonal',
+      routeMode: 'manual',
+      waypoints: [{ x: 120, y: 80 }],
+      sourceAnchor: { side: 'RIGHT', offset: 0.5 },
+      sourceAnchorMode: 'auto',
+      targetAnchor: { side: 'LEFT', offset: 0.5 },
+      targetAnchorMode: 'auto',
+    })).toEqual({ pathStyle: 'diagonal' });
+  });
+
   it('finds the nearest node edge with an exact relative offset', () => {
     const rect = { left: 100, top: 200, width: 240, height: 120 };
 
