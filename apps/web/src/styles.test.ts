@@ -66,11 +66,14 @@ describe('editor layout styles', () => {
     expect(stylesheet).toMatch(/\.canvas-node-delete:hover\s*\{[^}]*color:\s*var\(--ga-accent\)/s);
   });
 
-  it('keeps the auto-layout preview in the right inspector and anchors the edit group at the end', () => {
-    expect(stylesheet).toMatch(/\.canvas-layout-preview-panel\s*\{[^}]*position:\s*relative[^}]*min-height:\s*100%/s);
-    expect(stylesheet).not.toContain('.canvas-layout-preview-backdrop');
+  it('uses a full-width, read-only dual canvas for auto-layout comparison', () => {
+    expect(stylesheet).toMatch(/\.canvas-layout-compare\s*\{[^}]*display:\s*grid[^}]*grid-template-rows:[^}]*min-height:\s*0/s);
+    expect(stylesheet).toMatch(/\.canvas-layout-compare-panes\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s);
+    expect(stylesheet).toMatch(/\.canvas-layout-compare-pane\s*\{[^}]*display:\s*grid[^}]*min-width:\s*0[^}]*min-height:\s*0/s);
+    expect(stylesheet).toMatch(/\.layout-compare-flow\s*\.react-flow__pane\s*\{[^}]*cursor:\s*grab/s);
+    expect(stylesheet).toMatch(/@media \(max-width:\s*900px\)\s*\{[\s\S]*\.canvas-layout-compare-panes\s*\{[^}]*grid-template-columns:\s*1fr/s);
+    expect(stylesheet).not.toContain('.canvas-layout-preview-panel');
     expect(stylesheet).toMatch(/\.editor-toolbar-group--edit-end\s*\{[^}]*margin-left:\s*auto/s);
-    expect(stylesheet).not.toContain('.layout-preview');
   });
 
   it('uses one React Bits surface contract for secondary dialogs and anchored editors', () => {

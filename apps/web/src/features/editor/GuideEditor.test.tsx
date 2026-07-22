@@ -35,6 +35,13 @@ const { fitView, screenToFlowPosition, reactFlowCallbacks } = vi.hoisted(() => (
     edgesReconnectable: undefined as boolean | undefined,
     edgeTypes: undefined as unknown,
     inlineEditing: undefined as undefined | { enabled: boolean; updateText: (nodeId: string, field: 'label' | 'description' | 'markdown' | 'imageCaption' | 'videoCaption', value: string) => void },
+    instances: [] as Array<{
+      className: string;
+      onMove: ((event: unknown, viewport: { x: number; y: number; zoom: number }) => void) | undefined;
+      onSelectionChange: ((selection: { nodes: Array<{ id: string }> }) => void) | undefined;
+      setViewport: ReturnType<typeof vi.fn>;
+      getViewport: ReturnType<typeof vi.fn>;
+    }>,
   },
 }));
 
@@ -44,7 +51,28 @@ vi.mock('@xyflow/react', async () => {
   const { useInlineNodeEditing } = await import('../nodes/InlineNodeTextEditor');
   return {
     ...actual,
-    ReactFlow: ({ children, nodes = [], edges = [], edgeTypes, onInit, onNodesChange, onMove, onMoveEnd, onConnect, onConnectStart, onConnectEnd, onNodeDoubleClick, onSelectionChange, onEdgeClick, onEdgeDoubleClick, onReconnect, onReconnectStart, onReconnectEnd, onPointerDownCapture, onPointerMoveCapture, onPointerUpCapture, nodesDraggable = true, edgesReconnectable }: { children?: React.ReactNode; nodes?: Array<{ id: string; data?: { description?: string } }>; edges?: Edge[]; edgeTypes?: unknown; onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition }) => void; onNodesChange?: (changes: NodeChange[]) => void; onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onConnect?: (connection: Connection) => void; onConnectStart?: (event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void; onConnectEnd?: (event: unknown, connectionState?: unknown) => void; onNodeDoubleClick?: (event: { target: EventTarget | null; currentTarget: EventTarget | null }, node: { id: string }) => void; onSelectionChange?: (selection: { nodes: Array<{ id: string }> }) => void; onEdgeClick?: (event: unknown, edge: Edge) => void; onEdgeDoubleClick?: (event: unknown, edge: Edge) => void; onReconnect?: (oldEdge: Edge, connection: { source: string | null; sourceHandle?: string | null; target: string | null; targetHandle?: string | null }) => void; onReconnectStart?: (event: unknown, edge: Edge, handleType: 'source' | 'target') => void; onReconnectEnd?: (event: unknown, edge: Edge, handleType: 'source' | 'target', connectionState: { toNode?: { id: string } | null }) => void; onPointerDownCapture?: (event: ReactPointerEvent<HTMLDivElement>) => void; onPointerMoveCapture?: (event: ReactPointerEvent<HTMLDivElement>) => void; onPointerUpCapture?: (event: ReactPointerEvent<HTMLDivElement>) => void; nodesDraggable?: boolean; edgesReconnectable?: boolean }) => {
+    ReactFlow: ({ children, nodes = [], edges = [], edgeTypes, onInit, onNodesChange, onMove, onMoveEnd, onConnect, onConnectStart, onConnectEnd, onNodeDoubleClick, onSelectionChange, onEdgeClick, onEdgeDoubleClick, onReconnect, onReconnectStart, onReconnectEnd, onPointerDownCapture, onPointerMoveCapture, onPointerUpCapture, nodesDraggable = true, edgesReconnectable, className }: { children?: React.ReactNode; nodes?: Array<{ id: string; data?: { description?: string }; position?: { x: number; y: number }; selected?: boolean }>; edges?: Edge[]; edgeTypes?: unknown; onInit?: (instance: { fitView: typeof fitView; screenToFlowPosition: typeof screenToFlowPosition; setViewport: ReturnType<typeof vi.fn>; getViewport: ReturnType<typeof vi.fn> }) => void; onNodesChange?: (changes: NodeChange[]) => void; onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onMoveEnd?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void; onConnect?: (connection: Connection) => void; onConnectStart?: (event: unknown, connection: { nodeId: string | null; handleId: string | null; handleType: string | null }) => void; onConnectEnd?: (event: unknown, connectionState?: unknown) => void; onNodeDoubleClick?: (event: { target: EventTarget | null; currentTarget: EventTarget | null }, node: { id: string }) => void; onSelectionChange?: (selection: { nodes: Array<{ id: string }> }) => void; onEdgeClick?: (event: unknown, edge: Edge) => void; onEdgeDoubleClick?: (event: unknown, edge: Edge) => void; onReconnect?: (oldEdge: Edge, connection: { source: string | null; sourceHandle?: string | null; target: string | null; targetHandle?: string | null }) => void; onReconnectStart?: (event: unknown, edge: Edge, handleType: 'source' | 'target') => void; onReconnectEnd?: (event: unknown, edge: Edge, handleType: 'source' | 'target', connectionState: { toNode?: { id: string } | null }) => void; onPointerDownCapture?: (event: ReactPointerEvent<HTMLDivElement>) => void; onPointerMoveCapture?: (event: ReactPointerEvent<HTMLDivElement>) => void; onPointerUpCapture?: (event: ReactPointerEvent<HTMLDivElement>) => void; nodesDraggable?: boolean; edgesReconnectable?: boolean; className?: string }) => {
+      const instanceRef = React.useRef<{
+        className: string;
+        onMove: ((event: unknown, viewport: { x: number; y: number; zoom: number }) => void) | undefined;
+        onSelectionChange: ((selection: { nodes: Array<{ id: string }> }) => void) | undefined;
+        setViewport: ReturnType<typeof vi.fn>;
+        getViewport: ReturnType<typeof vi.fn>;
+      } | null>(null);
+      if (!instanceRef.current) {
+        instanceRef.current = {
+          className: className ?? '',
+          onMove: undefined,
+          onSelectionChange: undefined,
+          setViewport: vi.fn(),
+          getViewport: vi.fn(() => ({ x: 0, y: 0, zoom: 1 })),
+        };
+        reactFlowCallbacks.instances.push(instanceRef.current);
+      }
+      const instance = instanceRef.current!;
+      instance.className = className ?? '';
+      instance.onMove = onMove;
+      instance.onSelectionChange = onSelectionChange;
       reactFlowCallbacks.inlineEditing = useInlineNodeEditing();
       reactFlowCallbacks.onNodesChange = onNodesChange;
       reactFlowCallbacks.onMove = onMove;
@@ -65,8 +93,8 @@ vi.mock('@xyflow/react', async () => {
       reactFlowCallbacks.edges = edges;
       reactFlowCallbacks.edgesReconnectable = edgesReconnectable;
       reactFlowCallbacks.edgeTypes = edgeTypes;
-      React.useEffect(() => { onInit?.({ fitView, screenToFlowPosition }); }, [onInit]);
-      return <div className="react-flow" onPointerDownCapture={onPointerDownCapture} onPointerMoveCapture={onPointerMoveCapture} onPointerUpCapture={onPointerUpCapture}><div className="react-flow__pane" data-testid="flow-pane" />{nodes.map((node) => <div className={`react-flow__node${nodesDraggable ? ' draggable' : ''}`} data-id={node.id} key={node.id}>{node.data?.description ? <p className="flow-description" data-testid={`flow-description-${node.id}`}>{node.data.description}</p> : null}</div>)}{children}</div>;
+      React.useEffect(() => { onInit?.({ fitView, screenToFlowPosition, setViewport: instance.setViewport, getViewport: instance.getViewport }); }, [instance, onInit]);
+      return <div className={`react-flow${className ? ` ${className}` : ''}`} onPointerDownCapture={onPointerDownCapture} onPointerMoveCapture={onPointerMoveCapture} onPointerUpCapture={onPointerUpCapture}><div className="react-flow__pane" data-testid="flow-pane" />{nodes.map((node) => <div className={`react-flow__node${nodesDraggable ? ' draggable' : ''}${node.selected ? ' selected' : ''}`} data-id={node.id} data-position={`${node.position?.x ?? 0},${node.position?.y ?? 0}`} data-testid={`flow-node-${node.id}`} key={node.id}>{node.data?.description ? <p className="flow-description" data-testid={`flow-description-${node.id}`}>{node.data.description}</p> : null}</div>)}{children}</div>;
     },
     ViewportPortal: ({ children }: { children?: React.ReactNode }) => <div data-testid="viewport-portal">{children}</div>,
     Background: () => null,
@@ -1155,7 +1183,7 @@ describe('GuideEditor', () => {
     expect(api.publishGuide).toHaveBeenCalledWith('guide-host');
   });
 
-  it('attaches toolbar-created resources to the selected node, previews hierarchy, and applies it as one undoable change', async () => {
+  it('attaches toolbar-created resources to the selected node, compares both layouts, and applies it as one undoable change', async () => {
     const api = createApi();
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
@@ -1177,11 +1205,12 @@ describe('GuideEditor', () => {
 
     const savesBeforePreview = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
-    const layoutDialog = screen.getByRole('dialog', { name: '自动整理预览' });
-    expect(layoutDialog).toBeVisible();
-    expect(layoutDialog.closest('.inspector')).not.toBeNull();
-    expect(layoutDialog.closest('.canvas-shell')).toBeNull();
-    expect(screen.getByText('阶段从上到下')).toBeVisible();
+    const comparison = screen.getByRole('region', { name: '自动整理对照' });
+    expect(comparison).toBeVisible();
+    expect(within(comparison).getByRole('region', { name: '原始画布' })).toBeVisible();
+    expect(within(comparison).getByRole('region', { name: '自动整理结果' })).toBeVisible();
+    expect(screen.queryByRole('dialog', { name: '自动整理预览' })).not.toBeInTheDocument();
+    expect(comparison.closest('.inspector')).toBeNull();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
     fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
     fireEvent.click(screen.getByRole('button', { name: '撤销' }));
@@ -1321,9 +1350,8 @@ describe('GuideEditor', () => {
     expect(saved.nodes.find((node) => node.id === 'note')!.position).toEqual({ x: 120, y: 208 });
   });
 
-  it('explains the hierarchy preview and focuses an offscreen node selected from the structure tree', async () => {
+  it('shows the original and automatic-layout positions side by side before applying', async () => {
     const user = userEvent.setup();
-    fitView.mockClear();
     const document: CanvasDocument = {
       schemaVersion: 1,
       stages: [{ id: 'prepare', title: '准备', order: 0 }],
@@ -1341,21 +1369,49 @@ describe('GuideEditor', () => {
     openHierarchyPanel();
 
     await user.click(screen.getByRole('button', { name: '预览自动整理' }));
-    const layoutDialog = screen.getByRole('dialog', { name: '自动整理预览' });
-    expect(within(layoutDialog).getByText('主流程').parentElement).toHaveTextContent('2');
-    expect(within(layoutDialog).getByText('阶段').parentElement).toHaveTextContent('1');
-    expect(within(layoutDialog).getByText('资料').parentElement).toHaveTextContent('2');
-    expect(within(layoutDialog).getByText('孤立节点 1')).toBeVisible();
-    expect(within(layoutDialog).getByText('循环 0')).toBeVisible();
-    expect(within(layoutDialog).getByText('阶段从上到下')).toBeVisible();
-    await waitFor(() => expect(fitView).toHaveBeenCalledWith(expect.objectContaining({
-      padding: 0.16,
-      minZoom: document.viewport.zoom,
-      maxZoom: document.viewport.zoom,
-    })));
+    const comparison = screen.getByRole('region', { name: '自动整理对照' });
+    const original = within(comparison).getByRole('region', { name: '原始画布' });
+    const result = within(comparison).getByRole('region', { name: '自动整理结果' });
 
-    await user.click(screen.getByRole('button', { name: '选择流程节点 离屏流程' }));
-    expect(fitView).toHaveBeenCalledWith(expect.objectContaining({ nodes: [{ id: 'offscreen' }] }));
+    expect(within(original).getByTestId('flow-node-offscreen')).toHaveAttribute('data-position', '12000,8000');
+    expect(within(result).getByTestId('flow-node-offscreen')).not.toHaveAttribute('data-position', '12000,8000');
+    expect(within(comparison).getByText(/位置变化/)).toBeVisible();
+    expect(within(comparison).getByText(/孤立节点 1/)).toBeVisible();
+    expect(within(original).getByTestId('flow-node-offscreen')).not.toHaveClass('draggable');
+    expect(within(result).getByTestId('flow-node-offscreen')).not.toHaveClass('draggable');
+  });
+
+  it('synchronizes selection and relative viewport movement across the two layout panes', async () => {
+    reactFlowCallbacks.instances.splice(0);
+    const user = userEvent.setup();
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '开始', shape: 'start' } },
+        { id: 'offscreen', type: 'process', position: { x: 12_000, y: 8_000 }, zIndex: 1, data: { label: '离屏流程', shape: 'process' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'start', exitNodeIds: [],
+    };
+    render(<GuideEditor guideId="guide-host" api={createApi({ document })} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    await user.click(screen.getByRole('button', { name: '预览自动整理' }));
+    const comparison = screen.getByRole('region', { name: '自动整理对照' });
+    const original = within(comparison).getByRole('region', { name: '原始画布' });
+    const result = within(comparison).getByRole('region', { name: '自动整理结果' });
+    const sourceFlow = await waitFor(() => {
+      const instance = reactFlowCallbacks.instances.find((flow) => flow.className?.includes('layout-compare-flow--original'));
+      expect(instance).toBeDefined();
+      return instance!;
+    });
+    const resultFlow = reactFlowCallbacks.instances.find((flow) => flow.className?.includes('layout-compare-flow--result'))!;
+
+    act(() => sourceFlow.onSelectionChange?.({ nodes: [{ id: 'offscreen' }] }));
+    expect(within(original).getByTestId('flow-node-offscreen')).toHaveClass('selected');
+    expect(within(result).getByTestId('flow-node-offscreen')).toHaveClass('selected');
+
+    act(() => sourceFlow.onMove?.({} as MouseEvent, { x: 40, y: -20, zoom: 1.25 }));
+    expect(resultFlow.setViewport).toHaveBeenCalledWith({ x: 40, y: -20, zoom: 1.25 });
   });
 
   it('lets stage and lane names be cleared before entering a replacement', async () => {
@@ -1419,8 +1475,9 @@ describe('GuideEditor', () => {
     }));
 
     fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
-    const layoutDialog = screen.getByRole('dialog', { name: '自动整理预览' });
-    expect(within(layoutDialog).getByText('泳道').parentElement).toHaveTextContent('1');
+    const comparison = screen.getByRole('region', { name: '自动整理对照' });
+    expect(within(comparison).getByRole('region', { name: '原始画布' })).toBeVisible();
+    expect(within(comparison).getByRole('region', { name: '自动整理结果' })).toBeVisible();
   });
 
   it('persists drag-reordered stages while keeping the derived tutorial order in the tree', async () => {
@@ -1474,8 +1531,7 @@ describe('GuideEditor', () => {
     expect(screen.getByLabelText('指南标题')).toBeDisabled();
     expect(screen.getByRole('button', { name: '查看摘要' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '编辑标签' })).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: '选择流程节点 离屏流程' }));
-    act(() => reactFlowCallbacks.onMoveEnd?.(null, { x: 480, y: 220, zoom: 0.8 }));
+    expect(screen.getByRole('region', { name: '自动整理对照' })).toBeVisible();
     fireEvent.keyDown(window, { key: 's', metaKey: true });
     expect(api.saveGuide).not.toHaveBeenCalled();
 
@@ -1488,7 +1544,7 @@ describe('GuideEditor', () => {
     }));
   });
 
-  it('keeps a layout preview intact when a canvas node drag is attempted', async () => {
+  it('keeps both layout comparison panes intact when a canvas node drag is attempted', async () => {
     const api = createApi();
     render(<GuideEditor guideId="guide-host" api={api} onBack={vi.fn()} />);
     await screen.findByDisplayValue('订单教学');
@@ -1502,19 +1558,21 @@ describe('GuideEditor', () => {
     const savesBeforePreview = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.length;
 
     fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
-    const processNode = document.querySelector<HTMLElement>('.react-flow__node[data-id^="process-"]');
+    const comparison = screen.getByRole('region', { name: '自动整理对照' });
+    const original = within(comparison).getByRole('region', { name: '原始画布' });
+    const processNode = original.querySelector<HTMLElement>('.react-flow__node[data-id^="process-"]');
     expect(processNode).toBeTruthy();
     expect(processNode).not.toHaveClass('draggable');
     fireEvent.pointerDown(processNode!, { clientX: 80, clientY: 80, pointerId: 1, button: 0 });
     fireEvent.pointerMove(document, { clientX: 220, clientY: 80, pointerId: 1, buttons: 1 });
     fireEvent.pointerUp(document, { clientX: 220, clientY: 80, pointerId: 1, button: 0 });
 
-    expect(screen.getByRole('dialog', { name: '自动整理预览' })).toBeVisible();
-    expect(screen.getByText('阶段从上到下')).toBeVisible();
+    expect(screen.getByRole('region', { name: '自动整理对照' })).toBeVisible();
+    expect(within(comparison).getByRole('region', { name: '自动整理结果' })).toBeVisible();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
 
     fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
-    expect(screen.getByRole('dialog', { name: '自动整理预览' })).toBeVisible();
+    expect(screen.getByRole('region', { name: '自动整理对照' })).toBeVisible();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
   });
 

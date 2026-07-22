@@ -75,6 +75,18 @@ describe('inline node text integration', () => {
     expect(onOpenEditor).toHaveBeenCalledWith('process-1', expect.any(HTMLButtonElement));
   });
 
+  it('renders flow details as static content when the surrounding canvas is read-only', () => {
+    render(
+      <NodeDetailPresentationProvider value={{ enabled: false, expandedNodeIds: new Set(), onOpenEditor: vi.fn(), onToggleExpanded: vi.fn() }}>
+        <FlowNode {...props('process-1', 'process', { label: '收到订单', description: '检查客户' })} />
+      </NodeDetailPresentationProvider>,
+    );
+
+    expect(screen.queryByRole('button', { name: '编辑收到订单 · 节点明细' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '详情' })).not.toBeInTheDocument();
+    expect(screen.getByText('检查客户')).toBeVisible();
+  });
+
   it('uses the local presentation state when a controlled React Flow node still carries an old expanded flag', () => {
     render(
       <NodeDetailPresentationProvider value={{ expandedNodeIds: new Set(), onOpenEditor: vi.fn(), onToggleExpanded: vi.fn() }}>
