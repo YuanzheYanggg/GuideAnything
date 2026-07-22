@@ -67,7 +67,7 @@ function OverviewPage({ model }: { model: GuidePdfExportModel }): JSX.Element {
       {laneTitles.length > 0 ? <div className="pdf-export-overview-lanes" aria-label="责任泳道">{laneTitles.map((title) => <span key={title}>泳道 · {title}</span>)}</div> : null}
     </div>
     {model.overview.hasFlow ? <div className="pdf-export-overview-graph" style={{ aspectRatio: `${layout.width} / ${layout.height}` }}>
-      <svg viewBox={`0 0 ${layout.width} ${layout.height}`} role="img" aria-label="流程连线总览">
+      <svg viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none" role="img" aria-label="流程连线总览">
         <defs>
           <marker id="pdf-export-arrow-end" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" /></marker>
           <marker id="pdf-export-arrow-start" markerWidth="10" markerHeight="10" refX="2" refY="5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" /></marker>

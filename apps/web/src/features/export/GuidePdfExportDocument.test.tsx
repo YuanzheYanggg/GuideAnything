@@ -93,6 +93,7 @@ describe('GuidePdfExportDocument', () => {
     expect(screen.getByTestId('pdf-export-video-video-1').querySelector('a')).toHaveAttribute('href', 'https://cdn.example.com/demo.mp4');
     expect(screen.getByTestId('pdf-export-warning')).toHaveTextContent('视频地址');
     expect(screen.getByTestId('pdf-export-overview').querySelector('.pdf-export-edge path')).toBeNull();
+    expect(screen.getByRole('img', { name: '流程连线总览' })).toHaveAttribute('preserveAspectRatio', 'none');
   });
 
   it('renders a static SVG path when the overview has a route edge', () => {
