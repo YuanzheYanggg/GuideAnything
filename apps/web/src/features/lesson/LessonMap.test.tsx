@@ -114,4 +114,26 @@ describe('LessonMap', () => {
     expect(screen.getByTestId('lesson-anchor-edge-e1-source')).toHaveStyle({ left: '25%' });
     expect(screen.getByTestId('lesson-anchor-edge-e1-target')).toHaveStyle({ top: '60%' });
   });
+
+  it('passes a persisted smooth business edge to the shared renderer while leaving resource decoration non-selectable', () => {
+    const document: CanvasDocument = {
+      ...documentWithManualAnchors,
+      nodes: [
+        ...documentWithManualAnchors.nodes,
+        { id: 'resource', type: 'markdown', position: { x: 300, y: 480 }, zIndex: 2, data: { markdown: '补充说明' } },
+      ],
+      edges: [
+        { id: 'smooth-business', source: 'source', target: 'target', presentation: { pathStyle: 'smooth' } },
+        { id: 'resource-decoration', source: 'source', target: 'resource', semantic: { kind: 'RESOURCE_REFERENCE' } },
+      ],
+    };
+    const edges = toLessonFlowEdges(document);
+    const business = edges.find((edge) => edge.id === 'smooth-business')!;
+    const decoration = edges.find((edge) => edge.id === 'resource-decoration')!;
+
+    expect(business.type).toBe('orthogonal');
+    expect((business.data as { route?: { pathStyle?: string } }).route?.pathStyle).toBe('smooth');
+    expect(decoration.type).toBe('smoothstep');
+    expect(decoration.selectable).toBe(false);
+  });
 });

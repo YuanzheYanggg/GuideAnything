@@ -2,6 +2,7 @@ import { fireEvent, render } from '@testing-library/react';
 import type { EdgeProps } from '@xyflow/react';
 import { Position } from '@xyflow/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { OrthogonalRoute } from '@guideanything/canvas-core';
 
 const { baseEdge } = vi.hoisted(() => ({ baseEdge: vi.fn() }));
 
@@ -17,7 +18,28 @@ vi.mock('@xyflow/react', async () => {
   };
 });
 
-import { OrthogonalEdge, labelOffsetAtPoint, labelPointAtOffset, orthogonalPath, syncEdgeUpdaterCoordinates } from './OrthogonalEdge';
+import { OrthogonalEdge, labelOffsetAtPoint, labelPointAtOffset, orthogonalPath, renderRoutePath, syncEdgeUpdaterCoordinates } from './OrthogonalEdge';
+
+function route(overrides: Partial<OrthogonalRoute> = {}): OrthogonalRoute {
+  return {
+    edgeId: 'edge-1',
+    points: [{ x: 10, y: 20 }, { x: 120, y: 20 }, { x: 120, y: 120 }, { x: 210, y: 120 }],
+    routing: 'elbow',
+    pathStyle: 'orthogonal',
+    directPath: [{ x: 10, y: 20 }, { x: 210, y: 120 }],
+    directPathSafe: false,
+    smoothSegments: [],
+    smoothPathSafe: false,
+    kind: 'FORWARD',
+    sourceSide: 'RIGHT',
+    targetSide: 'LEFT',
+    sourceAnchor: { side: 'RIGHT', offset: 0.5 },
+    targetAnchor: { side: 'LEFT', offset: 0.5 },
+    collision: false,
+    bridges: [],
+    ...overrides,
+  };
+}
 
 describe('OrthogonalEdge', () => {
   beforeEach(() => baseEdge.mockReset());
@@ -32,6 +54,38 @@ describe('OrthogonalEdge', () => {
 
   it('draws an upward bridge when a horizontal route crosses another edge', () => {
     expect(orthogonalPath([{ x: 0, y: 100 }, { x: 200, y: 100 }], 12, [{ x: 100, y: 100 }])).toContain('Q 100 88 108 100');
+  });
+
+  it('renders true cubic geometry only when a smooth route is safe', () => {
+    const smooth = route({
+      pathStyle: 'smooth',
+      smoothPathSafe: true,
+      smoothSegments: [{
+        start: { x: 10, y: 20 },
+        control1: { x: 40, y: 20 },
+        control2: { x: 160, y: 120 },
+        end: { x: 210, y: 120 },
+      }],
+    });
+
+    expect(renderRoutePath(smooth, smooth.points)).toContain('C');
+  });
+
+  it('renders a safe diagonal visual preference as one direct segment and falls back when unsafe', () => {
+    const safe = route({ pathStyle: 'diagonal', directPathSafe: true });
+    const unsafe = route({ pathStyle: 'diagonal', directPathSafe: false });
+
+    expect(renderRoutePath(safe, safe.points)).toBe('M 10 20 L 210 120');
+    expect(renderRoutePath(unsafe, unsafe.points)).toContain('Q');
+  });
+
+  it('keeps aligned smooth and diagonal routes as one exact straight segment', () => {
+    const points = [{ x: 10, y: 20 }, { x: 210, y: 20 }];
+    const smooth = route({ points, pathStyle: 'smooth', smoothPathSafe: true, smoothSegments: [] });
+    const diagonal = route({ points, directPath: points, pathStyle: 'diagonal', directPathSafe: true });
+
+    expect(renderRoutePath(smooth, points)).toBe('M 10 20 L 210 20');
+    expect(renderRoutePath(diagonal, points)).toBe('M 10 20 L 210 20');
   });
 
   it('keeps React Flow reconnect circles on the custom route endpoints', () => {

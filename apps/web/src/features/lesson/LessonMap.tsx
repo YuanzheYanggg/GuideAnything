@@ -222,6 +222,7 @@ function lessonFlowEdges(document: CanvasDocument, routing: ReturnType<typeof ro
       sourceHandle: route ? physicalLessonHandleId(edge.id, 'source') : edge.sourceHandle ?? (source?.type === 'decision' ? 'yes' : 'out'),
       targetHandle: route ? physicalLessonHandleId(edge.id, 'target') : edge.targetHandle ?? 'in',
       type: route ? 'orthogonal' : 'smoothstep',
+      ...(route ? {} : { selectable: false, reconnectable: false }),
       ...visuals,
       data: { ...(route ? { route } : {}), canvasEdge: edge },
     } satisfies Edge;

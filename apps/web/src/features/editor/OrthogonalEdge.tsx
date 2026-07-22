@@ -20,7 +20,7 @@ export const OrthogonalEdge = memo(function OrthogonalEdge({
   const edgeData = data as OrthogonalEdgeData | undefined;
   const points = route?.points ?? fallbackPoints(sourceX, sourceY, targetX, targetY);
   const endpointMode = edgeData?.endpointMode;
-  const path = orthogonalPath(points, 12, route?.bridges ?? []);
+  const path = renderRoutePath(route, points);
   const [dragOffset, setDragOffset] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const dragPointerId = useRef<number | null>(null);
@@ -130,6 +130,30 @@ export function syncEdgeUpdaterCoordinates(edgeId: string, points: Point[], root
   };
   update('.react-flow__edgeupdater-source', source);
   update('.react-flow__edgeupdater-target', target);
+}
+
+export function renderRoutePath(route: OrthogonalRoute | undefined, fallback: Point[]): string {
+  const points = route?.points ?? fallback;
+  if (points.length === 2 && (points[0]!.x === points[1]!.x || points[0]!.y === points[1]!.y)) return linePath(points);
+  if (route?.pathStyle === 'diagonal' && route.directPathSafe && route.directPath.length >= 2) return linePath(route.directPath);
+  if (route?.pathStyle === 'smooth' && route.smoothPathSafe && route.smoothSegments.length > 0) return cubicPath(route.smoothSegments);
+  return orthogonalPath(points, 12, route?.bridges ?? []);
+}
+
+function linePath(points: Point[]): string {
+  if (points.length === 0) return '';
+  const commands = [`M ${points[0]!.x} ${points[0]!.y}`];
+  points.slice(1).forEach((point) => commands.push(`L ${point.x} ${point.y}`));
+  return commands.join(' ');
+}
+
+function cubicPath(segments: OrthogonalRoute['smoothSegments']): string {
+  if (segments.length === 0) return '';
+  const commands = [`M ${segments[0]!.start.x} ${segments[0]!.start.y}`];
+  segments.forEach((segment) => {
+    commands.push(`C ${segment.control1.x} ${segment.control1.y} ${segment.control2.x} ${segment.control2.y} ${segment.end.x} ${segment.end.y}`);
+  });
+  return commands.join(' ');
 }
 
 export function orthogonalPath(points: Point[], radius = 12, bridges: Point[] = []): string {
