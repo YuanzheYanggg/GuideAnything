@@ -90,4 +90,11 @@ describe('editor layout styles', () => {
     expect(stylesheet).toMatch(/\.edge-label-editor-shell\s*\{[^}]*position:\s*absolute[^}]*pointer-events:\s*all/s);
     expect(stylesheet).toMatch(/\.manual-route-editor__status-shell\s*\{[^}]*border-radius:\s*999px[^}]*pointer-events:\s*none/s);
   });
+
+  it('flows printable guide sections continuously while keeping the cover as a page boundary', () => {
+    expect(stylesheet).toMatch(/@media print[\s\S]*\.pdf-export-page\s*\{[^}]*padding:\s*18px 24px[^}]*break-after:\s*auto[^}]*\}/s);
+    expect(stylesheet).toMatch(/@media print[\s\S]*\.pdf-export-cover\s*\{[^}]*break-after:\s*page[^}]*\}/s);
+    expect(stylesheet).toMatch(/@page\s*\{[^}]*size:\s*A4 landscape;[^}]*margin:\s*0[^}]*\}/s);
+    expect(stylesheet).toMatch(/@media print[\s\S]*\.pdf-export-shell\s*\{[^}]*background:\s*var\(--ga-bg\)[^}]*\}/s);
+  });
 });

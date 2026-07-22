@@ -1800,13 +1800,13 @@ a.favorite-resource-item:hover { border-color: rgb(73 137 230 / .46); background
 .pdf-export-warning strong { color: #a96218; font-size: .76rem; }
 .pdf-export-warning ul { display: grid; gap: 3px; margin: 7px 0 0; padding-left: 18px; color: var(--ga-text-secondary); font-size: .74rem; }
 
-@page { size: A4 landscape; margin: 12mm; }
+@page { size: A4 landscape; margin: 0; }
 @media print {
   .pdf-export-toolbar { display: none !important; }
-  .pdf-export-shell { background: white; }
+  .pdf-export-shell { background: var(--ga-bg); }
   .pdf-export-document { max-width: none; padding: 0; }
-  .pdf-export-page { min-height: 0; border: 0; border-radius: 0; padding: 0; box-shadow: none; }
-  .pdf-export-page { break-after: page; }
+  .pdf-export-page { min-height: 0; border: 0; border-radius: 0; padding: 18px 24px; box-shadow: none; break-after: auto; }
+  .pdf-export-cover { break-after: page; }
   .pdf-export-overview-graph { min-height: 0; height: 600px; aspect-ratio: auto !important; }
   .pdf-export-overview-node { height: auto !important; min-height: 0; gap: 2px; padding: 5px; }
   .pdf-export-overview-node strong { font-size: .68rem; }
