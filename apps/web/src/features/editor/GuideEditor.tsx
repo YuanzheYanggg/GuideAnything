@@ -53,7 +53,7 @@ import { CanvasCreationMenu, type CanvasCreationKind } from './CanvasCreationMen
 import { EdgeLabelEditor, type EdgeLabelValue } from './EdgeLabelEditor';
 import { NodeDetailDialog } from './NodeDetailDialog';
 import { EdgeToolbar } from './EdgeToolbar';
-import { CanvasLayoutPreviewDialog } from './CanvasLayoutPreviewDialog';
+import { CanvasLayoutComparePreview, type LayoutComparePanePresentation } from './CanvasLayoutComparePreview';
 import { EditorToolbar } from './EditorToolbar';
 import { ManualRouteEditor } from './ManualRouteEditor';
 import { edgeAnchorFromClientPoint, edgePresentationForPathStyle, isEditableBusinessEdge, resetEdgeRoutePresentation, resolveEdgeVisuals } from './edge-presentation';
@@ -254,15 +254,6 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
   }, [layoutPreview]);
 
   useEffect(() => {
-    if (!layoutPreview || !flowInstance) return;
-    const zoom = layoutPreview.document.viewport.zoom;
-    const timer = window.setTimeout(() => {
-      void flowInstance.fitView({ duration: 320, padding: 0.16, minZoom: zoom, maxZoom: zoom });
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [flowInstance, layoutPreview]);
-
-  useEffect(() => {
     if (!document || !flowInstance || !focusNodeId || !document.nodes.some((node) => node.id === focusNodeId)) return;
     const focusKey = `${guideId}:${focusNodeId}`;
     if (appliedFocusRef.current === focusKey) return;
@@ -399,9 +390,9 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
   }, [document, flowInstance, layoutPreview]);
 
   const renderedDocument = useMemo(() => {
-    const baseDocument = layoutPreview?.document ?? dragPreviewDocument ?? document;
+    const baseDocument = dragPreviewDocument ?? document;
     return baseDocument ? documentWithMeasuredNodeSizes(baseDocument, flowNodes) : null;
-  }, [document, dragPreviewDocument, flowNodes, layoutPreview]);
+  }, [document, dragPreviewDocument, flowNodes]);
   const routing = useMemo(() => renderedDocument ? routeCanvasEdges(renderedDocument) : null, [renderedDocument]);
   const manualRouteDocument = useMemo(() => {
     if (!renderedDocument || !manualRouteDraft) return null;
@@ -454,13 +445,23 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
   ] : [], [flowInstance, layoutPreview, manualDraftConflict, manualRouteDraft, openEdgeLabelEditor, renderedDocument, routing, selectedEdgeId, updateEdgeLabelOffset]);
   const nodeAnchorHandles = useMemo(() => renderedDocument && routing ? anchorHandlesByNodeId(renderedDocument, routing) : new Map<string, NodeAnchorHandle[]>(), [renderedDocument, routing]);
   const renderedFlowNodes = useMemo(() => {
-    const preview = layoutPreview?.document ?? (draggedStageId ? dragPreviewDocument : null);
+    const preview = draggedStageId ? dragPreviewDocument : null;
     const baseNodes = preview ? toFlowNodes(preview.nodes, selectedIds, preview.lanes, expandedDetailNodeIds, semanticCodeByNodeId(preview)) : flowNodes;
     return renderedDocument ? [...baseNodes, ...resourceAppendixAnchorNodes(renderedDocument)] : baseNodes;
-  }, [dragPreviewDocument, draggedStageId, expandedDetailNodeIds, flowNodes, layoutPreview, renderedDocument, selectedIds]);
+  }, [dragPreviewDocument, draggedStageId, expandedDetailNodeIds, flowNodes, renderedDocument, selectedIds]);
   const stageBounds = useMemo(() => renderedDocument ? getStageBounds(renderedDocument) : [], [renderedDocument]);
   const swimlaneBounds = useMemo(() => renderedDocument ? getCanvasSwimlaneBounds(renderedDocument, stageBounds) : [], [renderedDocument, stageBounds]);
   const appendixGroups = useMemo(() => renderedDocument ? resourceAppendixGroups(renderedDocument) : [], [renderedDocument]);
+  const layoutSourceDocument = useMemo(() => {
+    if (!layoutPreview || !document) return null;
+    return documentWithMeasuredNodeSizes(document, flowNodes);
+  }, [document, flowNodes, layoutPreview]);
+  const layoutSourcePresentation = useMemo(() => layoutSourceDocument
+    ? layoutComparePresentation(layoutSourceDocument, selectedIds)
+    : null, [layoutSourceDocument, selectedIds]);
+  const layoutResultPresentation = useMemo(() => layoutPreview
+    ? layoutComparePresentation(layoutPreview.document, selectedIds)
+    : null, [layoutPreview, selectedIds]);
   const selectedBusinessEdge = selectedEdgeId && document ? document.edges.find((edge) => edge.id === selectedEdgeId) ?? null : null;
   const selectedEdgeRoute = selectedBusinessEdge ? routing?.routesByEdgeId.get(selectedBusinessEdge.id) : undefined;
 
@@ -1530,7 +1531,16 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
       onPreviewLayout={previewLayout}
       onRemoveSelected={removeSelected}
     />
-    <div className={`editor-workspace${hierarchyOpen ? '' : ' is-hierarchy-collapsed'}`}>
+    {layoutPreview && layoutSourcePresentation && layoutResultPresentation ? <CanvasLayoutComparePreview
+      original={layoutSourcePresentation}
+      result={layoutResultPresentation}
+      layout={layoutPreview}
+      nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
+      onSelectedIdsChange={setSelectedIds}
+      onApply={applyLayoutPreview}
+      onClose={() => setLayoutPreview(null)}
+    /> : <div className={`editor-workspace${hierarchyOpen ? '' : ' is-hierarchy-collapsed'}`}>
       <div className="hierarchy-panel-shell" aria-hidden={!hierarchyOpen}>
         <HierarchyPanel document={document} selectedIds={selectedIds} onSelect={selectAndFocus} onAddStage={addStage} onUpdateStage={updateStage} onMoveStage={moveStage} onReorderStage={reorderStage} onRequestDeleteStage={(id) => requestHierarchyDeletion('stage', id)} onAddLane={addLane} onUpdateLane={updateLane} onMoveLane={moveLane} onReorderLane={reorderLane} onRequestDeleteLane={(id) => requestHierarchyDeletion('lane', id)} editingLocked={Boolean(layoutPreview)} />
       </div>
@@ -1661,14 +1671,9 @@ export function GuideEditor({ guideId, api, personalApi, focusNodeId, focusAnnot
         </div>
       </section>
       <aside className="inspector" aria-label="节点属性">
-        {layoutPreview ? <CanvasLayoutPreviewDialog
-          layout={layoutPreview}
-          avoidedEdgeCount={routing?.report.avoidedEdgeIds.length ?? 0}
-          onApply={applyLayoutPreview}
-          onClose={() => setLayoutPreview(null)}
-        /> : selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} lanes={lanes} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} {...(selectedReferenceUpdate ? { referenceUpdate: selectedReferenceUpdate } : {})} onUpgradeReference={() => void upgradeReference()} onAddChildStep={addChildStep} onMoveStep={moveSelectedStep} resourceReferences={selectedResourceReferences} onFocusReference={(nodeId) => selectAndFocus([nodeId])} onEditAnnotations={() => setAnnotationEditorNodeId(selectedNode.type === 'image' ? selectedNode.id : null)} onUploadImage={(file) => requestImageUpload(selectedNode.id, file)} api={api} locked={Boolean(layoutPreview)} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
+        {selectedNode ? <NodeInspector node={selectedNode} primaryNodes={primaryNodes} stages={stages} lanes={lanes} onChange={updateSelectedNode} onToggleReference={() => void toggleReference()} {...(selectedReferenceUpdate ? { referenceUpdate: selectedReferenceUpdate } : {})} onUpgradeReference={() => void upgradeReference()} onAddChildStep={addChildStep} onMoveStep={moveSelectedStep} resourceReferences={selectedResourceReferences} onFocusReference={(nodeId) => selectAndFocus([nodeId])} onEditAnnotations={() => setAnnotationEditorNodeId(selectedNode.type === 'image' ? selectedNode.id : null)} onUploadImage={(file) => requestImageUpload(selectedNode.id, file)} api={api} locked={false} /> : <div className="inspector-empty"><strong>选择一个节点</strong><p>在这里编辑内容、媒体、步骤和子指南。</p></div>}
       </aside>
-    </div>
+    </div>}
     {error ? <div className="toast-error" role="alert">{error}</div> : null}
     </div>
     {summaryOpen ? <GuideSummaryDialog summary={summary} disabled={Boolean(layoutPreview)} openerRef={summaryTriggerRef} onSummaryChange={(value) => { if (layoutPreview) return; setSummary(value); setSaveState('未保存'); }} onClose={() => setSummaryOpen(false)} /> : null}
@@ -2145,6 +2150,28 @@ function AlignmentGuide({ guide, viewport }: { guide: NodeAlignmentSnap; viewpor
 
 function sameViewport(left: CanvasDocument['viewport'], right: CanvasDocument['viewport']) {
   return left.x === right.x && left.y === right.y && left.zoom === right.zoom;
+}
+
+function layoutComparePresentation(document: CanvasDocument, selectedIds: string[]): LayoutComparePanePresentation {
+  const routing = routeCanvasEdges(document);
+  const stageBounds = getStageBounds(document);
+  return {
+    document,
+    nodes: [
+      ...toFlowNodes(document.nodes, selectedIds, document.lanes, noExpandedDetails, semanticCodeByNodeId(document)),
+      ...resourceAppendixAnchorNodes(document),
+    ],
+    edges: [
+      ...document.edges
+        .filter((edge) => edge.semantic?.kind !== 'RESOURCE_REFERENCE')
+        .map((edge) => renderEdge(document, edge, routing.routesByEdgeId.get(edge.id))),
+      ...hierarchyPresentationEdges(document),
+    ],
+    nodeAnchorHandles: anchorHandlesByNodeId(document, routing),
+    stageBounds,
+    swimlaneBounds: getCanvasSwimlaneBounds(document, stageBounds),
+    appendixGroups: resourceAppendixGroups(document),
+  };
 }
 
 function renderEdge(document: CanvasDocument, edge: CanvasEdge, route: OrthogonalRoute | undefined, screenToFlowPosition?: (point: { x: number; y: number }) => Point, onLabelOffsetChange?: (offset: number) => void, onLabelDoubleClick?: (event: { clientX: number; clientY: number }) => void, selected = false, reconnectActive = false): Edge {

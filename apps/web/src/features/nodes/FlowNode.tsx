@@ -13,6 +13,7 @@ export const FlowNode = memo(function FlowNode({ data, selected, type, width, id
   const description = value.description ?? '';
   const descriptionPreview = description.split('\n')[0] ?? '';
   const expanded = detailPresentation.expandedNodeIds.has(id);
+  const detailEnabled = detailPresentation.enabled !== false;
   const openDetailEditor = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     detailPresentation.onOpenEditor(id, event.currentTarget);
@@ -25,7 +26,7 @@ export const FlowNode = memo(function FlowNode({ data, selected, type, width, id
       </InlineNodeTextEditor>
     </div>
     <div className="flow-node-content">
-      <button
+      {detailEnabled ? <button
         type="button"
         className="flow-detail-trigger nodrag nopan nowheel"
         aria-label={`编辑${label} · 节点明细`}
@@ -34,8 +35,10 @@ export const FlowNode = memo(function FlowNode({ data, selected, type, width, id
       >{description
         ? <SanitizedMarkdown className={`flow-description flow-description-markdown${expanded ? ' flow-description-expanded' : ''}`} testId={`flow-description-${id}`}>{expanded ? description : descriptionPreview}</SanitizedMarkdown>
         : selected ? <span className="inline-node-text-placeholder">双击添加节点明细</span> : null}
-      </button>
-      {description ? <button className="flow-detail-toggle flow-detail-toggle-compact nodrag nopan nowheel" type="button" onClick={(event) => { event.stopPropagation(); detailPresentation.onToggleExpanded(id); }}>{expanded ? '收起' : '详情'}</button> : null}
+      </button> : description ? <div className="flow-detail-trigger flow-detail-static">
+        <SanitizedMarkdown className="flow-description flow-description-markdown" testId={`flow-description-${id}`}>{descriptionPreview}</SanitizedMarkdown>
+      </div> : null}
+      {description && detailEnabled ? <button className="flow-detail-toggle flow-detail-toggle-compact nodrag nopan nowheel" type="button" onClick={(event) => { event.stopPropagation(); detailPresentation.onToggleExpanded(id); }}>{expanded ? '收起' : '详情'}</button> : null}
     </div>
   </NodeChrome>;
 });

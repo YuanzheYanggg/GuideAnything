@@ -1,6 +1,7 @@
 import { createContext, useContext, type ReactNode } from 'react';
 
 export interface NodeDetailPresentationValue {
+  enabled?: boolean;
   expandedNodeIds: ReadonlySet<string>;
   onOpenEditor: (nodeId: string, trigger: HTMLElement) => void;
   onToggleExpanded: (nodeId: string) => void;
