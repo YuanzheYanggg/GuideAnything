@@ -1803,6 +1803,12 @@ a.favorite-resource-item:hover { border-color: rgb(73 137 230 / .46); background
   .pdf-export-document { max-width: none; padding: 0; }
   .pdf-export-page { min-height: 0; border: 0; border-radius: 0; padding: 0; box-shadow: none; }
   .pdf-export-page { break-after: page; }
+  .pdf-export-overview-graph { min-height: 0; height: 500px; aspect-ratio: auto !important; }
+  .pdf-export-overview-node { height: auto !important; min-height: 0; gap: 2px; padding: 5px; }
+  .pdf-export-overview-node strong { font-size: .68rem; }
+  .pdf-export-overview-node p { display: none; }
+  .pdf-export-overview-node small { font-size: .45rem; }
+  .pdf-export-resource-summary { font-size: .42rem; }
   .pdf-export-media-card, .pdf-export-image-resource, .pdf-export-video-resource { break-inside: avoid; }
   * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
 }
