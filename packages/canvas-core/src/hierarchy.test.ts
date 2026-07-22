@@ -149,7 +149,7 @@ describe('flow hierarchy layout', () => {
     expect(rawSales.width).toBe(arrangedSales.width);
   });
 
-  it('relinks a simple legacy primary chain to the global semantic order during automatic layout', () => {
+  it('relinks a simple legacy primary chain and removes its route geometry during automatic layout', () => {
     const result = layoutFlowHierarchy(makeDocument({
       stages: [{ id: 'intake', title: '客户提案阶段', order: 0 }],
       lanes: [
@@ -173,6 +173,11 @@ describe('flow hierarchy layout', () => {
           sourceHandle: 'out',
           targetHandle: 'in',
           presentation: {
+            color: 'blue',
+            pathStyle: 'smooth',
+            routing: 'straight',
+            routeMode: 'manual',
+            waypoints: [{ x: 120, y: 180 }],
             sourceAnchor: { side: 'BOTTOM', offset: 0.51 },
             targetAnchor: { side: 'TOP', offset: 0.49 },
           },
@@ -187,7 +192,7 @@ describe('flow hierarchy layout', () => {
     expect(byId.get('receive-confirm')).toMatchObject({
       source: 'receive', target: 'operate', semantic: { kind: 'FLOW' },
     });
-    expect(byId.get('receive-confirm')?.presentation).toBeUndefined();
+    expect(byId.get('receive-confirm')?.presentation).toEqual({ color: 'blue' });
     expect(byId.get('confirm-operate')).toMatchObject({
       source: 'operate', target: 'confirm', semantic: { kind: 'FLOW' },
     });

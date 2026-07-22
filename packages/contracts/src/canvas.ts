@@ -132,6 +132,7 @@ const EdgeAnchorSchema = z.object({
 });
 
 const EdgeRoutingSchema = z.enum(['straight', 'elbow', 'smart']);
+export const EdgePathStyleSchema = z.enum(['orthogonal', 'smooth', 'diagonal']);
 
 const EdgeRouteModeSchema = z.enum(['auto', 'manual']);
 const EdgeAnchorModeSchema = z.enum(['auto', 'manual']);
@@ -148,6 +149,7 @@ export const EdgePresentationSchema = z.object({
   pattern: z.enum(['solid', 'dashed', 'dotted']).optional(),
   arrows: z.enum(['none', 'forward', 'reverse', 'both']).optional(),
   routing: EdgeRoutingSchema.optional(),
+  pathStyle: EdgePathStyleSchema.optional(),
   routeMode: EdgeRouteModeSchema.optional(),
   waypoints: z.array(EdgeWaypointSchema).max(32).optional(),
   sourceAnchor: EdgeAnchorSchema.optional(),
@@ -158,10 +160,17 @@ export const EdgePresentationSchema = z.object({
 
 export type EdgeAnchor = z.infer<typeof EdgeAnchorSchema>;
 export type EdgeRouting = z.infer<typeof EdgeRoutingSchema>;
+export type EdgePathStyle = z.infer<typeof EdgePathStyleSchema>;
 export type EdgeRouteMode = z.infer<typeof EdgeRouteModeSchema>;
 export type EdgeAnchorMode = z.infer<typeof EdgeAnchorModeSchema>;
 export type EdgeWaypoint = z.infer<typeof EdgeWaypointSchema>;
 export type EdgePresentation = z.infer<typeof EdgePresentationSchema>;
+
+export function resolveEdgePathStyle(presentation: EdgePresentation | undefined): EdgePathStyle {
+  if (presentation?.pathStyle) return presentation.pathStyle;
+  return presentation?.routing === 'straight' ? 'diagonal' : 'orthogonal';
+}
+
 export type FlowOutline = z.infer<typeof OutlineSchema>;
 export type ResourceAttachment = z.infer<typeof ResourceAttachmentSchema>;
 export type CanvasEdgeSemantic = z.infer<typeof CanvasEdgeSemanticSchema>;

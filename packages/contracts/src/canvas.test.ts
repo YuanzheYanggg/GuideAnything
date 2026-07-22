@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { CanvasDocumentSchema, EdgePresentationSchema } from './canvas';
+import { CanvasDocumentSchema, EdgePresentationSchema, resolveEdgePathStyle } from './canvas';
 
 describe('CanvasDocumentSchema', () => {
   function hierarchyDocument(overrides: Record<string, unknown> = {}) {
@@ -371,6 +371,18 @@ describe('CanvasDocumentSchema', () => {
       routeMode: 'manual',
       waypoints: [{ x: 120, y: 240 }],
     });
+  });
+
+  it('accepts an explicit path style and resolves legacy routing without migration', () => {
+    expect(EdgePresentationSchema.parse({ pathStyle: 'smooth' })).toEqual({ pathStyle: 'smooth' });
+    expect(resolveEdgePathStyle({ pathStyle: 'orthogonal', routing: 'straight' })).toBe('orthogonal');
+    expect(resolveEdgePathStyle({ routing: 'straight' })).toBe('diagonal');
+    expect(resolveEdgePathStyle({ routing: 'smart' })).toBe('orthogonal');
+    expect(resolveEdgePathStyle(undefined)).toBe('orthogonal');
+  });
+
+  it('rejects an unknown path style', () => {
+    expect(() => EdgePresentationSchema.parse({ pathStyle: 'rounded' })).toThrow();
   });
 
   it('rejects invalid manual waypoint data', () => {

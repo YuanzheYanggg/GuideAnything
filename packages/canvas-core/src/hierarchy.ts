@@ -316,6 +316,7 @@ function resetFlowGeometry(edge: CanvasEdge): CanvasEdge {
   if (!presentation) return withoutPresentation;
   const {
     routing: _routing,
+    pathStyle: _pathStyle,
     routeMode: _routeMode,
     waypoints: _waypoints,
     sourceAnchor: _sourceAnchor,
