@@ -31,6 +31,17 @@ describe('editor layout styles', () => {
     expect(stylesheet).toMatch(/@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*\.editor-header::before/s);
   });
 
+  it('stacks the editor header before its action groups can be compressed into an overflowing row', () => {
+    expect(stylesheet).toMatch(/@media \(max-width:\s*1360px\)[\s\S]*\.editor-header\s*\{[^}]*grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)[^}]*grid-template-rows:\s*auto\s+minmax\(80px,\s*1fr\)\s+auto/s);
+    expect(stylesheet).toMatch(/@media \(max-width:\s*1360px\)[\s\S]*\.editor-actions\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*3/s);
+  });
+
+  it('keeps wide editor actions inside their cards without wrapping labels', () => {
+    expect(stylesheet).toMatch(/\.editor-header\s*\{[^}]*grid-template-columns:[^}]*minmax\(max-content,\s*1\.1fr\)/s);
+    expect(stylesheet).toMatch(/\.editor-action-group\s*\{[^}]*flex:\s*0\s+0\s+auto/s);
+    expect(stylesheet).toMatch(/\.appearance-toggle button\s*\{[^}]*white-space:\s*nowrap/s);
+  });
+
   it('anchors the manual route toolbar to its route without drag-docking styles', () => {
     expect(stylesheet).toMatch(/\.edge-toolbar-position\s*\{[^}]*position:\s*absolute[^}]*transform:\s*translate\(-50%,\s*calc\(-100%\s*-\s*16px\)\)/s);
     expect(stylesheet).toMatch(/\.edge-toolbar-position--below\s*\{[^}]*transform:\s*translate\(-50%,\s*18px\)/s);
