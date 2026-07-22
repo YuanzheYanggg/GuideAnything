@@ -19,7 +19,9 @@ export type GuidePdfExportInput = Pick<
 
 export type GuidePdfExportWarningCode =
   | 'NO_FLOW_NODES'
-  | 'VIDEO_URL_NOT_PUBLIC';
+  | 'VIDEO_URL_NOT_PUBLIC'
+  | 'IMAGE_LOAD_FAILED'
+  | 'VIDEO_QR_FAILED';
 
 export interface GuidePdfExportWarning {
   code: GuidePdfExportWarningCode;
