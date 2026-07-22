@@ -333,6 +333,25 @@ describe('GuideEditor', () => {
     });
   });
 
+  it('uses the shared pill label treatment for resource hierarchy annotations', () => {
+    const [edge] = hierarchyPresentationEdges({
+      schemaVersion: 1,
+      nodes: [
+        { id: 'step', type: 'process', position: { x: 0, y: 0 }, zIndex: 0, data: { label: '处理', shape: 'process' } },
+        { id: 'one', type: 'markdown', position: { x: 320, y: 0 }, zIndex: 1, attachment: { ownerNodeId: 'step', order: 0 }, data: { markdown: '资料一' } },
+        { id: 'two', type: 'markdown', position: { x: 320, y: 180 }, zIndex: 2, attachment: { ownerNodeId: 'step', order: 1 }, data: { markdown: '资料二' } },
+      ],
+      edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [],
+    });
+
+    expect(edge).toMatchObject({
+      label: '资料 ×2',
+      labelShowBg: true,
+      labelBgPadding: [7, 3],
+      labelBgBorderRadius: 999,
+    });
+  });
+
   it('connects resource presentation edges with a straight line using the nearest current boundaries', () => {
     const document: CanvasDocument = {
       schemaVersion: 1,
@@ -1901,6 +1920,35 @@ describe('GuideEditor', () => {
     expect(reactFlowCallbacks.edgeTypes).toEqual(expect.objectContaining({ orthogonal: expect.anything() }));
     expect(reactFlowCallbacks.edges).toContainEqual(expect.objectContaining({
       id: 'flow-edge', sourceHandle: 'edge:flow-edge:source', targetHandle: 'edge:flow-edge:target', type: 'orthogonal', label: '继续', data: expect.objectContaining({ route: expect.objectContaining({ kind: 'FORWARD' }) }),
+    }));
+  });
+
+  it('uses the shared pill label treatment for expanded subguide continuation annotations', async () => {
+    const sourceTrace = {
+      referenceNodeId: 'reference', sourceGuideId: 'guide-source', sourceVersionId: 'version-source', sourceElementId: 'source-end',
+    };
+    const document: CanvasDocument = {
+      schemaVersion: 1,
+      nodes: [
+        { id: 'reference', type: 'subguide', position: { x: 0, y: 0 }, zIndex: 0, data: { guideId: 'guide-source', guideVersionId: 'version-source', title: '子指南', version: 1, expanded: true } },
+        { id: 'derived-end', type: 'end', position: { x: 360, y: 0 }, zIndex: 1, source: sourceTrace, data: { label: '派生结束', shape: 'end' } },
+        { id: 'host-out', type: 'end', position: { x: 720, y: 0 }, zIndex: 2, data: { label: '宿主结束', shape: 'end' } },
+      ],
+      edges: [{ id: 'expanded-continue', source: 'derived-end', target: 'host-out', label: '继续', sourceTrace }],
+      viewport: { x: 0, y: 0, zoom: 1 }, steps: [], entryNodeId: 'reference', exitNodeIds: ['host-out'],
+    };
+
+    render(<GuideEditor guideId="guide-host" api={createApi({ document })} onBack={vi.fn()} />);
+    await screen.findByDisplayValue('订单教学');
+
+    expect(reactFlowCallbacks.edges).toContainEqual(expect.objectContaining({
+      id: 'expanded-continue',
+      className: 'subguide-expansion-edge',
+      type: 'smoothstep',
+      label: '继续',
+      labelShowBg: true,
+      labelBgPadding: [7, 3],
+      labelBgBorderRadius: 999,
     }));
   });
 

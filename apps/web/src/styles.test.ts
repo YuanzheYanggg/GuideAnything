@@ -22,6 +22,12 @@ describe('editor layout styles', () => {
   it('keeps the compact regression list inside the editor header as an anchored details popover', () => {
     expect(stylesheet).toMatch(/\.flow-regression-panel\s*\{[^}]*position:\s*relative[^}]*\}/s);
     expect(stylesheet).toMatch(/\.flow-regression-panel-body\s*\{[^}]*position:\s*absolute[^}]*z-index:\s*60[^}]*max-height:\s*min\(66vh,\s*620px\)[^}]*overflow:\s*auto[^}]*\}/s);
+    expect(stylesheet).toMatch(/\.editor-header:has\(\.flow-regression-panel\[open\]\)\s*\{[^}]*overflow:\s*visible[^}]*z-index:\s*20[^}]*\}/s);
+  });
+
+  it('keeps hierarchy annotation labels on the shared edge-label surface', () => {
+    expect(stylesheet).toMatch(/\.react-flow__edge:is\(\.hierarchy-presentation-edge,\s*\.subguide-expansion-edge\)\s+\.react-flow__edge-text\s*\{[^}]*font-size:\s*14px[^}]*font-weight:\s*750[^}]*\}/s);
+    expect(stylesheet).toMatch(/\.react-flow__edge:is\(\.hierarchy-presentation-edge,\s*\.subguide-expansion-edge\)\s+\.react-flow__edge-textbg\s*\{[^}]*filter:\s*drop-shadow\(0\s+2px\s+8px\s+rgb\(31\s+39\s+33\s*\/\s*\.08\)\)[^}]*\}/s);
   });
 
   it('provides an animated but reduced-motion-safe command header', () => {

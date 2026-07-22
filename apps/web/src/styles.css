@@ -282,6 +282,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .flow-regression-panel > summary { list-style: none; cursor: pointer; border: 1px solid var(--ga-border); border-radius: 9px; padding: 8px 10px; color: var(--ga-text-secondary); background: var(--ga-surface-strong); font-size: .72rem; font-weight: 650; white-space: nowrap; }
 .flow-regression-panel > summary::-webkit-details-marker { display: none; }
 .flow-regression-panel[open] > summary { border-color: var(--ga-accent); color: var(--ga-text); background: var(--ga-accent-soft); }
+.editor-header:has(.flow-regression-panel[open]) { overflow: visible; z-index: 20; }
 .flow-regression-panel-body { position: absolute; z-index: 60; top: calc(100% + 8px); right: 0; display: grid; gap: 9px; width: min(470px, calc(100vw - 32px)); max-height: min(66vh, 620px); overflow: auto; border: 1px solid var(--ga-border-strong); border-radius: 12px; padding: 11px; color: var(--ga-text); background: var(--ga-surface-solid); box-shadow: var(--ga-shadow-floating); }
 .flow-regression-muted, .flow-regression-notice, .flow-regression-error { margin: 0; font-size: .72rem; line-height: 1.45; }
 .flow-regression-muted { color: var(--ga-text-secondary); }
@@ -363,6 +364,8 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .keypoint-editor button { border: 1px dashed var(--ga-border-strong); border-radius: 9px; padding: 9px; color: var(--ga-accent); background: transparent; }
 .orthogonal-edge-label { position: absolute; z-index: 4; border: 1px solid var(--ga-border); border-radius: 999px; padding: 3px 7px; color: var(--ga-text-secondary); background: var(--ga-bg-raised); box-shadow: 0 2px 8px rgb(31 39 33 / .08); font-size: .65rem; font-weight: 750; pointer-events: none; }
 .orthogonal-edge-label.is-back-edge { border-style: dashed; color: var(--ga-warning, #9a6a42); }
+.react-flow__edge:is(.hierarchy-presentation-edge, .subguide-expansion-edge) .react-flow__edge-text { fill: var(--ga-text-secondary); font-family: inherit; font-size: 14px; font-weight: 750; }
+.react-flow__edge:is(.hierarchy-presentation-edge, .subguide-expansion-edge) .react-flow__edge-textbg { fill: var(--ga-bg-raised); stroke: var(--ga-border); stroke-width: 1; filter: drop-shadow(0 2px 8px rgb(31 39 33 / .08)); }
 .image-annotation-summary { display: block; margin-top: 6px; color: var(--ga-accent); font-size: .65rem; font-weight: 750; }
 .annotation-editor-backdrop { z-index: 140; }
 .annotation-editor { width: min(1180px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; border: 1px solid var(--ga-border); border-radius: 20px; padding: 20px; color: var(--ga-text); background: var(--ga-surface-strong); box-shadow: var(--ga-shadow-floating); }

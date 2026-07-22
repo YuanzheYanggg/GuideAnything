@@ -2189,6 +2189,12 @@ function renderEdge(document: CanvasDocument, edge: CanvasEdge, route: Orthogona
     type: route ? 'orthogonal' : 'smoothstep',
     selected: editable && selected,
     reconnectable: editable && reconnectActive,
+    ...(edge.sourceTrace ? {
+      className: 'subguide-expansion-edge',
+      labelShowBg: true,
+      labelBgPadding: [7, 3] as [number, number],
+      labelBgBorderRadius: 999,
+    } : {}),
     ...visuals,
     data: {
       ...(route ? { route } : {}),
@@ -2338,6 +2344,9 @@ export function hierarchyPresentationEdges(document: CanvasDocument): Edge[] {
       reconnectable: false,
       className: 'hierarchy-presentation-edge',
       style: { stroke: '#9a6a42', strokeDasharray: '5 5', strokeWidth: 1.5 },
+      labelShowBg: true,
+      labelBgPadding: [7, 3],
+      labelBgBorderRadius: 999,
       label: attachments.length > 1 ? `资料 ×${attachments.length}` : undefined,
     }];
   });
