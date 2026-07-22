@@ -615,70 +615,91 @@ describe('orthogonal edge routing', () => {
     expect(Math.max(...route.points.map((point) => point.x))).toBeLessThan(500);
   });
 
-  it('uses a single direct segment for an explicit straight route even when its anchored endpoints do not align', () => {
+  it.each(['straight', 'smart'] as const)('keeps legacy %s automatic geometry orthogonal', (routing) => {
     const result = routeCanvasEdges(document(
-      [process('source', 0, 0), process('target', 400, 0)],
-      [edge('straight', 'source', 'target', {
-        presentation: {
-          routing: 'straight',
-          sourceAnchor: { side: 'RIGHT', offset: 0.2 },
-          sourceAnchorMode: 'manual',
-          targetAnchor: { side: 'LEFT', offset: 0.75 },
-          targetAnchorMode: 'manual',
-        },
-      })],
+      [process('source', 0, 0), process('target', 420, 180)],
+      [edge('legacy', 'source', 'target', { presentation: { routing } })],
     ));
+    const route = result.routesByEdgeId.get('legacy')!;
 
-    expect(result.routesByEdgeId.get('straight')!.points).toEqual([{ x: 200, y: 20 }, { x: 400, y: 75 }]);
+    expect(route.routing).toBe(routing);
+    expectOrthogonal(route.points);
   });
 
-  it('lets an explicit automatic route override stale manual waypoints', () => {
+  it('collapses aligned automatic endpoints to one real horizontal segment', () => {
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 420, 0)],
+      [edge('aligned', 'source', 'target')],
+    ));
+    const route = result.routesByEdgeId.get('aligned')!;
+
+    expect(route.points).toHaveLength(2);
+    expect(route.points[0]!.y).toBe(route.points[1]!.y);
+  });
+
+  it.each(['straight', 'smart'] as const)('keeps valid manual waypoints authoritative with legacy %s', (routing) => {
+    const waypoints = [{ x: 224, y: 50 }, { x: 224, y: 180 }, { x: 376, y: 180 }, { x: 376, y: 50 }];
     const result = routeCanvasEdges(document(
       [process('source', 0, 0), process('target', 400, 0)],
-      [edge('straight', 'source', 'target', {
-        presentation: {
-          routing: 'straight',
-          routeMode: 'manual',
-          waypoints: [{ x: 224, y: 50 }, { x: 224, y: 180 }, { x: 376, y: 180 }, { x: 376, y: 50 }],
-        },
+      [edge('manual', 'source', 'target', {
+        presentation: { routing, routeMode: 'manual', waypoints },
       })],
     ));
+    const route = result.routesByEdgeId.get('manual')!;
 
-    expect(result.routesByEdgeId.get('straight')!.points).toEqual([{ x: 200, y: 50 }, { x: 400, y: 50 }]);
+    expect(route.points.slice(1, -1)).toEqual(waypoints);
+    expectOrthogonal(route.points);
     expect(result.report.manualConflictEdgeIds).toEqual([]);
   });
 
-  it('lets explicit smart routing override stale manual waypoints', () => {
+  it('keeps manual waypoints authoritative after selecting smooth style', () => {
+    const waypoints = [{ x: 100, y: 160 }, { x: 500, y: 160 }, { x: 500, y: 350 }];
     const result = routeCanvasEdges(document(
-      [process('source', 0, 0), process('target', 400, 0)],
-      [edge('smart', 'source', 'target', {
-        presentation: {
-          routing: 'smart',
-          routeMode: 'manual',
-          waypoints: [{ x: 224, y: 50 }, { x: 224, y: 180 }, { x: 376, y: 180 }, { x: 376, y: 50 }],
-        },
+      [process('source', 0, 0), process('target', 600, 300)],
+      [edge('manual-smooth', 'source', 'target', {
+        presentation: { pathStyle: 'smooth', routeMode: 'manual', waypoints },
       })],
     ));
+    const route = result.routesByEdgeId.get('manual-smooth')!;
 
-    expect(result.routesByEdgeId.get('smart')!.points).toEqual([{ x: 200, y: 50 }, { x: 400, y: 50 }]);
-    expect(result.report.manualConflictEdgeIds).toEqual([]);
+    expect(route.pathStyle).toBe('smooth');
+    expect(route.points.slice(1, -1)).toEqual(waypoints);
+    expectOrthogonal(route.points);
   });
 
-  it('uses a direct path in smart mode when the endpoints have a clear line of sight', () => {
+  it('marks a diagonal visual preference unsafe when its direct path crosses a node', () => {
     const result = routeCanvasEdges(document(
-      [process('source', 0, 0), process('target', 400, 0)],
-      [edge('legacy', 'source', 'target', {
-        presentation: {
-          routing: 'smart',
-          sourceAnchor: { side: 'RIGHT', offset: 0.2 },
-          sourceAnchorMode: 'manual',
-          targetAnchor: { side: 'LEFT', offset: 0.75 },
-          targetAnchorMode: 'manual',
-        },
-      })],
+      [
+        process('source', 0, 0),
+        process('target', 600, 300),
+        { ...process('blocker', 260, 180), size: { width: 120, height: 100 } },
+      ],
+      [edge('blocked-diagonal', 'source', 'target', { presentation: { pathStyle: 'diagonal' } })],
     ));
+    const route = result.routesByEdgeId.get('blocked-diagonal')!;
 
-    expect(result.routesByEdgeId.get('legacy')!.points).toEqual([{ x: 200, y: 20 }, { x: 400, y: 75 }]);
+    expect(route.directPathSafe).toBe(false);
+    expectOrthogonal(route.points);
+  });
+
+  it('builds a safe cubic curve along a clear orthogonal route', () => {
+    const blocker = { ...process('blocker', 260, 180), size: { width: 120, height: 100 } };
+    const result = routeCanvasEdges(document(
+      [process('source', 0, 0), process('target', 600, 300), blocker],
+      [edge('smooth', 'source', 'target', { presentation: { pathStyle: 'smooth' } })],
+    ));
+    const route = result.routesByEdgeId.get('smooth')!;
+    const firstSegment = route.smoothSegments[0]!;
+    const sampledPoints = sampleCubicSegments(route.smoothSegments);
+
+    expect(route.smoothPathSafe).toBe(true);
+    expect(route.smoothSegments).not.toHaveLength(0);
+    expect(firstSegment.control1.x).toBe(firstSegment.start.x);
+    expect(firstSegment.control1.y).toBeGreaterThan(firstSegment.start.y);
+    expect(sampledPoints.every((point) => point.x < blocker.position.x
+      || point.x > blocker.position.x + blocker.size!.width
+      || point.y < blocker.position.y
+      || point.y > blocker.position.y + blocker.size!.height)).toBe(true);
   });
 
   it('uses elbow routing by default while collapsing aligned opposing ports to a straight segment', () => {
@@ -899,6 +920,29 @@ function expectOrthogonal(points: Point[]) {
     const previous = points[index]!;
     expect(point.x === previous.x || point.y === previous.y).toBe(true);
   });
+}
+
+function sampleCubicSegments(segments: Array<{
+  start: Point;
+  control1: Point;
+  control2: Point;
+  end: Point;
+}>): Point[] {
+  return segments.flatMap((segment, segmentIndex) => Array.from({ length: 12 }, (_, step) => {
+    const t = (step + 1) / 12;
+    const inverse = 1 - t;
+    const point = {
+      x: inverse ** 3 * segment.start.x
+        + 3 * inverse ** 2 * t * segment.control1.x
+        + 3 * inverse * t ** 2 * segment.control2.x
+        + t ** 3 * segment.end.x,
+      y: inverse ** 3 * segment.start.y
+        + 3 * inverse ** 2 * t * segment.control1.y
+        + 3 * inverse * t ** 2 * segment.control2.y
+        + t ** 3 * segment.end.y,
+    };
+    return segmentIndex === 0 && step === 0 ? [segment.start, point] : [point];
+  }).flat());
 }
 
 function expectNoNonEndpointIntersection(route: OrthogonalRoute, nodes: CanvasNode[], endpointIds: string[]) {

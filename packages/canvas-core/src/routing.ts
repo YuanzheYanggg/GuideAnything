@@ -1,4 +1,12 @@
-import type { CanvasDocument, CanvasEdge, CanvasNode, EdgeAnchor, EdgeRouting } from '@guideanything/contracts';
+import {
+  resolveEdgePathStyle,
+  type CanvasDocument,
+  type CanvasEdge,
+  type CanvasNode,
+  type EdgeAnchor,
+  type EdgePathStyle,
+  type EdgeRouting,
+} from '@guideanything/contracts';
 
 const CHANNEL_GAP = 18;
 const PORT_GAP = 24;
@@ -12,6 +20,8 @@ const FANOUT_EDGE_INSET = 12;
 const DEFAULT_ALIGNMENT_THRESHOLD = 12;
 const FORWARD_ALIGNMENT_THRESHOLD = 24;
 const NODE_ALIGNMENT_THRESHOLD = 24;
+const CUBIC_HANDLE_RATIO = 0.22;
+const CUBIC_SAMPLES_PER_SEGMENT = 24;
 
 export const ORTHOGONAL_BRIDGE_HALF_WIDTH = 8;
 export const ORTHOGONAL_BRIDGE_HEIGHT = 12;
@@ -29,6 +39,13 @@ export interface NodeRect {
   height: number;
 }
 
+export interface CubicBezierSegment {
+  start: Point;
+  control1: Point;
+  control2: Point;
+  end: Point;
+}
+
 export type RouteSide = 'LEFT' | 'RIGHT' | 'TOP' | 'BOTTOM';
 export type RouteKind = 'FORWARD' | 'DOWNSTREAM' | 'BRANCH' | 'WRAP' | 'CROSS_STAGE' | 'BACK';
 
@@ -36,6 +53,11 @@ export interface OrthogonalRoute {
   edgeId: string;
   points: Point[];
   routing: EdgeRouting;
+  pathStyle: EdgePathStyle;
+  directPath: Point[];
+  directPathSafe: boolean;
+  smoothSegments: CubicBezierSegment[];
+  smoothPathSafe: boolean;
   kind: RouteKind;
   sourceSide: RouteSide;
   targetSide: RouteSide;
@@ -87,6 +109,17 @@ interface RouteCandidate {
   targetAnchorPinned: boolean;
 }
 
+interface RouteStyleContext {
+  source: NodeRect;
+  target: NodeRect;
+  kind: RouteKind;
+  sourcePort: RoutePort;
+  targetPort: RoutePort;
+  obstacles: NodeRect[];
+  directPath: Point[];
+  manual: boolean;
+}
+
 interface RouteOrder {
   semanticPriority: number;
   order: number;
@@ -116,6 +149,7 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
   const manualConflictEdgeIds: string[] = [];
   const backEdgeIds: string[] = [];
   const offsetCountByChannel = new Map<string, number>();
+  const styleContextByEdgeId = new Map<string, RouteStyleContext>();
 
   const candidates: RouteCandidate[] = routable.map((edge) => {
     const source = rectById.get(edge.source)!;
@@ -165,15 +199,18 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
     if (channelKey) offsetCountByChannel.set(channelKey, channelIndex + 1);
     const offset = channelIndex * CHANNEL_GAP;
     const obstacles = rects.filter((rect) => rect.id !== source.id && rect.id !== target.id);
-    const directPoints = [sourcePort.point, targetPort.point];
-    const routeBlocked = (candidatePoints: Point[]) => routeIntersects(candidatePoints, obstacles)
-      || (!isLocalDownstreamGap(candidatePoints, kind, sourcePort, targetPort)
-        && routeIntersectsEndpointNodes(candidatePoints, source, target, sourcePort, targetPort));
+    const directPath = [{ ...sourcePort.point }, { ...targetPort.point }];
+    const routeBlocked = (candidatePoints: Point[]) => routeBlockedByNodes(
+      candidatePoints,
+      obstacles,
+      kind,
+      source,
+      target,
+      sourcePort,
+      targetPort,
+    );
     const usesDisplayedPorts = candidate.usesAnchors || candidate.sourceFanned || candidate.targetFanned;
-    // An explicit toolbar mode is authoritative. This also heals older drafts
-    // that accidentally persisted both automatic routing and manual waypoints.
-    const explicitAutomaticRouting = routing === 'straight' || routing === 'smart';
-    const manualPoints = !explicitAutomaticRouting && edge.presentation?.routeMode === 'manual' && edge.presentation.waypoints?.length
+    const manualPoints = edge.presentation?.routeMode === 'manual' && edge.presentation.waypoints?.length
       ? compact([sourcePort.point, ...edge.presentation.waypoints, targetPort.point])
       : undefined;
     const manualBlocked = manualPoints ? !isOrthogonal(manualPoints) || routeBlocked(manualPoints) : false;
@@ -192,13 +229,9 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
       points = manualPoints;
     } else {
       if (manualPoints && manualBlocked) manualConflictEdgeIds.push(edge.id);
-      points = routing === 'straight' && !manualPoints
-        ? directPoints
-        : routing === 'smart' && !manualPoints && !routeBlocked(directPoints)
-          ? directPoints
-          : chooseShortestRoute(clearElbowCandidates) ?? elbowCandidates[0]!;
+      points = chooseShortestRoute(clearElbowCandidates) ?? elbowCandidates[0]!;
     }
-    if ((routing !== 'straight' || manualBlocked) && clearElbowCandidates.length === 0) {
+    if ((!manualPoints || manualBlocked) && clearElbowCandidates.length === 0) {
       const clearLocalDetours = localObstacleRoutes(kind, sourcePort, targetPort, obstacles)
         .filter((candidatePoints) => !routeBlocked(candidatePoints));
       const localDetour = chooseShortestRoute(clearLocalDetours);
@@ -223,6 +256,11 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
       edgeId: edge.id,
       points,
       routing,
+      pathStyle: resolveEdgePathStyle(edge.presentation),
+      directPath,
+      directPathSafe: false,
+      smoothSegments: [],
+      smoothPathSafe: false,
       kind,
       sourceSide: sourcePort.side,
       targetSide: targetPort.side,
@@ -231,11 +269,190 @@ export function routeCanvasEdges(document: CanvasDocument): RoutingResult {
       collision,
       bridges: [],
     });
+    styleContextByEdgeId.set(edge.id, {
+      source,
+      target,
+      kind,
+      sourcePort,
+      targetPort,
+      obstacles,
+      directPath,
+      manual: Boolean(manualPoints && !manualBlocked),
+    });
   });
 
   annotateRouteBridges(routesByEdgeId);
+  routesByEdgeId.forEach((route, edgeId) => {
+    const context = styleContextByEdgeId.get(edgeId);
+    if (!context) return;
+    const hasBridge = (route.bridges?.length ?? 0) > 0;
+    const routeBlocked = (candidatePoints: Point[]) => routeBlockedByNodes(
+      candidatePoints,
+      context.obstacles,
+      context.kind,
+      context.source,
+      context.target,
+      context.sourcePort,
+      context.targetPort,
+    );
+    const smoothSegments = smoothSegmentsForRoute(route.points, route.sourceSide, route.targetSide);
+    route.directPathSafe = !context.manual && !hasBridge && !routeBlocked(route.directPath);
+    route.smoothSegments = smoothSegments;
+    route.smoothPathSafe = smoothSegments.length > 0
+      && !hasBridge
+      && !sampledCurveBlockedByNodes(
+        sampleCubicSegments(smoothSegments),
+        context.obstacles,
+        context.source,
+        context.target,
+        context.sourcePort,
+        context.targetPort,
+      );
+  });
 
   return { routesByEdgeId, report: { backEdgeIds, avoidedEdgeIds, collisionEdgeIds, manualConflictEdgeIds } };
+}
+
+function routeBlockedByNodes(
+  candidatePoints: Point[],
+  obstacles: NodeRect[],
+  kind: RouteKind,
+  source: NodeRect,
+  target: NodeRect,
+  sourcePort: RoutePort,
+  targetPort: RoutePort,
+): boolean {
+  return routeIntersects(candidatePoints, obstacles)
+    || (!isLocalDownstreamGap(candidatePoints, kind, sourcePort, targetPort)
+      && routeIntersectsEndpointNodes(candidatePoints, source, target, sourcePort, targetPort));
+}
+
+function sampledCurveBlockedByNodes(
+  candidatePoints: Point[],
+  obstacles: NodeRect[],
+  source: NodeRect,
+  target: NodeRect,
+  sourcePort: RoutePort,
+  targetPort: RoutePort,
+): boolean {
+  return routeIntersects(candidatePoints, obstacles)
+    || sampledCurveIntersectsEndpointNodes(candidatePoints, source, target, sourcePort, targetPort);
+}
+
+function sampledCurveIntersectsEndpointNodes(
+  points: Point[],
+  source: NodeRect,
+  target: NodeRect,
+  sourcePort: RoutePort,
+  targetPort: RoutePort,
+): boolean {
+  const sourceExitIndex = points.findIndex((point, index) => index > 0 && !pointInsidePaddedNode(point, source));
+  let targetEntryIndex = -1;
+  for (let index = points.length - 2; index >= 0; index -= 1) {
+    if (!pointInsidePaddedNode(points[index]!, target)) {
+      targetEntryIndex = index;
+      break;
+    }
+  }
+  if (sourceExitIndex < 0 || targetEntryIndex < 0 || sourceExitIndex >= targetEntryIndex) return true;
+
+  const sourceExit = points.slice(0, sourceExitIndex + 1);
+  const targetEntry = points.slice(targetEntryIndex);
+  if (!sourceExit.every((point) => pointStaysOutsidePortSide(point, sourcePort))) return true;
+  if (!targetEntry.every((point) => pointStaysOutsidePortSide(point, targetPort))) return true;
+
+  return routeIntersects(points.slice(sourceExitIndex, targetEntryIndex + 1), [source, target]);
+}
+
+function smoothSegmentsForRoute(
+  points: Point[],
+  sourceSide: RouteSide,
+  targetSide: RouteSide,
+): CubicBezierSegment[] {
+  const guides = compact(points);
+  if (guides.length < 3 || !isOrthogonal(guides)) return [];
+
+  const sourceDirection = sideDirection(sourceSide);
+  const targetDirection = negateVector(sideDirection(targetSide));
+  if (!pointsMoveInDirection(guides[0]!, guides[1]!, sourceDirection)
+    || !pointsMoveInDirection(guides.at(-2)!, guides.at(-1)!, targetDirection)) return [];
+
+  const tangents = guides.map((point, index) => {
+    if (index === 0) return sourceDirection;
+    if (index === guides.length - 1) return targetDirection;
+    const incoming = directionBetween(guides[index - 1]!, point);
+    const outgoing = directionBetween(point, guides[index + 1]!);
+    return normalizeVector({ x: incoming.x + outgoing.x, y: incoming.y + outgoing.y })
+      ?? outgoing;
+  });
+  const handleLengths = guides.map((point, index) => {
+    const previousLength = index > 0 ? distanceBetween(guides[index - 1]!, point) : undefined;
+    const nextLength = index < guides.length - 1 ? distanceBetween(point, guides[index + 1]!) : undefined;
+    return Math.min(...[previousLength, nextLength].filter((length): length is number => length !== undefined)) * CUBIC_HANDLE_RATIO;
+  });
+
+  return guides.slice(1).map((end, index) => {
+    const start = guides[index]!;
+    return {
+      start,
+      control1: translatePoint(start, tangents[index]!, handleLengths[index]!),
+      control2: translatePoint(end, tangents[index + 1]!, -handleLengths[index + 1]!),
+      end,
+    };
+  });
+}
+
+function sampleCubicSegments(segments: CubicBezierSegment[]): Point[] {
+  return segments.flatMap((segment, segmentIndex) => {
+    const points = Array.from({ length: CUBIC_SAMPLES_PER_SEGMENT }, (_, index) => cubicPoint(segment, (index + 1) / CUBIC_SAMPLES_PER_SEGMENT));
+    return segmentIndex === 0 ? [segment.start, ...points] : points;
+  });
+}
+
+function cubicPoint(segment: CubicBezierSegment, t: number): Point {
+  const inverse = 1 - t;
+  return {
+    x: inverse ** 3 * segment.start.x
+      + 3 * inverse ** 2 * t * segment.control1.x
+      + 3 * inverse * t ** 2 * segment.control2.x
+      + t ** 3 * segment.end.x,
+    y: inverse ** 3 * segment.start.y
+      + 3 * inverse ** 2 * t * segment.control1.y
+      + 3 * inverse * t ** 2 * segment.control2.y
+      + t ** 3 * segment.end.y,
+  };
+}
+
+function sideDirection(side: RouteSide): Point {
+  if (side === 'LEFT') return { x: -1, y: 0 };
+  if (side === 'RIGHT') return { x: 1, y: 0 };
+  if (side === 'TOP') return { x: 0, y: -1 };
+  return { x: 0, y: 1 };
+}
+
+function negateVector(vector: Point): Point {
+  return { x: -vector.x, y: -vector.y };
+}
+
+function directionBetween(start: Point, finish: Point): Point {
+  return normalizeVector({ x: finish.x - start.x, y: finish.y - start.y }) ?? { x: 0, y: 0 };
+}
+
+function normalizeVector(vector: Point): Point | undefined {
+  const length = Math.hypot(vector.x, vector.y);
+  return length === 0 ? undefined : { x: vector.x / length, y: vector.y / length };
+}
+
+function distanceBetween(start: Point, finish: Point): number {
+  return Math.hypot(finish.x - start.x, finish.y - start.y);
+}
+
+function translatePoint(point: Point, direction: Point, amount: number): Point {
+  return { x: point.x + direction.x * amount, y: point.y + direction.y * amount };
+}
+
+function pointsMoveInDirection(start: Point, finish: Point, direction: Point): boolean {
+  return (finish.x - start.x) * direction.x + (finish.y - start.y) * direction.y > 0;
 }
 
 export function snapNodeForStraightRoute(
@@ -1174,6 +1391,20 @@ function pointOnNodeBoundary(point: Point, rect: NodeRect): boolean {
 
 function pointInsideNode(point: Point, rect: NodeRect): boolean {
   return point.x > rect.x && point.x < rect.x + rect.width && point.y > rect.y && point.y < rect.y + rect.height;
+}
+
+function pointInsidePaddedNode(point: Point, rect: NodeRect): boolean {
+  return point.x > rect.x - OBSTACLE_PADDING
+    && point.x < rect.x + rect.width + OBSTACLE_PADDING
+    && point.y > rect.y - OBSTACLE_PADDING
+    && point.y < rect.y + rect.height + OBSTACLE_PADDING;
+}
+
+function pointStaysOutsidePortSide(point: Point, port: RoutePort): boolean {
+  if (port.side === 'LEFT') return point.x <= port.point.x;
+  if (port.side === 'RIGHT') return point.x >= port.point.x;
+  if (port.side === 'TOP') return point.y <= port.point.y;
+  return point.y >= port.point.y;
 }
 
 function segmentIntersects(start: Point, finish: Point, rect: NodeRect): boolean {
