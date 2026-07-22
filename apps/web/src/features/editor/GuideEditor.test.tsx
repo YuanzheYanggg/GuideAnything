@@ -735,7 +735,7 @@ describe('GuideEditor', () => {
 
     const savesBeforePreview = (api.saveGuide as ReturnType<typeof vi.fn>).mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: '预览自动整理' }));
-    expect(screen.getByText('阶段从上到下 · 阶段内从左到右')).toBeVisible();
+    expect(screen.getByText('阶段从上到下 · 子节点向右展开')).toBeVisible();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
     fireEvent.click(screen.getByRole('button', { name: '应用自动整理' }));
     fireEvent.click(screen.getByRole('button', { name: '撤销' }));
@@ -996,11 +996,11 @@ describe('GuideEditor', () => {
     fireEvent.pointerMove(document, { clientX: 220, clientY: 80, pointerId: 1, buttons: 1 });
     fireEvent.pointerUp(document, { clientX: 220, clientY: 80, pointerId: 1, button: 0 });
 
-    expect(screen.getByText('阶段从上到下 · 阶段内从左到右')).toBeVisible();
+    expect(screen.getByText('阶段从上到下 · 子节点向右展开')).toBeVisible();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
 
     fireEvent.click(screen.getByRole('button', { name: '添加流程节点' }));
-    expect(screen.getByText('阶段从上到下 · 阶段内从左到右')).toBeVisible();
+    expect(screen.getByText('阶段从上到下 · 子节点向右展开')).toBeVisible();
     expect(api.saveGuide).toHaveBeenCalledTimes(savesBeforePreview);
   });
 

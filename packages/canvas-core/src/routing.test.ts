@@ -2,6 +2,8 @@ import type { CanvasDocument, CanvasEdge, CanvasNode } from '@guideanything/cont
 import { describe, expect, it } from 'vitest';
 
 import { routeCanvasEdges, snapNodeForStraightRoute, type OrthogonalRoute, type Point } from './routing';
+import { layoutFlowHierarchy } from './hierarchy';
+import { createComplexSemanticFlowDocument } from './complex-semantic-flow-fixture';
 
 const process = (id: string, x: number, y: number, stageId?: string): CanvasNode => ({
   id, type: 'process', position: { x, y }, size: { width: 200, height: 100 }, zIndex: 0,
@@ -10,6 +12,20 @@ const process = (id: string, x: number, y: number, stageId?: string): CanvasNode
 const edge = (id: string, source: string, target: string, extra: Partial<CanvasEdge> = {}): CanvasEdge => ({ id, source, target, ...extra });
 
 describe('orthogonal edge routing', () => {
+  it('routes the complex semantic flow after child-tree layout and omits the resource reference', () => {
+    const result = routeCanvasEdges(layoutFlowHierarchy(createComplexSemanticFlowDocument()).document);
+
+    ['flow-confirm-approve', 'branch-approved-schedule', 'exception-rejected-collect', 'retry-ship-approve'].forEach((edgeId) => {
+      const route = result.routesByEdgeId.get(edgeId);
+      expect(route, edgeId).toBeDefined();
+      expect(route!.points.length, edgeId).toBeGreaterThanOrEqual(2);
+      route!.points.forEach((point) => {
+        expect(Number.isFinite(point.x) && Number.isFinite(point.y), edgeId).toBe(true);
+      });
+    });
+    expect(result.routesByEdgeId.has('resource-reference-revise-collect-spec')).toBe(false);
+  });
+
   it('uses semantic edge intent for branches and excludes resource references from canvas routes', () => {
     const result = routeCanvasEdges(document(
       [process('decision', 0, 0), process('pass', 400, 0), process('resource', 400, 220)],

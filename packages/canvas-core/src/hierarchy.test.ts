@@ -2,6 +2,7 @@ import type { CanvasDocument, CanvasNode } from '@guideanything/contracts';
 import { describe, expect, it } from 'vitest';
 
 import { getStageBounds, getSwimlaneBounds, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, movePrimaryNodeToStage, translateStageNodes } from './hierarchy';
+import { createComplexSemanticFlowDocument } from './complex-semantic-flow-fixture';
 
 const base = { position: { x: 0, y: 0 }, zIndex: 0 };
 const start = (id: string, stageId?: string) => ({ ...base, id, type: 'start' as const, ...(stageId ? { stageId } : {}), data: { label: '开始', shape: 'start' as const } });
@@ -14,7 +15,139 @@ const decision = (id: string, stageId?: string) => ({ ...base, id, type: 'decisi
 const edge = (id: string, source: string, target: string) => ({ id, source, target });
 const makeDocument = (overrides: Partial<CanvasDocument>): CanvasDocument => ({ schemaVersion: 1, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, steps: [], exitNodeIds: [], ...overrides });
 
+function assertNoPrimaryOverlap(document: CanvasDocument): void {
+  const primary = document.nodes.filter((node) => !node.hidden && isPrimaryFlowNode(node));
+  primary.forEach((left, leftIndex) => {
+    const leftWidth = left.size?.width ?? 240;
+    const leftHeight = left.size?.height ?? 104;
+    primary.slice(leftIndex + 1).forEach((right) => {
+      const rightWidth = right.size?.width ?? 240;
+      const rightHeight = right.size?.height ?? 104;
+      const overlapWidth = Math.min(left.position.x + leftWidth, right.position.x + rightWidth) - Math.max(left.position.x, right.position.x);
+      const overlapHeight = Math.min(left.position.y + leftHeight, right.position.y + rightHeight) - Math.max(left.position.y, right.position.y);
+      expect(overlapWidth > 0 && overlapHeight > 0, `${left.id} overlaps ${right.id}`).toBe(false);
+    });
+  });
+}
+
 describe('flow hierarchy layout', () => {
+  it('lays out an inherited child tree to the right without overlapping later top-level blocks', () => {
+    const result = layoutFlowHierarchy(createComplexSemanticFlowDocument());
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+    const collect = byId.get('collect')!;
+    const normalize = byId.get('normalize')!;
+    const parse = byId.get('parse')!;
+    const manual = byId.get('manual')!;
+    const recheck = byId.get('recheck')!;
+    const confirm = byId.get('confirm')!;
+    const approve = byId.get('approve')!;
+
+    expect(normalize.position.x).toBeGreaterThan(collect.position.x);
+    expect(confirm.position.x).toBe(normalize.position.x);
+    expect(confirm.position.y).toBeGreaterThan(normalize.position.y);
+    expect(parse.position.x).toBe(manual.position.x);
+    expect(parse.position.x).toBeGreaterThan(normalize.position.x);
+    expect(manual.position.y).toBeGreaterThan(parse.position.y);
+    expect(recheck.position.x).toBeGreaterThan(manual.position.x);
+    expect(approve.position.y).toBeGreaterThan(recheck.position.y + (recheck.size?.height ?? 0));
+    assertNoPrimaryOverlap(result.document);
+
+    const intake = result.stageBounds.find((bound) => bound.stageId === 'intake')!;
+    [collect, normalize, parse, manual, recheck, confirm, approve].forEach((node) => {
+      expect(node.position.x).toBeGreaterThanOrEqual(intake.x);
+      expect(node.position.x + (node.size?.width ?? 240)).toBeLessThanOrEqual(intake.x + intake.width);
+      expect(node.position.y).toBeGreaterThanOrEqual(intake.y);
+      expect(node.position.y + (node.size?.height ?? 104)).toBeLessThanOrEqual(intake.y + intake.height);
+    });
+    const sales = getSwimlaneBounds(result.document).find((bound) => bound.laneId === 'sales')!;
+    expect(sales.width).toBeGreaterThan(240 + 72);
+    const swimlanes = getSwimlaneBounds(result.document).sort((left, right) => left.x - right.x);
+    swimlanes.slice(1).forEach((lane, index) => {
+      const previous = swimlanes[index]!;
+      expect(previous.x + previous.width).toBeLessThanOrEqual(lane.x);
+    });
+    result.document.nodes.filter((node) => !node.hidden && isPrimaryFlowNode(node)).forEach((node) => {
+      const lane = swimlanes.find((candidate) => candidate.laneId === node.laneId)!;
+      expect(node.position.x).toBeGreaterThanOrEqual(lane.x);
+      expect(node.position.x + (node.size?.width ?? 240)).toBeLessThanOrEqual(lane.x + lane.width);
+      expect(node.position.y).toBeGreaterThanOrEqual(lane.y);
+      expect(node.position.y + (node.size?.height ?? 104)).toBeLessThanOrEqual(lane.y + lane.height);
+    });
+  });
+
+  it('inherits the parent stage and lane when a semantic child omits cell metadata', () => {
+    const source = createComplexSemanticFlowDocument();
+    const expected = layoutFlowHierarchy(source);
+    const document: CanvasDocument = {
+      ...source,
+      nodes: source.nodes.map((node) => ['normalize', 'confirm'].includes(node.id)
+        ? { ...node, stageId: undefined, laneId: undefined }
+        : node),
+    };
+    const result = layoutFlowHierarchy(document);
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+    const expectedById = new Map(expected.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('normalize')!.position).toEqual(expectedById.get('normalize')!.position);
+    expect(byId.get('confirm')!.position).toEqual(expectedById.get('confirm')!.position);
+    expect(getSwimlaneBounds(result.document).some((bound) => bound.laneId === null)).toBe(false);
+  });
+
+  it('keeps three direct children in one column and only moves grandchildren to the next column', () => {
+    const source = createComplexSemanticFlowDocument();
+    const collect = source.nodes.find((node) => node.id === 'collect')!;
+    const thirdChild: CanvasNode = {
+      ...collect,
+      id: 'collect-third-child',
+      position: { x: -900, y: 3_000 },
+      outline: { parentId: 'collect', order: 2, kind: 'STEP' },
+      data: { label: '第三个子节点', shape: 'process' },
+    } as CanvasNode;
+    const result = layoutFlowHierarchy({
+      ...source,
+      nodes: [...source.nodes, thirdChild],
+      edges: [...source.edges, { id: 'flow-collect-third-child', source: 'collect', target: thirdChild.id, semantic: { kind: 'FLOW' } }],
+    });
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+    const firstChild = byId.get('normalize')!;
+    const secondChild = byId.get('confirm')!;
+    const thirdDirectChild = byId.get('collect-third-child')!;
+    const grandchild = byId.get('parse')!;
+
+    expect(firstChild.position.x).toBe(secondChild.position.x);
+    expect(secondChild.position.x).toBe(thirdDirectChild.position.x);
+    expect(firstChild.position.y).toBeLessThan(secondChild.position.y);
+    expect(secondChild.position.y).toBeLessThan(thirdDirectChild.position.y);
+    expect(grandchild.position.x).toBeGreaterThan(firstChild.position.x);
+  });
+
+  it('treats three primary flow targets from one process as siblings even when one stale outline points deeper', () => {
+    const source = createComplexSemanticFlowDocument();
+    const result = layoutFlowHierarchy({
+      ...source,
+      edges: [...source.edges, { id: 'flow-normalize-recheck', source: 'normalize', target: 'recheck', semantic: { kind: 'FLOW' } }],
+    });
+    const byId = new Map(result.document.nodes.map((node) => [node.id, node]));
+
+    expect(byId.get('parse')!.position.x).toBe(byId.get('manual')!.position.x);
+    expect(byId.get('manual')!.position.x).toBe(byId.get('recheck')!.position.x);
+    expect(byId.get('parse')!.position.y).toBeLessThan(byId.get('manual')!.position.y);
+    expect(byId.get('manual')!.position.y).toBeLessThan(byId.get('recheck')!.position.y);
+  });
+
+  it('sizes a swimlane from the reconciled fan-out before the layout is applied', () => {
+    const source = createComplexSemanticFlowDocument();
+    const document: CanvasDocument = {
+      ...source,
+      edges: [...source.edges, { id: 'flow-normalize-recheck', source: 'normalize', target: 'recheck', semantic: { kind: 'FLOW' } }],
+    };
+    const arranged = layoutFlowHierarchy(document).document;
+    const rawSales = getSwimlaneBounds(document).find((bound) => bound.laneId === 'sales')!;
+    const arrangedSales = getSwimlaneBounds(arranged).find((bound) => bound.laneId === 'sales')!;
+
+    expect(rawSales.width).toBe(arrangedSales.width);
+  });
+
   it('uses semantic order to place a fixed stage and lane matrix without reading prior coordinates', () => {
     const result = layoutFlowHierarchy(makeDocument({
       stages: [

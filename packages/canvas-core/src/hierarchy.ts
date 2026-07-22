@@ -1,14 +1,17 @@
 import type { CanvasDocument, CanvasEdge, CanvasNode, FlowLane, FlowStage } from '@guideanything/contracts';
 
-import { deriveSemanticFlow, hasSemanticFlow } from './semantic-flow';
+import { deriveSemanticFlow, hasSemanticFlow, reconcileSemanticFanoutParents } from './semantic-flow';
 
 const BASE_RANK_GAP = 72;
 const NODE_GAP_Y = 32;
 const STAGE_GAP_Y = 96;
 const CONTENT_GAP_X = 32;
 const CONTENT_GAP_Y = 24;
+const SEMANTIC_ATTACHMENT_RAIL_GAP_Y = CONTENT_GAP_Y + 48;
 const STAGE_PADDING = 40;
 const GRID_COLUMN_GAP = 72;
+const CHILD_COLUMN_GAP = 56;
+const SEMANTIC_LANE_GAP = GRID_COLUMN_GAP + STAGE_PADDING * 2;
 const EMPTY_GRID_CELL_WIDTH = 240;
 const EMPTY_GRID_CELL_HEIGHT = 104;
 const MAX_FLOW_ROW_WIDTH = 1_800;
@@ -37,6 +40,26 @@ interface PrimaryPlacement {
   unassignedContentY: number;
   contentPlacement: 'right' | 'below' | 'appendix';
   appendixX?: number;
+}
+
+interface SemanticLayoutTree {
+  node: CanvasNode;
+  children: SemanticLayoutTree[];
+  depth: number;
+  height: number;
+}
+
+interface SemanticLayoutBlock {
+  root: SemanticLayoutTree;
+  stageId: string | null;
+  laneId: string | null;
+}
+
+interface SemanticLaneGeometry {
+  laneX: Map<string | null, number>;
+  laneColumnOffsets: Map<string | null, number[]>;
+  laneWidths: Map<string | null, number>;
+  totalWidth: number;
 }
 
 interface GridRow {
@@ -175,34 +198,35 @@ export function translateStageNodes(document: CanvasDocument, stageId: string, d
 }
 
 export function layoutFlowHierarchy(document: CanvasDocument): HierarchyLayoutResult {
-  const visible = document.nodes.filter((node) => !node.hidden);
+  const reconciledDocument = reconcileSemanticFanoutParents(document);
+  const visible = reconciledDocument.nodes.filter((node) => !node.hidden);
   const primary = visible.filter(isPrimaryFlowNode).sort(compareNodes);
   const content = visible.filter(isContentNode).sort(compareNodes);
   const primaryIds = new Set(primary.map((node) => node.id));
-  const useSemanticLayout = hasSemanticFlow(document);
-  const connectedContent = useSemanticLayout ? [] : flowThroughContent(content, document.edges);
+  const useSemanticLayout = hasSemanticFlow(reconciledDocument);
+  const connectedContent = useSemanticLayout ? [] : flowThroughContent(content, reconciledDocument.edges);
   const connectedContentIds = new Set(connectedContent.map((node) => node.id));
   const layoutNodes = [...primary, ...connectedContent].sort(compareNodes);
   const layoutNodeIds = new Set(layoutNodes.map((node) => node.id));
   const remainingContent = content.filter((node) => !connectedContentIds.has(node.id));
-  const graph = buildPrimaryGraph(document.edges, layoutNodeIds);
-  const ranked = rankFromEntry(document.entryNodeId, layoutNodes, graph);
+  const graph = buildPrimaryGraph(reconciledDocument.edges, layoutNodeIds);
+  const ranked = rankFromEntry(reconciledDocument.entryNodeId, layoutNodes, graph);
   const contentByParent = attachedContentByParent(remainingContent, primaryIds);
   const looseContent = unassignedContent(remainingContent, primaryIds);
-  const stages = document.stages ?? [];
-  const lanes = orderedLanes(document.lanes ?? []);
-  const semanticPrimary = semanticPrimaryNodes(document, primaryIds);
+  const stages = reconciledDocument.stages ?? [];
+  const lanes = orderedLanes(reconciledDocument.lanes ?? []);
+  const semanticPrimary = semanticPrimaryNodes(reconciledDocument, primaryIds);
   const positioned = useSemanticLayout
-    ? placeSemanticMatrix(semanticPrimary, stages, lanes, contentByParent, looseContent)
-    : placePrimary(layoutNodes, ranked.rankById, stages, contentByParent, document.edges);
-  const withExpandedSubguides = placeExpandedSubguideArtifacts(document.nodes, positioned);
+    ? placeSemanticMatrix(reconciledDocument, semanticPrimary, stages, lanes, contentByParent, looseContent)
+    : placePrimary(layoutNodes, ranked.rankById, stages, contentByParent, reconciledDocument.edges);
+  const withExpandedSubguides = placeExpandedSubguideArtifacts(reconciledDocument.nodes, positioned);
   const withContent = placeContent(remainingContent, withExpandedSubguides, contentByParent);
   const byId = new Map(withContent.map((node) => [node.id, node]));
-  const next = { ...document, nodes: document.nodes.map((node) => byId.get(node.id) ?? node) };
+  const next = { ...reconciledDocument, nodes: reconciledDocument.nodes.map((node) => byId.get(node.id) ?? node) };
 
   return {
     document: next,
-    report: reportFor(primary, content, ranked, stages, lanes, primaryIds, connectedContentIds, document.edges),
+    report: reportFor(primary, content, ranked, stages, lanes, primaryIds, connectedContentIds, reconciledDocument.edges),
     stageBounds: getStageBounds(next),
   };
 }
@@ -260,9 +284,11 @@ export function getStageBounds(document: CanvasDocument): StageBounds[] {
 }
 
 export function getSwimlaneBounds(document: CanvasDocument): SwimlaneBounds[] {
-  const lanes = orderedLanes(document.lanes ?? []);
+  const reconciledDocument = reconcileSemanticFanoutParents(document);
+  const lanes = orderedLanes(reconciledDocument.lanes ?? []);
   if (lanes.length === 0) return [];
-  const geometry = getGridGeometryForDocument(document, lanes);
+  if (hasSemanticFlow(reconciledDocument)) return semanticSwimlaneBounds(reconciledDocument, lanes);
+  const geometry = getGridGeometryForDocument(reconciledDocument, lanes);
   const height = Math.max(geometry.totalHeight, EMPTY_GRID_CELL_HEIGHT);
   return geometry.columns.map((column) => ({
     laneId: column.lane?.id ?? null,
@@ -273,6 +299,30 @@ export function getSwimlaneBounds(document: CanvasDocument): SwimlaneBounds[] {
     width: column.width + STAGE_PADDING * 2,
     height: height + STAGE_PADDING * 2,
   }));
+}
+
+function semanticSwimlaneBounds(document: CanvasDocument, lanes: FlowLane[]): SwimlaneBounds[] {
+  const visiblePrimary = document.nodes.filter((node) => !node.hidden && isPrimaryFlowNode(node));
+  const blocks = buildSemanticLayoutBlocks(visiblePrimary, document, document.stages ?? [], lanes);
+  const hasUnassignedLane = blocks.some((block) => block.laneId === null);
+  const laneOrder: Array<FlowLane | null> = [...lanes, ...(hasUnassignedLane ? [null] : [])];
+  const geometry = semanticLaneGeometry(blocks, laneOrder);
+  const stageBounds = getStageBounds(document);
+  const maxY = Math.max(EMPTY_GRID_CELL_HEIGHT, ...stageBounds.map((bound) => bound.y + bound.height));
+  const height = Math.max(EMPTY_GRID_CELL_HEIGHT, maxY + STAGE_PADDING);
+
+  return laneOrder.map((lane) => {
+    const laneId = lane?.id ?? null;
+    return {
+      laneId,
+      title: lane?.title ?? '未分配责任',
+      kind: lane?.kind ?? null,
+      x: (geometry.laneX.get(laneId) ?? 0) - STAGE_PADDING,
+      y: -STAGE_PADDING,
+      width: (geometry.laneWidths.get(laneId) ?? EMPTY_GRID_CELL_WIDTH) + STAGE_PADDING * 2,
+      height,
+    };
+  });
 }
 
 function getGridGeometryForDocument(document: CanvasDocument, lanes: FlowLane[]): GridGeometry {
@@ -594,7 +644,140 @@ function semanticPrimaryNodes(document: CanvasDocument, visiblePrimaryIds: Set<s
     .filter((node): node is CanvasNode => Boolean(node));
 }
 
+function buildSemanticLayoutBlocks(
+  primary: CanvasNode[],
+  document: CanvasDocument,
+  stages: FlowStage[],
+  lanes: FlowLane[],
+): SemanticLayoutBlock[] {
+  type SemanticLayoutEntry = {
+    node: CanvasNode;
+    nodeId: string;
+    parentId?: string;
+    order: number;
+    index: number;
+    stageId: string | null;
+    laneId: string | null;
+    inheritStageId: boolean;
+    inheritLaneId: boolean;
+  };
+
+  const primaryById = new Map(primary.map((node) => [node.id, node]));
+  const stageIds = new Set(stages.map((stage) => stage.id));
+  const laneIds = new Set(lanes.map((lane) => lane.id));
+  const entries: SemanticLayoutEntry[] = deriveSemanticFlow(document).items
+    .filter((item) => item.kind !== 'RESOURCE' && primaryById.has(item.nodeId))
+    .map((item, index) => {
+      const node = primaryById.get(item.nodeId)!;
+      return {
+        node,
+        nodeId: node.id,
+        ...(item.parentId ? { parentId: item.parentId } : {}),
+        order: item.order,
+        index,
+        stageId: node.stageId && stageIds.has(node.stageId) ? node.stageId : null,
+        laneId: node.laneId && laneIds.has(node.laneId) ? node.laneId : null,
+        inheritStageId: node.stageId === undefined,
+        inheritLaneId: node.laneId === undefined,
+      };
+    });
+  const entriesById = new Map(entries.map((entry) => [entry.nodeId, entry]));
+  const resolveCell = (
+    entry: SemanticLayoutEntry,
+    field: 'stageId' | 'laneId',
+    inheritField: 'inheritStageId' | 'inheritLaneId',
+    visiting = new Set<string>(),
+  ): string | null => {
+    if (!entry[inheritField]) return entry[field];
+    if (!entry.parentId || visiting.has(entry.nodeId)) return null;
+    const parent = entriesById.get(entry.parentId);
+    if (!parent) return null;
+    const nextVisiting = new Set(visiting);
+    nextVisiting.add(entry.nodeId);
+    return resolveCell(parent, field, inheritField, nextVisiting);
+  };
+  entries.forEach((entry) => {
+    entry.stageId = resolveCell(entry, 'stageId', 'inheritStageId');
+    entry.laneId = resolveCell(entry, 'laneId', 'inheritLaneId');
+  });
+  const childrenByParent = new Map<string, SemanticLayoutEntry[]>();
+  entries.forEach((entry) => {
+    if (!entry.parentId || !entriesById.has(entry.parentId)) return;
+    const children = childrenByParent.get(entry.parentId) ?? [];
+    children.push(entry);
+    childrenByParent.set(entry.parentId, children);
+  });
+  childrenByParent.forEach((children) => children.sort((left, right) => left.order - right.order || left.index - right.index || left.nodeId.localeCompare(right.nodeId)));
+
+  const consumed = new Set<string>();
+  const buildTree = (entry: SemanticLayoutEntry, depth: number): SemanticLayoutTree => {
+    const children = (childrenByParent.get(entry.nodeId) ?? []).filter((child) => (
+      !consumed.has(child.nodeId)
+      && child.stageId === entry.stageId
+      && child.laneId === entry.laneId
+    ));
+    children.forEach((child) => consumed.add(child.nodeId));
+    const childTrees = children.map((child) => buildTree(child, depth + 1));
+    const childStackHeight = childTrees.reduce((total, child, index) => total + child.height + (index > 0 ? NODE_GAP_Y : 0), 0);
+    return {
+      node: entry.node,
+      children: childTrees,
+      depth,
+      height: Math.max(nodeSize(entry.node).height, childStackHeight),
+    };
+  };
+
+  const blocks: SemanticLayoutBlock[] = [];
+  entries.forEach((entry) => {
+    if (consumed.has(entry.nodeId)) return;
+    consumed.add(entry.nodeId);
+    blocks.push({
+      root: buildTree(entry, 0),
+      stageId: entry.stageId,
+      laneId: entry.laneId,
+    });
+  });
+  return blocks;
+}
+
+function semanticLaneGeometry(blocks: SemanticLayoutBlock[], laneOrder: Array<FlowLane | null>): SemanticLaneGeometry {
+  const widthsByLane = new Map<string | null, number[]>();
+  const collectWidths = (tree: SemanticLayoutTree, laneId: string | null) => {
+    const widths = widthsByLane.get(laneId) ?? [];
+    widths[tree.depth] = Math.max(widths[tree.depth] ?? 0, nodeSize(tree.node).width);
+    widthsByLane.set(laneId, widths);
+    tree.children.forEach((child) => collectWidths(child, laneId));
+  };
+  blocks.forEach((block) => collectWidths(block.root, block.laneId));
+
+  const laneX = new Map<string | null, number>();
+  const laneColumnOffsets = new Map<string | null, number[]>();
+  const laneWidths = new Map<string | null, number>();
+  let nextX = 0;
+  laneOrder.forEach((lane, index) => {
+    const laneId = lane?.id ?? null;
+    const widths = [...(widthsByLane.get(laneId) ?? [])];
+    widths[0] = Math.max(widths[0] ?? 0, EMPTY_GRID_CELL_WIDTH);
+    const offsets: number[] = [];
+    widths.forEach((width, depth) => {
+      offsets[depth] = depth === 0 ? 0 : offsets[depth - 1]! + widths[depth - 1]! + CHILD_COLUMN_GAP;
+    });
+    const width = offsets[offsets.length - 1]! + widths[widths.length - 1]!;
+    laneX.set(laneId, nextX);
+    laneColumnOffsets.set(laneId, offsets);
+    laneWidths.set(laneId, width);
+    nextX += width + (index < laneOrder.length - 1 ? SEMANTIC_LANE_GAP : 0);
+  });
+  return {
+    laneX,
+    laneColumnOffsets,
+    laneWidths,
+    totalWidth: nextX,
+  };
+}
+
 function placeSemanticMatrix(
+  document: CanvasDocument,
   primary: CanvasNode[],
   stages: FlowStage[],
   lanes: FlowLane[],
@@ -602,32 +785,18 @@ function placeSemanticMatrix(
   looseContent: CanvasNode[],
 ): PrimaryPlacement {
   const orderedStageList = orderedStages(stages);
-  const stageIds = new Set(orderedStageList.map((stage) => stage.id));
-  const laneIds = new Set(lanes.map((lane) => lane.id));
-  const hasUnassignedStage = looseContent.length > 0 || primary.some((node) => !node.stageId || !stageIds.has(node.stageId));
-  const hasUnassignedLane = looseContent.length > 0 || primary.some((node) => !node.laneId || !laneIds.has(node.laneId));
+  const blocks = buildSemanticLayoutBlocks(primary, document, stages, lanes);
+  const hasUnassignedStage = looseContent.length > 0 || blocks.some((block) => block.stageId === null);
+  const hasUnassignedLane = looseContent.length > 0 || blocks.some((block) => block.laneId === null);
   const stageOrder: Array<FlowStage | null> = [...orderedStageList, ...(hasUnassignedStage ? [null] : [])];
   const laneOrder: Array<FlowLane | null> = [...lanes, ...(hasUnassignedLane ? [null] : [])];
   const laneIndexById = new Map(laneOrder.map((lane, index) => [lane?.id ?? null, index]));
-  const primaryByStage = new Map<string | null, CanvasNode[]>();
-  primary.forEach((node) => {
-    const stageId = node.stageId && stageIds.has(node.stageId) ? node.stageId : null;
-    const nodes = primaryByStage.get(stageId) ?? [];
-    nodes.push(node);
-    primaryByStage.set(stageId, nodes);
-  });
-
-  const columnWidths = laneOrder.map((lane) => {
-    const laneId = lane?.id ?? null;
-    const nodes = primary.filter((node) => (node.laneId && laneIds.has(node.laneId) ? node.laneId : null) === laneId);
-    return Math.max(EMPTY_GRID_CELL_WIDTH, ...nodes.map((node) => nodeSize(node).width));
-  });
-  const laneX = new Map<string | null, number>();
-  let nextX = 0;
-  laneOrder.forEach((lane, index) => {
-    const laneId = lane?.id ?? null;
-    laneX.set(laneId, nextX);
-    nextX += columnWidths[index]! + (index < laneOrder.length - 1 ? GRID_COLUMN_GAP : 0);
+  const geometry = semanticLaneGeometry(blocks, laneOrder);
+  const blocksByStage = new Map<string | null, SemanticLayoutBlock[]>();
+  blocks.forEach((block) => {
+    const stageBlocks = blocksByStage.get(block.stageId) ?? [];
+    stageBlocks.push(block);
+    blocksByStage.set(block.stageId, stageBlocks);
   });
 
   const nodes: CanvasNode[] = [];
@@ -635,30 +804,38 @@ function placeSemanticMatrix(
   let stageY = 0;
   stageOrder.forEach((stage) => {
     const stageId = stage?.id ?? null;
-    const inStage = primaryByStage.get(stageId) ?? [];
-    const rows: CanvasNode[][] = [];
+    const inStage = blocksByStage.get(stageId) ?? [];
+    const rows: SemanticLayoutBlock[][] = [];
     let lastLaneIndex = -1;
-    inStage.forEach((node) => {
-      const laneId = node.laneId && laneIds.has(node.laneId) ? node.laneId : null;
-      const laneIndex = laneIndexById.get(laneId) ?? 0;
+    inStage.forEach((block) => {
+      const laneIndex = laneIndexById.get(block.laneId) ?? 0;
       const row = rows.at(-1);
       if (!row || laneIndex <= lastLaneIndex) {
-        rows.push([node]);
+        rows.push([block]);
         lastLaneIndex = laneIndex;
       } else {
-        row.push(node);
+        row.push(block);
         lastLaneIndex = laneIndex;
       }
     });
 
     let rowY = stageY;
     rows.forEach((row) => {
-      const rowHeight = Math.max(EMPTY_GRID_CELL_HEIGHT, ...row.map((node) => semanticOccupiedHeight(node, contentByParent)));
-      row.forEach((node) => {
-        const laneId = node.laneId && laneIds.has(node.laneId) ? node.laneId : null;
-        const positioned = { ...node, position: { x: laneX.get(laneId) ?? 0, y: rowY } };
-        nodes.push(positioned);
-        byId.set(node.id, positioned);
+      const rowNodes = row.flatMap((block) => positionSemanticTree(
+        block.root,
+        geometry.laneX.get(block.laneId) ?? 0,
+        rowY,
+        geometry.laneColumnOffsets.get(block.laneId) ?? [0],
+      ));
+      const rowHeight = semanticRowHeight(
+        rowNodes,
+        contentByParent,
+        geometry.totalWidth / 2,
+        Math.max(EMPTY_GRID_CELL_HEIGHT, ...row.map((block) => block.root.height)),
+      );
+      rowNodes.forEach((node) => {
+        nodes.push(node);
+        byId.set(node.id, node);
       });
       rowY += rowHeight + NODE_GAP_Y;
     });
@@ -669,17 +846,48 @@ function placeSemanticMatrix(
   return {
     nodes,
     byId,
-    unassignedContentX: laneX.get(null) ?? 0,
+    unassignedContentX: geometry.laneX.get(null) ?? 0,
     unassignedContentY: stageY,
     contentPlacement: 'appendix',
-    appendixX: nextX + CONTENT_GAP_X,
+    appendixX: geometry.totalWidth + CONTENT_GAP_X,
   };
 }
 
-function semanticOccupiedHeight(node: CanvasNode, contentByParent: Map<string, CanvasNode[]>): number {
-  const attached = contentByParent.get(node.id) ?? [];
-  const appendixHeight = attached.reduce((total, item, index) => total + nodeSize(item).height + (index > 0 ? CONTENT_GAP_Y : 0), 0);
-  return Math.max(nodeSize(node).height, appendixHeight);
+function positionSemanticTree(tree: SemanticLayoutTree, baseX: number, baseY: number, laneColumnOffsets: number[]): CanvasNode[] {
+  const nodes: CanvasNode[] = [];
+  const visit = (current: SemanticLayoutTree, y: number) => {
+    nodes.push({
+      ...current.node,
+      position: { x: baseX + (laneColumnOffsets[current.depth] ?? 0), y },
+    });
+    let childY = y;
+    current.children.forEach((child) => {
+      visit(child, childY);
+      childY += child.height + NODE_GAP_Y;
+    });
+  };
+  visit(tree, baseY);
+  return nodes;
+}
+
+function semanticRowHeight(
+  row: CanvasNode[],
+  contentByParent: Map<string, CanvasNode[]>,
+  stageCenterX: number,
+  minimumHeight: number,
+): number {
+  const railUsage = new Map<'left' | 'right', number>();
+  const primaryHeight = Math.max(minimumHeight, ...row.map((node) => nodeSize(node).height));
+  row.forEach((node) => {
+    const attached = contentByParent.get(node.id) ?? [];
+    if (attached.length === 0) return;
+    const nodeCenterX = node.position.x + nodeSize(node).width / 2;
+    const side = nodeCenterX <= stageCenterX ? 'left' : 'right';
+    const attachmentHeight = attached.reduce((total, item, index) => total + nodeSize(item).height + (index > 0 ? CONTENT_GAP_Y : 0), 0);
+    railUsage.set(side, (railUsage.get(side) ?? 0) + attachmentHeight + SEMANTIC_ATTACHMENT_RAIL_GAP_Y);
+  });
+  const railHeight = Math.max(0, ...railUsage.values()) - NODE_GAP_Y;
+  return Math.max(primaryHeight, railHeight);
 }
 
 function calculateRankX(primary: CanvasNode[], content: CanvasNode[], rankById: Map<string, number>, primaryIds: Set<string>): Map<number, number> {

@@ -135,4 +135,27 @@ describe('semantic node actions', () => {
       id: 'qualified-continue', semantic: { kind: 'BRANCH', order: 0 }, label: '通过',
     }));
   });
+
+  it('repairs a stale deeper parent when a process receives a third ordinary flow target', () => {
+    const source = document([
+      process('parent', { outline: { order: 0, kind: 'STEP' } }),
+      process('first', { outline: { parentId: 'parent', order: 0, kind: 'STEP' } }),
+      process('second', { outline: { parentId: 'parent', order: 1, kind: 'STEP' } }),
+      process('third', { outline: { parentId: 'second', order: 0, kind: 'STEP' } }),
+    ]);
+    const result = connectSemanticNodes({
+      ...source,
+      edges: [
+        { id: 'parent-first', source: 'parent', target: 'first', semantic: { kind: 'FLOW' } },
+        { id: 'parent-second', source: 'parent', target: 'second', semantic: { kind: 'FLOW' } },
+      ],
+    }, { id: 'parent-third', source: 'parent', target: 'third' });
+
+    expect(result.nodes.find((node) => node.id === 'first')?.outline).toEqual({ parentId: 'parent', order: 0, kind: 'STEP' });
+    expect(result.nodes.find((node) => node.id === 'second')?.outline).toEqual({ parentId: 'parent', order: 1, kind: 'STEP' });
+    expect(result.nodes.find((node) => node.id === 'third')?.outline).toEqual({ parentId: 'parent', order: 2, kind: 'STEP' });
+    expect(deriveSemanticFlow(result).items.map((item) => `${item.nodeId}:${item.code}`)).toEqual([
+      'parent:1', 'first:1.1', 'second:1.2', 'third:1.3',
+    ]);
+  });
 });

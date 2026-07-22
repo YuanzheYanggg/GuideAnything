@@ -1,5 +1,5 @@
 import type { CanvasDocument, CanvasEdge, CanvasNode } from '@guideanything/contracts';
-import { deriveSemanticFlow, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, renumberSemanticFlow } from '@guideanything/canvas-core';
+import { deriveSemanticFlow, isContentNode, isPrimaryFlowNode, layoutFlowHierarchy, reconcileSemanticFanoutParents, renumberSemanticFlow } from '@guideanything/canvas-core';
 
 export type SemanticCreationOrigin = 'toolbar' | 'connection' | 'child';
 export type SemanticOutlineMove = 'previous' | 'next';
@@ -81,7 +81,10 @@ export function connectSemanticNodes(document: CanvasDocument, edge: CanvasEdge)
   }
   if (!isPrimaryFlowNode(target)) return { ...document, edges: [...document.edges, edge] };
   if (source.type !== 'decision') {
-    return { ...document, edges: [...document.edges, { ...edge, semantic: { kind: 'FLOW' } }] };
+    return reconcileSemanticFanoutParents({
+      ...document,
+      edges: [...document.edges, { ...edge, semantic: { kind: 'FLOW' } }],
+    });
   }
   const order = nextSiblingOrder(document, source.id, 'BRANCH');
   const label = source.data.branchLabels?.[order];

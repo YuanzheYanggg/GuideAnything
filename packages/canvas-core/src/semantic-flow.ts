@@ -1,4 +1,4 @@
-import type { CanvasDocument, CanvasNode, LessonStep } from '@guideanything/contracts';
+import type { CanvasDocument, CanvasEdge, CanvasNode, LessonStep } from '@guideanything/contracts';
 
 export type SemanticItemKind = 'STEP' | 'BRANCH' | 'RESOURCE';
 
@@ -31,6 +31,71 @@ const resourceTypes = new Set<CanvasNode['type']>(['markdown', 'image', 'video']
 export function hasSemanticFlow(document: CanvasDocument): boolean {
   return document.nodes.some((node) => Boolean(node.outline || node.attachment))
     || document.edges.some((edge) => Boolean(edge.semantic));
+}
+
+/**
+ * A normal process with multiple ordinary flow targets is a visual fan-out.
+ * Older documents can have one of those targets carrying a stale deeper
+ * outline parent because it was first created as a child of another target.
+ * Reconcile that contradiction before deriving codes and layout positions.
+ */
+export function reconcileSemanticFanoutParents(document: CanvasDocument): CanvasDocument {
+  if (!hasSemanticFlow(document)) return document;
+  const primaryNodes = document.nodes.filter(isPrimary);
+  const primaryById = new Map(primaryNodes.map((node) => [node.id, node]));
+  const targetsBySource = new Map<string, Map<string, number>>();
+  document.edges.forEach((edge, index) => {
+    if (!isOrdinaryFlowEdge(edge)) return;
+    const source = primaryById.get(edge.source);
+    const target = primaryById.get(edge.target);
+    if (!source || !target || source.type === 'decision' || source.id === target.id) return;
+    const targets = targetsBySource.get(source.id) ?? new Map<string, number>();
+    if (!targets.has(target.id)) targets.set(target.id, index);
+    targetsBySource.set(source.id, targets);
+  });
+
+  const updates = new Map<string, { parentId: string; order: number; stageId?: string; laneId?: string }>();
+  targetsBySource.forEach((targetIndexes, sourceId) => {
+    if (targetIndexes.size < 2) return;
+    const source = primaryById.get(sourceId)!;
+    const targets = [...targetIndexes.entries()]
+      .map(([targetId, edgeIndex]) => ({ target: primaryById.get(targetId)!, edgeIndex }))
+      .filter(({ target }) => !wouldCreateOutlineCycle(sourceId, target.id, primaryById))
+      .sort((left, right) => {
+        const leftIsDirect = left.target.outline?.parentId === sourceId;
+        const rightIsDirect = right.target.outline?.parentId === sourceId;
+        if (leftIsDirect !== rightIsDirect) return leftIsDirect ? -1 : 1;
+        if (leftIsDirect && rightIsDirect) {
+          return (left.target.outline?.order ?? Number.MAX_SAFE_INTEGER) - (right.target.outline?.order ?? Number.MAX_SAFE_INTEGER)
+            || left.edgeIndex - right.edgeIndex
+            || left.target.id.localeCompare(right.target.id);
+        }
+        return left.edgeIndex - right.edgeIndex || left.target.id.localeCompare(right.target.id);
+      });
+    targets.forEach(({ target }, order) => {
+      updates.set(target.id, {
+        parentId: sourceId,
+        order,
+        ...(source.stageId && !target.stageId ? { stageId: source.stageId } : {}),
+        ...(source.laneId && !target.laneId ? { laneId: source.laneId } : {}),
+      });
+    });
+  });
+  if (updates.size === 0) return document;
+
+  return {
+    ...document,
+    nodes: document.nodes.map((node) => {
+      const update = updates.get(node.id);
+      if (!update) return node;
+      return {
+        ...node,
+        ...(update.stageId ? { stageId: update.stageId } : {}),
+        ...(update.laneId ? { laneId: update.laneId } : {}),
+        outline: { parentId: update.parentId, order: update.order, kind: 'STEP' },
+      } as CanvasNode;
+    }),
+  };
 }
 
 export function deriveSemanticFlow(document: CanvasDocument): SemanticFlow {
@@ -129,7 +194,7 @@ export function deriveSemanticFlow(document: CanvasDocument): SemanticFlow {
 }
 
 export function renumberSemanticFlow(document: CanvasDocument): CanvasDocument {
-  const normalizedDocument = normalizeLegacyResourceAttachments(document);
+  const normalizedDocument = reconcileSemanticFanoutParents(normalizeLegacyResourceAttachments(document));
   const flow = deriveSemanticFlow(normalizedDocument);
   const primaryOrders = new Map<string | undefined, number>();
   const resourceOrders = new Map<string, number>();
@@ -217,6 +282,23 @@ function normalizeLegacyResourceAttachments(document: CanvasDocument): CanvasDoc
 
 function isPrimary(node: CanvasNode): boolean {
   return primaryTypes.has(node.type) && !node.source;
+}
+
+function isOrdinaryFlowEdge(edge: CanvasEdge): boolean {
+  return !edge.hidden
+    && !edge.sourceTrace
+    && (!edge.semantic || edge.semantic.kind === 'FLOW');
+}
+
+function wouldCreateOutlineCycle(sourceId: string, targetId: string, primaryById: Map<string, CanvasNode>): boolean {
+  const visited = new Set<string>();
+  let current: string | undefined = sourceId;
+  while (current && !visited.has(current)) {
+    if (current === targetId) return true;
+    visited.add(current);
+    current = primaryById.get(current)?.outline?.parentId;
+  }
+  return false;
 }
 
 function isResource(node: CanvasNode): boolean {
